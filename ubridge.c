@@ -21,126 +21,152 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <signal.h>
+#include <string.h>
 #include <pthread.h>
 
-#include <string.h>
-#include <sys/socket.h>
-#include <netdb.h>
-
 #include "ubridge.h"
+#include "nio_udp.h"
+#include "parse.h"
 
-foreign_port_t *port_table = NULL;
 
-int udp_connect(int local_port,char *remote_host,int remote_port)
+static void bridge_nios(nio_t *source_nio, nio_t *destination_nio)
 {
-   struct addrinfo hints,*res,*res0;
-   struct sockaddr_storage st;
-   int error, sck = -1;
-   char port_str[20];
+  ssize_t bytes_received, bytes_sent;
+  unsigned char pkt[NIO_MAX_PKT_SIZE];
 
-   memset(&hints,0,sizeof(hints));
-   hints.ai_family = PF_UNSPEC;
-   hints.ai_socktype = SOCK_DGRAM;
+  while (1) {
 
-   snprintf(port_str,sizeof(port_str),"%d",remote_port);
-
-   if ((error = getaddrinfo(remote_host,port_str,&hints,&res0)) != 0) {
-      fprintf(stderr,"%s\n",gai_strerror(error));
-      return(-1);
-   }
-
-   for(res = res0; res; res = res->ai_next)
-   {
-      /* We want only IPv4 or IPv6 */
-      if ((res->ai_family != PF_INET) && (res->ai_family != PF_INET6))
-         continue;
-
-      /* create new socket */
-      if ((sck = socket(res->ai_family,SOCK_DGRAM,res->ai_protocol)) < 0) {
-         perror("udp_connect: socket");
-         continue;
-      }
-
-      /* bind to the local port */
-      memset(&st,0,sizeof(st));
-      
-      switch(res->ai_family) {
-         case PF_INET: {
-            struct sockaddr_in *sin = (struct sockaddr_in *)&st;
-            sin->sin_family = PF_INET;
-            sin->sin_port = htons(local_port);
+    bytes_received = source_nio->recv(source_nio->dptr, &pkt, NIO_MAX_PKT_SIZE);
+    if (bytes_received <= 0)
+      {
+        switch (errno)
+          {
+            case ECONNREFUSED:
+              continue;
+            default:
+            perror("recv");
             break;
-         }
+          }
+       }
 
-         case PF_INET6: {
-            struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&st;
-#ifdef SIN6_LEN
-            sin6->sin6_len = res->ai_addrlen;
-#endif
-            sin6->sin6_family = PF_INET6;
-            sin6->sin6_port = htons(local_port);
-            break;
-         }
-
-         default:
-            /* shouldn't happen */
-            close(sck);
-            sck = -1;
-            continue;
-      }
-
-      /* try to connect to remote host */
-      if (!bind(sck,(struct sockaddr *)&st,res->ai_addrlen) &&
-          !connect(sck,res->ai_addr,res->ai_addrlen))
+    bytes_sent = destination_nio->send(destination_nio->dptr, pkt, bytes_received);
+    if (bytes_sent != bytes_received)
+       switch (errno) {
+       case ENOENT:
+       case ECONNREFUSED:
+         continue;
+       default:
+         perror("send");
          break;
-
-      close(sck);
-      sck = -1;
-   }
-
-   freeaddrinfo(res0);
-   return(sck);
+       }
+  }
 }
 
-static void create_threads(void)
+static void *source_nio_listener(void *data)
 {
+  bridge_t *bridge = data;
+
+  printf("Source NIO listener thread for %s has started\n", bridge->name);
+  if (bridge->source_nio && bridge->destination_nio)
+    bridge_nios(bridge->source_nio, bridge->destination_nio);
+  printf("Source NIO listener thread for %s has stopped\n", bridge->name);
+  pthread_exit(NULL);
+}
+
+static void *destination_nio_listener(void *data)
+{
+  bridge_t *bridge = data;
+
+  printf("Destination NIO listener thread for %s has started\n", bridge->name);
+  if (bridge->source_nio && bridge->destination_nio)
+    bridge_nios(bridge->destination_nio, bridge->source_nio);
+  printf("Destination NIO listener thread for %s has stopped\n", bridge->name);
+  pthread_exit(NULL);
+}
+
+static void free_bridges(bridge_t *bridge)
+{
+  bridge_t *next;
+
+  while (bridge != NULL) {
+    if (bridge->name)
+       free(bridge->name);
+    pthread_cancel(bridge->source_tid);
+    pthread_join(bridge->source_tid, NULL);
+    pthread_cancel(bridge->destination_tid);
+    pthread_join(bridge->destination_tid, NULL);
+    free_nio(bridge->source_nio);
+    free_nio(bridge->destination_nio);
+    next = bridge->next;
+    free(bridge);
+    bridge = next;
+  }
+}
+
+static void create_threads(pthread_attr_t *thread_attrs, bridge_t *bridge)
+{
+    int s;
+
+    while (bridge != NULL) {
+       s = pthread_create(&(bridge->source_tid), thread_attrs, &source_nio_listener, bridge);
+       if (s != 0)
+         handle_error_en(s, "pthread_create");
+       s = pthread_create(&(bridge->destination_tid), thread_attrs, &destination_nio_listener, bridge);
+       if (s != 0)
+         handle_error_en(s, "pthread_create");
+       bridge = bridge->next;
+    }
+}
+
+static void ubridge(void)
+{
+  int sig;
   int s;
   sigset_t sigset;
-  pthread_attr_t attrs;
+  pthread_attr_t thread_attrs;
 
   sigemptyset(&sigset);
   sigaddset(&sigset, SIGINT);
-  sigaddset(&sigset, SIGTERM);  
+  sigaddset(&sigset, SIGTERM);
   sigaddset(&sigset, SIGHUP);
   pthread_sigmask(SIG_BLOCK, &sigset, NULL);
 
-  s = pthread_attr_init(&attrs);
+  s = pthread_attr_init(&thread_attrs);
   if (s != 0)
     handle_error_en(s, "pthread_attr_init");
-  s = pthread_attr_setdetachstate (&attrs, PTHREAD_CREATE_DETACHED);
+  s = pthread_attr_setdetachstate(&thread_attrs, PTHREAD_CREATE_DETACHED);
   if (s != 0)
     handle_error_en(s, "pthread_attr_setdetachstate");
 
-  while (1)
-    {
-      printf("toto\n");
-    }
+  while (1) {
+    bridge_t *bridges = NULL;
+    if (!parse_config("ubridge.ini", &bridges))
+      break;
+
+    create_threads(&thread_attrs, bridges);
+    sigwait (&sigset, &sig);
+    printf("Received signal %d\n", sig);
+    free_bridges(bridges);
+    if (sig == SIGTERM || sig == SIGINT)
+      break;
+  }
+
+  printf("Exiting\n");
+  pthread_attr_destroy(&thread_attrs);
 }
 
 int main(int argc, char **argv)
 {
   char opt;
 
-  while ((opt = getopt(argc, argv, "v")) != -1)
-    {
-      switch (opt)
-	{
+  while ((opt = getopt(argc, argv, "v")) != -1) {
+    switch (opt) {
 	  case 'v':
 	    printf("%s version %s\n", NAME, VERSION);
 	    exit (EXIT_SUCCESS);
 	}
-    }
+  }
 
-  create_threads();
+  ubridge();
   return (EXIT_SUCCESS);
 }

@@ -19,30 +19,38 @@
 #   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-NAME	= 	ubridge
+NAME    =   ubridge
 
-SRC	= 	ubridge.c
+SRC     =   ubridge.c               \
+            nio.c                   \
+            nio_udp.c               \
+            nio_ethernet.c          \
+            nio_tap.c               \
+            iniparser/iniparser.c   \
+            iniparser/dictionary.c  \
+            parse.c                 \
 
-OBJ	= 	$(SRC:.c=.o)
+OBJ     =   $(SRC:.c=.o)
 
-LIB     =	-lpcap
+CC      =   gcc -O3
 
-CC	=	gcc -O3
+CFLAGS  =   -O3 -Wall
 
-LIBS    =       -lpthread -lpcap
-
-CFLAGS  =	-O3 -Wall
+LIBS    =   -lpthread -lpcap
 
 ##############################
 
 $(NAME)	: $(OBJ)
 	$(CC) -o $(NAME) $(OBJ) $(LIBS)
 
+.PHONY: clean
+
 clean:
 	-rm -f $(OBJ)
 	-rm -f *~
+	-rm -f $(NAME)
 
 all	: $(NAME)
 
-install : ubridge
+install : $(NAME)
 

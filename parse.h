@@ -18,35 +18,14 @@
  *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef UBRIDGE_H_
-#define UBRIDGE_H_
+#ifndef PARSE_H_
+#define PARSE_H_
 
-#include <stdlib.h>
-#include <errno.h>
+#include "ubridge.h"
+#include "iniparser/iniparser.h"
 
-#include "nio.h"
+#define MAX_KEY_SIZE   256
 
-#define NAME          "ubrige"
-#define VERSION       "0.1.1"
+int parse_config(char *filename, bridge_t **bridges);
 
-#ifndef FALSE
-#define FALSE 0
-#endif
-
-#ifndef TRUE
-#define TRUE  1
-#endif
-
-#define handle_error_en(en, msg) \
-        do { errno = en; perror(msg); exit(EXIT_FAILURE); } while (0)
-
-typedef struct bridge {
-  char *name;
-  pthread_t source_tid;
-  pthread_t destination_tid;
-  nio_t *source_nio;
-  nio_t *destination_nio;
-  struct bridge *next;
-} bridge_t;
-
-#endif /* !UBRIDGE_H_ */
+#endif /* !PARSE_H_ */
