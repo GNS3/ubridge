@@ -36,21 +36,17 @@ static void bridge_nios(nio_t *source_nio, nio_t *destination_nio)
 
   while (1) {
 
-    bytes_received = source_nio->recv(source_nio->dptr, &pkt, NIO_MAX_PKT_SIZE);
-    if (bytes_received <= 0)
-      {
-        switch (errno)
-          {
-            case ECONNREFUSED:
-              continue;
-            default:
-            perror("recv");
-            break;
-          }
-       }
+    bytes_received = nio_recv(source_nio, &pkt, NIO_MAX_PKT_SIZE);
+    if (bytes_received == -1) {
+        if (errno == ECONNREFUSED)
+           continue;
+        perror("recv");
+        break;
+    }
 
-    bytes_sent = destination_nio->send(destination_nio->dptr, pkt, bytes_received);
-    if (bytes_sent != bytes_received)
+    //printf("received %zd bytes\n", bytes_received);
+    bytes_sent = nio_send(destination_nio, pkt, bytes_received);
+    if (bytes_sent == -1) {
        switch (errno) {
        case ENOENT:
        case ECONNREFUSED:
@@ -59,6 +55,8 @@ static void bridge_nios(nio_t *source_nio, nio_t *destination_nio)
          perror("send");
          break;
        }
+    }
+    //printf("sent %zd bytes\n", bytes_sent);
   }
 }
 

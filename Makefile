@@ -29,14 +29,17 @@ SRC     =   ubridge.c               \
             iniparser/iniparser.c   \
             iniparser/dictionary.c  \
             parse.c                 \
+            pcap_capture.c
 
 OBJ     =   $(SRC:.c=.o)
 
-CC      =   gcc -O3
+CC      =   gcc
 
 CFLAGS  =   -O3 -Wall
 
 LIBS    =   -lpthread -lpcap
+
+BINDIR  =   /usr/local/bin
 
 ##############################
 
@@ -53,4 +56,6 @@ clean:
 all	: $(NAME)
 
 install : $(NAME)
-
+	chmod +x $(NAME)
+	sudo setcap cap_net_admin,cap_net_raw=ep $(NAME)
+	sudo cp $(NAME) $(BINDIR)

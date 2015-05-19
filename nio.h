@@ -21,8 +21,11 @@
 #ifndef NIO_H_
 #define NIO_H_
 
+#include <pthread.h>
 #include <stdlib.h>
 #include <pcap.h>
+
+#define m_min(a,b) (((a) < (b)) ? (a) : (b))
 
 #define NIO_MAX_PKT_SIZE    2048
 #define NIO_DEV_MAXLEN      64
@@ -61,6 +64,10 @@ typedef struct {
     ssize_t (*send)(void *nio, void *pkt, size_t len);
     ssize_t (*recv)(void *nio, void *pkt, size_t len);
     void (*free)(void *nio);
+
+    pcap_t *pcap_capture_fd;
+    pcap_dumper_t *dumper;
+    pthread_mutex_t lock;
 
 } nio_t;
 

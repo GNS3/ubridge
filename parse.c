@@ -25,6 +25,7 @@
 #include "nio_udp.h"
 #include "nio_ethernet.h"
 #include "nio_tap.h"
+#include "pcap_capture.h"
 
 static nio_t *create_udp_tunnel(const char *params)
 {
@@ -37,6 +38,10 @@ static nio_t *create_udp_tunnel(const char *params)
   local_port = strtok((char *)params, ":");
   remote_host = strtok(NULL, ":");
   remote_port = strtok(NULL, ":");
+  if (local_port == NULL || remote_host == NULL || remote_port == NULL) {
+     fprintf(stderr, "unvalid UDP tunnel syntax\n");
+     return NULL;
+  }
 
   nio = create_nio_udp(atoi(local_port), remote_host, atoi(remote_port));
   if (!nio)
@@ -129,7 +134,13 @@ int parse_config(char *filename, bridge_t **bridges)
            bridge->source_nio = source_nio;
            bridge->destination_nio = destination_nio;
         }
+        else if (source_nio != NULL)
+           free_nio(source_nio);
+        else if (destination_nio != NULL)
+           free_nio(destination_nio);
 
+        setup_pcap_capture(source_nio, "source.pcap", "EHTER");
+        setup_pcap_capture(destination_nio, "destination.pcap", "ETHER");
     }
     iniparser_freedict(ubridge_config);
     return TRUE;

@@ -26,6 +26,7 @@
 
 #include "ubridge.h"
 #include "nio.h"
+#include "pcap_capture.h"
 
 
 nio_t *create_nio(void)
@@ -70,6 +71,8 @@ ssize_t nio_recv(nio_t *nio, void *pkt, size_t max_len)
    /* Receive the packet */
    if ((len = nio->recv(nio->dptr, pkt, max_len)) <= 0)
       return (-1);
+
+   // pcap_capture_packet(nio, pkt, len);
 
    return(len);
 }

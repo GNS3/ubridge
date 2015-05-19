@@ -27,8 +27,6 @@
 #include "ubridge.h"
 #include "nio_ethernet.h"
 
-#define m_min(a,b) (((a) < (b)) ? (a) : (b))
-
 #ifdef CYGWIN
 /* Needed for pcap_open() flags */
 #define HAVE_REMOTE
@@ -79,21 +77,36 @@ static void nio_ethernet_free(nio_ethernet_t *nio_ethernet)
 /* Send a packet to an Ethernet device */
 static ssize_t nio_ethernet_send(nio_ethernet_t *nio_ethernet, void *pkt, size_t pkt_len)
 {
-   return (pcap_sendpacket(nio_ethernet->pcap_dev, (u_char *)pkt, pkt_len));
+   int res;
+
+   res = pcap_sendpacket(nio_ethernet->pcap_dev, (u_char *)pkt, pkt_len);
+   if (res == -1)
+      fprintf(stderr, "pcap_sendpacket: %s\n", pcap_geterr(nio_ethernet->pcap_dev));
+   return (res);
 }
 
 /* Receive a packet from an Ethernet device */
 static ssize_t nio_ethernet_recv(nio_ethernet_t *nio_ethernet, void *pkt, size_t max_len)
 {
-   struct pcap_pkthdr pkt_info;
-   u_char *pkt_ptr;
+   struct pcap_pkthdr *pkt_info;
+   const u_char *pkt_data;
    ssize_t rlen;
+   int res;
 
-   if (!(pkt_ptr = (u_char *)pcap_next(nio_ethernet->pcap_dev, &pkt_info)))
+timedout:
+   res = pcap_next_ex(nio_ethernet->pcap_dev, &pkt_info, &pkt_data);
+   if (res == 0) {
+      /* Timeout elapsed */
+      goto timedout;
+    }
+
+   if(res == -1) {
+      fprintf(stderr, "pcap_next_ex: %s\n", pcap_geterr(nio_ethernet->pcap_dev));
       return (-1);
+   }
 
-   rlen = m_min(max_len, pkt_info.caplen);
-   memcpy(pkt, pkt_ptr, rlen);
+   rlen = m_min(max_len, pkt_info->caplen);
+   memcpy(pkt, pkt_data, rlen);
    return (rlen);
 }
 
