@@ -21,7 +21,6 @@
 #ifndef NIO_H_
 #define NIO_H_
 
-#include <pthread.h>
 #include <stdlib.h>
 #include <pcap.h>
 
@@ -34,6 +33,7 @@ enum {
     NIO_TYPE_UDP = 1,
     NIO_TYPE_ETHERNET,
     NIO_TYPE_TAP,
+    NIO_LINUX_RAW,
 };
 
 typedef struct {
@@ -52,6 +52,11 @@ typedef struct {
 } nio_ethernet_t;
 
 typedef struct {
+    int fd;
+    int dev_id;
+} nio_linux_raw_t;
+
+typedef struct {
     u_int type;
     void *dptr;
 
@@ -59,16 +64,12 @@ typedef struct {
         nio_udp_t nio_udp;
         nio_tap_t nio_tap;
         nio_ethernet_t nio_ethernet;
+        nio_linux_raw_t nio_linux_raw;
     } u;
 
     ssize_t (*send)(void *nio, void *pkt, size_t len);
     ssize_t (*recv)(void *nio, void *pkt, size_t len);
     void (*free)(void *nio);
-
-    pcap_t *pcap_capture_fd;
-    pcap_dumper_t *dumper;
-    pthread_mutex_t lock;
-
 } nio_t;
 
 nio_t *create_nio(void);

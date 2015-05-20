@@ -109,18 +109,17 @@ static void nio_udp_free(nio_udp_t *nio_udp)
      close(nio_udp->fd);
 }
 
-/* Send a packet to an UDP socket */
 static ssize_t nio_udp_send(nio_udp_t *nio_udp, void *pkt, size_t pkt_len)
 {
    return (send(nio_udp->fd, pkt, pkt_len, 0));
 }
 
-/* Receive a packet from an UDP socket */
 static ssize_t nio_udp_recv(nio_udp_t *nio_udp, void *pkt, size_t max_len)
 {
    return (recvfrom(nio_udp->fd, pkt, max_len, 0, NULL, NULL));
 }
 
+/* Create a new NIO UDP */
 nio_t *create_nio_udp(int local_port, char *remote_host, int remote_port)
 {
    nio_udp_t *nio_udp;

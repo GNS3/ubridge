@@ -27,6 +27,10 @@
 #include "nio_tap.h"
 #include "pcap_capture.h"
 
+#ifdef LINUX_RAW
+#include "nio_linux_raw.h"
+#endif
+
 static nio_t *create_udp_tunnel(const char *params)
 {
   nio_t *nio;
@@ -39,7 +43,7 @@ static nio_t *create_udp_tunnel(const char *params)
   remote_host = strtok(NULL, ":");
   remote_port = strtok(NULL, ":");
   if (local_port == NULL || remote_host == NULL || remote_port == NULL) {
-     fprintf(stderr, "unvalid UDP tunnel syntax\n");
+     fprintf(stderr, "invalid UDP tunnel syntax\n");
      return NULL;
   }
 
@@ -71,6 +75,19 @@ static nio_t *open_tap_device(const char *dev_name)
   return nio;
 }
 
+#ifdef LINUX_RAW
+static nio_t *open_linux_raw(const char *dev_name)
+{
+  nio_t *nio;
+
+  printf("Opening Linux RAW device %s\n", dev_name);
+  nio = create_nio_linux_raw((char *)dev_name);
+  if (!nio)
+    fprintf(stderr, "unable to open RAW device\n");
+  return nio;
+}
+#endif
+
 static int getstr(dictionary *ubridge_config, const char *section, const char *entry, const char **value)
 {
     char key[MAX_KEY_SIZE];
@@ -93,6 +110,18 @@ static bridge_t *add_bridge(bridge_t **head)
    return bridge;
 }
 
+static void parse_capture(dictionary *ubridge_config, const char *bridge_name, bridge_t *bridge)
+{
+    const char *pcap_file = NULL;
+    const char *pcap_linktype = "EN10MB";
+
+    getstr(ubridge_config, bridge_name, "pcap_protocol", &pcap_linktype);
+    if (getstr(ubridge_config, bridge_name, "pcap_file", &pcap_file)) {
+        printf("Starting packet capture to %s with protocol %s\n", pcap_file, pcap_linktype);
+        bridge->capture = create_pcap_capture(pcap_file, pcap_linktype);
+    }
+}
+
 int parse_config(char *filename, bridge_t **bridges)
 {
     dictionary *ubridge_config = NULL;
@@ -101,7 +130,6 @@ int parse_config(char *filename, bridge_t **bridges)
     int i, nsec;
 
     if ((ubridge_config = iniparser_load(filename)) == NULL) {
-       fprintf(stderr, "Can't read config file %s\n", filename);
        return FALSE;
     }
 
@@ -120,6 +148,12 @@ int parse_config(char *filename, bridge_t **bridges)
            source_nio = open_ethernet_device(value);
         else if (getstr(ubridge_config, bridge_name, "source_tap", &value))
            source_nio = open_tap_device(value);
+#ifdef LINUX_RAW
+        else if (getstr(ubridge_config, bridge_name, "source_linux_raw", &value))
+           source_nio = open_linux_raw(value);
+#endif
+        else
+           fprintf(stderr, "source NIO not found\n");
 
         if (getstr(ubridge_config, bridge_name, "destination_udp", &value))
            destination_nio = create_udp_tunnel(value);
@@ -127,20 +161,24 @@ int parse_config(char *filename, bridge_t **bridges)
            destination_nio = open_ethernet_device(value);
         else if (getstr(ubridge_config, bridge_name, "destination_tap", &value))
            destination_nio = open_tap_device(value);
+#ifdef LINUX_RAW
+        else if (getstr(ubridge_config, bridge_name, "destination_linux_raw", &value))
+           source_nio = open_linux_raw(value);
+#endif
+        else
+           fprintf(stderr, "destination NIO not found\n");
 
         if (source_nio && destination_nio) {
            bridge = add_bridge(bridges);
            bridge->name = strdup(bridge_name);
            bridge->source_nio = source_nio;
            bridge->destination_nio = destination_nio;
+           parse_capture(ubridge_config, bridge_name, bridge);
         }
         else if (source_nio != NULL)
            free_nio(source_nio);
         else if (destination_nio != NULL)
            free_nio(destination_nio);
-
-        setup_pcap_capture(source_nio, "source.pcap", "EHTER");
-        setup_pcap_capture(destination_nio, "destination.pcap", "ETHER");
     }
     iniparser_freedict(ubridge_config);
     return TRUE;

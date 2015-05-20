@@ -72,7 +72,5 @@ ssize_t nio_recv(nio_t *nio, void *pkt, size_t max_len)
    if ((len = nio->recv(nio->dptr, pkt, max_len)) <= 0)
       return (-1);
 
-   // pcap_capture_packet(nio, pkt, len);
-
    return(len);
 }

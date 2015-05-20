@@ -25,17 +25,18 @@
 #include <pthread.h>
 
 #include "ubridge.h"
-#include "nio_udp.h"
 #include "parse.h"
+#include "pcap_capture.h"
 
 
-static void bridge_nios(nio_t *source_nio, nio_t *destination_nio)
+static void bridge_nios(nio_t *source_nio, nio_t *destination_nio, pcap_capture_t *capture)
 {
   ssize_t bytes_received, bytes_sent;
   unsigned char pkt[NIO_MAX_PKT_SIZE];
 
   while (1) {
 
+    /* received from the source NIO */
     bytes_received = nio_recv(source_nio, &pkt, NIO_MAX_PKT_SIZE);
     if (bytes_received == -1) {
         if (errno == ECONNREFUSED)
@@ -44,10 +45,16 @@ static void bridge_nios(nio_t *source_nio, nio_t *destination_nio)
         break;
     }
 
-    //printf("received %zd bytes\n", bytes_received);
+    /* printf("received %zd bytes\n", bytes_received); */
+
+    /* dump the packet to a PCAP file if capture is activated */
+    pcap_capture_packet(capture, pkt, bytes_received);
+
+    /* send what we received to the destination NIO */
     bytes_sent = nio_send(destination_nio, pkt, bytes_received);
     if (bytes_sent == -1) {
        switch (errno) {
+       /* Socket file doesn't exist */
        case ENOENT:
        case ECONNREFUSED:
          continue;
@@ -56,28 +63,32 @@ static void bridge_nios(nio_t *source_nio, nio_t *destination_nio)
          break;
        }
     }
-    //printf("sent %zd bytes\n", bytes_sent);
+    /* printf("sent %zd bytes\n", bytes_sent); */
   }
 }
 
+/* Source NIO thread */
 static void *source_nio_listener(void *data)
 {
   bridge_t *bridge = data;
 
   printf("Source NIO listener thread for %s has started\n", bridge->name);
   if (bridge->source_nio && bridge->destination_nio)
-    bridge_nios(bridge->source_nio, bridge->destination_nio);
+    /* bridges from the source NIO to the destination NIO */
+    bridge_nios(bridge->source_nio, bridge->destination_nio, bridge->capture);
   printf("Source NIO listener thread for %s has stopped\n", bridge->name);
   pthread_exit(NULL);
 }
 
+/* Destination NIO thread */
 static void *destination_nio_listener(void *data)
 {
   bridge_t *bridge = data;
 
   printf("Destination NIO listener thread for %s has started\n", bridge->name);
   if (bridge->source_nio && bridge->destination_nio)
-    bridge_nios(bridge->destination_nio, bridge->source_nio);
+    /* bridges from the destination NIO to the source NIO */
+    bridge_nios(bridge->destination_nio, bridge->source_nio, bridge->capture);
   printf("Destination NIO listener thread for %s has stopped\n", bridge->name);
   pthread_exit(NULL);
 }
@@ -95,6 +106,7 @@ static void free_bridges(bridge_t *bridge)
     pthread_join(bridge->destination_tid, NULL);
     free_nio(bridge->source_nio);
     free_nio(bridge->destination_nio);
+    free_pcap_capture(bridge->capture);
     next = bridge->next;
     free(bridge);
     bridge = next;
@@ -116,7 +128,7 @@ static void create_threads(pthread_attr_t *thread_attrs, bridge_t *bridge)
     }
 }
 
-static void ubridge(void)
+static void ubridge(char *config_file)
 {
   int sig;
   int s;
@@ -138,7 +150,7 @@ static void ubridge(void)
 
   while (1) {
     bridge_t *bridges = NULL;
-    if (!parse_config("ubridge.ini", &bridges))
+    if (!parse_config(config_file, &bridges))
       break;
 
     create_threads(&thread_attrs, bridges);
@@ -153,18 +165,39 @@ static void ubridge(void)
   pthread_attr_destroy(&thread_attrs);
 }
 
+static void print_usage(const char *program_name)
+{
+  printf("Usage: %s [OPTION]\n"
+         "\n"
+         "Options:\n"
+         "  -h                   print this message and exit\n"
+         "  -f FILE              specify a INI configuration file (default: %s)\n"
+         "  -v                   print version and exit\n",
+         program_name,
+         CONFIG_FILE);
+}
+
 int main(int argc, char **argv)
 {
   char opt;
+  char *config_file = CONFIG_FILE;
 
-  while ((opt = getopt(argc, argv, "v")) != -1) {
+  while ((opt = getopt(argc, argv, "hvf:")) != -1) {
     switch (opt) {
 	  case 'v':
 	    printf("%s version %s\n", NAME, VERSION);
-	    exit (EXIT_SUCCESS);
+	    exit(EXIT_SUCCESS);
+	  case 'h':
+	    print_usage(argv[0]);
+	    exit(EXIT_SUCCESS);
+	  case 'f':
+        config_file = optarg;
+        break;
+      default:
+        exit(EXIT_FAILURE);
 	}
   }
 
-  ubridge();
+  ubridge(config_file);
   return (EXIT_SUCCESS);
 }

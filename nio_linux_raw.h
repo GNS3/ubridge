@@ -18,13 +18,11 @@
  *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef PCAP_CAPTURE_H_
-#define PCAP_CAPTURE_H_
+#ifndef NIO_LINUX_RAW_H_
+#define NIO_LINUX_RAW_H_
 
 #include "nio.h"
 
-pcap_capture_t *create_pcap_capture(const char *filename, const char *pcap_linktype);
-void free_pcap_capture(pcap_capture_t *pcap_capture);
-void pcap_capture_packet(pcap_capture_t *capture, void *pkt, size_t len);
+nio_t *create_nio_linux_raw(char *dev_name);
 
-#endif /* !PCAP_CAPTURE_H_ */
+#endif /* !NIO_LINUX_RAW_H_ */

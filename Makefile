@@ -37,9 +37,20 @@ CC      =   gcc
 
 CFLAGS  =   -O3 -Wall
 
-LIBS    =   -lpthread -lpcap
-
 BINDIR  =   /usr/local/bin
+
+ifeq ($(shell uname -o), Cygwin)
+   CFLAGS += -DCYGWIN
+   LIBS =   -lpthread -lwpcap
+else
+   LIBS =   -lpthread -lpcap
+endif
+
+# RAW Ethernet support for Linux
+ifeq ($(shell uname), Linux)
+    CFLAGS += -DLINUX_RAW
+    SRC += nio_linux_raw.c
+endif
 
 ##############################
 

@@ -23,11 +23,20 @@
 
 #include <stdlib.h>
 #include <errno.h>
+#include <pthread.h>
+
+#ifdef CYGWIN
+/* Needed for pcap_open() flags */
+#define HAVE_REMOTE
+#endif
+
+#include <pcap.h>
 
 #include "nio.h"
 
-#define NAME          "ubrige"
+#define NAME          "ubridge"
 #define VERSION       "0.1.1"
+#define CONFIG_FILE   "ubridge.ini"
 
 #ifndef FALSE
 #define FALSE 0
@@ -40,12 +49,19 @@
 #define handle_error_en(en, msg) \
         do { errno = en; perror(msg); exit(EXIT_FAILURE); } while (0)
 
+typedef struct {
+    pcap_t *fd;
+    pcap_dumper_t *dumper;
+    pthread_mutex_t lock;
+} pcap_capture_t;
+
 typedef struct bridge {
   char *name;
   pthread_t source_tid;
   pthread_t destination_tid;
   nio_t *source_nio;
   nio_t *destination_nio;
+  pcap_capture_t *capture;
   struct bridge *next;
 } bridge_t;
 

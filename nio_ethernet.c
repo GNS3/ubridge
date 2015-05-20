@@ -27,18 +27,14 @@
 #include "ubridge.h"
 #include "nio_ethernet.h"
 
-#ifdef CYGWIN
-/* Needed for pcap_open() flags */
-#define HAVE_REMOTE
-#endif
-
-/* Initialize a generic ethernet driver */
+/* Open an Ethernet interface using PCAP */
 static pcap_t *nio_ethernet_open(char *device)
 {
    char pcap_errbuf[PCAP_ERRBUF_SIZE];
    pcap_t *p;
 
 #ifndef CYGWIN
+   /* Timeout is 10ms */
    if (!(p = pcap_open_live(device, 65535, TRUE, 10, pcap_errbuf)))
       goto pcap_error;
 
@@ -68,13 +64,11 @@ static pcap_t *nio_ethernet_open(char *device)
    return NULL;
 }
 
-/* Free a NIO Ethernet descriptor */
 static void nio_ethernet_free(nio_ethernet_t *nio_ethernet)
 {
    pcap_close(nio_ethernet->pcap_dev);
 }
 
-/* Send a packet to an Ethernet device */
 static ssize_t nio_ethernet_send(nio_ethernet_t *nio_ethernet, void *pkt, size_t pkt_len)
 {
    int res;
@@ -85,7 +79,6 @@ static ssize_t nio_ethernet_send(nio_ethernet_t *nio_ethernet, void *pkt, size_t
    return (res);
 }
 
-/* Receive a packet from an Ethernet device */
 static ssize_t nio_ethernet_recv(nio_ethernet_t *nio_ethernet, void *pkt, size_t max_len)
 {
    struct pcap_pkthdr *pkt_info;
@@ -93,7 +86,7 @@ static ssize_t nio_ethernet_recv(nio_ethernet_t *nio_ethernet, void *pkt, size_t
    ssize_t rlen;
    int res;
 
-timedout:
+   timedout:
    res = pcap_next_ex(nio_ethernet->pcap_dev, &pkt_info, &pkt_data);
    if (res == 0) {
       /* Timeout elapsed */
@@ -110,7 +103,7 @@ timedout:
    return (rlen);
 }
 
-/* Create a new NIO descriptor with the Ethernet method */
+/* Create a new NIO Ethernet (using PCAP) */
 nio_t *create_nio_ethernet(char *dev_name)
 {
    nio_ethernet_t *nio_ethernet;

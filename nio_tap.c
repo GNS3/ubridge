@@ -46,12 +46,6 @@ static int nio_tap_open(char *tap_devname)
       return(-1);
 
    memset(&ifr,0,sizeof(ifr));
-
-   /* Flags: IFF_TUN   - TUN device (no Ethernet headers)
-    *        IFF_TAP   - TAP device
-    *
-    *        IFF_NO_PI - Do not provide packet information
-    */
    ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
    if (*tap_devname)
       strncpy(ifr.ifr_name, tap_devname, IFNAMSIZ);
@@ -81,26 +75,23 @@ static int nio_tap_open(char *tap_devname)
 #endif
 }
 
-/* Free a NetIO TAP descriptor */
 static void nio_tap_free(nio_tap_t *nio_tap)
 {
    if (nio_tap->fd != -1)
      close(nio_tap->fd);
 }
 
-/* Send a packet to a TAP device */
 static ssize_t nio_tap_send(nio_tap_t *nio_tap, void *pkt, size_t pkt_len)
 {
    return (write(nio_tap->fd, pkt, pkt_len));
 }
 
-/* Receive a packet through a TAP device */
 static ssize_t nio_tap_recv(nio_tap_t *nio_tap, void *pkt, size_t max_len)
 {
    return (read(nio_tap->fd, pkt, max_len));
 }
 
-/* Create a new NetIO descriptor with TAP method */
+/* Create a new NIO TAP */
 nio_t *create_nio_tap(char *tap_name)
 {
    nio_tap_t *nio_tap;
@@ -112,7 +103,7 @@ nio_t *create_nio_tap(char *tap_name)
    nio_tap = &nio->u.nio_tap;
 
    if (strlen(tap_name) >= NIO_DEV_MAXLEN) {
-      fprintf(stderr, "nio_tap_create: bad TAP device string specified.\n");
+      fprintf(stderr, "create_nio_tap: bad TAP device string specified.\n");
       free_nio(nio);
       return NULL;
    }
@@ -121,7 +112,7 @@ nio_t *create_nio_tap(char *tap_name)
    nio_tap->fd = nio_tap_open(tap_name);
 
    if (nio_tap->fd == -1) {
-      fprintf(stderr,"nio_tap_create: unable to open TAP device %s (%s)\n", tap_name,strerror(errno));
+      fprintf(stderr,"create_nio_tap: unable to open TAP device %s (%s)\n", tap_name, strerror(errno));
       free_nio(nio);
       return NULL;
    }
