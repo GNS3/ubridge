@@ -29,7 +29,7 @@
 #include "pcap_capture.h"
 
 
-static void bridge_nios(nio_t *source_nio, nio_t *destination_nio, pcap_capture_t *capture)
+static void bridge_nios(nio_t *source_nio, nio_t *destination_nio, bridge_t *bridge)
 {
   ssize_t bytes_received, bytes_sent;
   unsigned char pkt[NIO_MAX_PKT_SIZE];
@@ -45,10 +45,10 @@ static void bridge_nios(nio_t *source_nio, nio_t *destination_nio, pcap_capture_
         break;
     }
 
-    /* printf("received %zd bytes\n", bytes_received); */
+    //printf("received %zd bytes on %s\n", bytes_received, bridge->name);
 
     /* dump the packet to a PCAP file if capture is activated */
-    pcap_capture_packet(capture, pkt, bytes_received);
+    pcap_capture_packet(bridge->capture, pkt, bytes_received);
 
     /* send what we received to the destination NIO */
     bytes_sent = nio_send(destination_nio, pkt, bytes_received);
@@ -63,7 +63,7 @@ static void bridge_nios(nio_t *source_nio, nio_t *destination_nio, pcap_capture_
          break;
        }
     }
-    /* printf("sent %zd bytes\n", bytes_sent); */
+    //printf("sent %zd bytes on %s\n", bytes_sent, bridge->name);
   }
 }
 
@@ -75,7 +75,7 @@ static void *source_nio_listener(void *data)
   printf("Source NIO listener thread for %s has started\n", bridge->name);
   if (bridge->source_nio && bridge->destination_nio)
     /* bridges from the source NIO to the destination NIO */
-    bridge_nios(bridge->source_nio, bridge->destination_nio, bridge->capture);
+    bridge_nios(bridge->source_nio, bridge->destination_nio, bridge);
   printf("Source NIO listener thread for %s has stopped\n", bridge->name);
   pthread_exit(NULL);
 }
@@ -88,7 +88,7 @@ static void *destination_nio_listener(void *data)
   printf("Destination NIO listener thread for %s has started\n", bridge->name);
   if (bridge->source_nio && bridge->destination_nio)
     /* bridges from the destination NIO to the source NIO */
-    bridge_nios(bridge->destination_nio, bridge->source_nio, bridge->capture);
+    bridge_nios(bridge->destination_nio, bridge->source_nio, bridge);
   printf("Destination NIO listener thread for %s has stopped\n", bridge->name);
   pthread_exit(NULL);
 }

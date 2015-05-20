@@ -68,5 +68,5 @@ all	: $(NAME)
 
 install : $(NAME)
 	chmod +x $(NAME)
-	sudo setcap cap_net_admin,cap_net_raw=ep $(NAME)
 	sudo cp $(NAME) $(BINDIR)
+	sudo setcap cap_net_admin,cap_net_raw=ep $(BINDIR)/$(NAME)
