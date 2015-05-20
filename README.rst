@@ -10,11 +10,11 @@ Dependencies:
 - pcap library (wincap on Windows).
 - pthread library.
 
-Basic usage: create a file named `ubridge.ini` in the same directory as uBridge and then start it.
+Basic usage: create a file named ubridge.ini in the same directory as uBridge and then start it.
 
 Example of content:
 
-.. code:: bash
+.. code:: ini
 
     ; bridge Ethernet interface eth0 with an UDP tunnel
     [bridge0]
@@ -42,13 +42,23 @@ Example of content:
 
 On Linux you can use a RAW socket to bridge an Ethernet interface (a bit faster than with the default PCAP method).
 
-.. code:: bash
+.. code:: ini
 
     ; bridge Ethernet interface eth0 with an UDP tunnel
     ; using the RAW socket method (Linux rocks!)
     [bridge4]
     source_linux_raw = eth0
     destination_udp = 42000:127.0.0.1:42001
+
+On Windows, interfaces must be specified with the NPF notation. You can display all available network devices
+using ubridge.exe -e on a command line.
+
+.. code:: ini
+
+    ; using a Windows NPF interface
+    [bridge5]
+    source_ethernet = \Device\NPF_{BC46623A-D65B-4498-9073-96B9DC4C8CBA}
+    destination_udp = 10000:127.0.0.1:10001
 
 A few notes:
 

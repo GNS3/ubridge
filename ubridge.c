@@ -165,6 +165,33 @@ static void ubridge(char *config_file)
   pthread_attr_destroy(&thread_attrs);
 }
 
+/* Display all network devices on this host */
+static void display_network_devices(void)
+{
+   char pcap_errbuf[PCAP_ERRBUF_SIZE];
+   pcap_if_t *device_list, *device;
+   int res;
+
+   printf("Network device list:\n\n");
+
+#ifndef CYGWIN
+   res = pcap_findalldevs(&device_list, pcap_errbuf);
+#else
+   res = pcap_findalldevs_ex(PCAP_SRC_IF_STRING,NULL, &device_list, pcap_errbuf);
+#endif
+
+   if (res < 0) {
+      fprintf(stderr, "PCAP: unable to find device list (%s)\n", pcap_errbuf);
+      return;
+   }
+
+   for(device = device_list; device; device = device->next)
+      printf("  %s => %s\n", device->name, device->description ? device->description : "no description");
+   printf("\n");
+
+   pcap_freealldevs(device_list);
+}
+
 static void print_usage(const char *program_name)
 {
   printf("Usage: %s [OPTION]\n"
@@ -172,6 +199,7 @@ static void print_usage(const char *program_name)
          "Options:\n"
          "  -h                   print this message and exit\n"
          "  -f FILE              specify a INI configuration file (default: %s)\n"
+         "  -e                   display all available network devices and exit\n"
          "  -v                   print version and exit\n",
          program_name,
          CONFIG_FILE);
@@ -182,13 +210,16 @@ int main(int argc, char **argv)
   char opt;
   char *config_file = CONFIG_FILE;
 
-  while ((opt = getopt(argc, argv, "hvf:")) != -1) {
+  while ((opt = getopt(argc, argv, "hvef:")) != -1) {
     switch (opt) {
 	  case 'v':
 	    printf("%s version %s\n", NAME, VERSION);
 	    exit(EXIT_SUCCESS);
 	  case 'h':
 	    print_usage(argv[0]);
+	    exit(EXIT_SUCCESS);
+	  case 'e':
+	    display_network_devices();
 	    exit(EXIT_SUCCESS);
 	  case 'f':
         config_file = optarg;
