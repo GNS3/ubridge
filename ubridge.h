@@ -35,7 +35,7 @@
 #include "nio.h"
 
 #define NAME          "ubridge"
-#define VERSION       "0.9.0"
+#define VERSION       "0.9.1"
 #define CONFIG_FILE   "ubridge.ini"
 
 #ifndef FALSE
@@ -64,5 +64,12 @@ typedef struct bridge {
   pcap_capture_t *capture;
   struct bridge *next;
 } bridge_t;
+
+extern bridge_t *bridge_list;
+extern pthread_mutex_t global_lock;
+
+void ubridge_reset();
+void *source_nio_listener(void *data);
+void *destination_nio_listener(void *data);
 
 #endif /* !UBRIDGE_H_ */

@@ -19,6 +19,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <signal.h>
 #include <string.h>
@@ -27,7 +28,12 @@
 #include "ubridge.h"
 #include "parse.h"
 #include "pcap_capture.h"
+#include "hypervisor.h"
 
+char *config_file = CONFIG_FILE;
+pthread_mutex_t global_lock = PTHREAD_MUTEX_INITIALIZER;
+bridge_t *bridge_list = NULL;
+int hypervisor_mode = 0;
 
 static void bridge_nios(nio_t *source_nio, nio_t *destination_nio, bridge_t *bridge)
 {
@@ -68,7 +74,7 @@ static void bridge_nios(nio_t *source_nio, nio_t *destination_nio, bridge_t *bri
 }
 
 /* Source NIO thread */
-static void *source_nio_listener(void *data)
+void *source_nio_listener(void *data)
 {
   bridge_t *bridge = data;
 
@@ -81,7 +87,7 @@ static void *source_nio_listener(void *data)
 }
 
 /* Destination NIO thread */
-static void *destination_nio_listener(void *data)
+void *destination_nio_listener(void *data)
 {
   bridge_t *bridge = data;
 
@@ -113,56 +119,90 @@ static void free_bridges(bridge_t *bridge)
   }
 }
 
-static void create_threads(pthread_attr_t *thread_attrs, bridge_t *bridge)
+static void create_threads(bridge_t *bridge)
 {
     int s;
 
     while (bridge != NULL) {
-       s = pthread_create(&(bridge->source_tid), thread_attrs, &source_nio_listener, bridge);
+       s = pthread_create(&(bridge->source_tid), NULL, &source_nio_listener, bridge);
        if (s != 0)
          handle_error_en(s, "pthread_create");
-       s = pthread_create(&(bridge->destination_tid), thread_attrs, &destination_nio_listener, bridge);
+       s = pthread_create(&(bridge->destination_tid), NULL, &destination_nio_listener, bridge);
        if (s != 0)
          handle_error_en(s, "pthread_create");
        bridge = bridge->next;
     }
 }
 
-static void ubridge(char *config_file)
+void ubridge_reset()
 {
-  int sig;
-  int s;
-  sigset_t sigset;
-  pthread_attr_t thread_attrs;
+   pthread_mutex_lock(&global_lock);
+   free_bridges(bridge_list);
+   pthread_mutex_unlock(&global_lock);
+}
 
-  sigemptyset(&sigset);
-  sigaddset(&sigset, SIGINT);
-  sigaddset(&sigset, SIGTERM);
-  sigaddset(&sigset, SIGHUP);
-  pthread_sigmask(SIG_BLOCK, &sigset, NULL);
+/* Generic signal handler */
+void signal_gen_handler(int sig)
+{
+   switch(sig) {
+      case SIGTERM:
+      case SIGINT:
+         /* CTRL+C has been pressed */
+         if (hypervisor_mode)
+            hypervisor_stopsig();
+         break;
+#ifndef CYGWIN
+         /* CTRL+C has been pressed */
+      case SIGHUP:
+         break;
+#endif
+      default:
+         fprintf(stderr, "Unhandled signal %d\n", sig);
+   }
+}
 
-  s = pthread_attr_init(&thread_attrs);
-  if (s != 0)
-    handle_error_en(s, "pthread_attr_init");
-  s = pthread_attr_setdetachstate(&thread_attrs, PTHREAD_CREATE_DETACHED);
-  if (s != 0)
-    handle_error_en(s, "pthread_attr_setdetachstate");
+static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port)
+{
+   if (hypervisor_mode) {
+       struct sigaction act;
 
-  while (1) {
-    bridge_t *bridges = NULL;
-    if (!parse_config(config_file, &bridges))
-      break;
+       memset(&act, 0, sizeof(act));
+       act.sa_handler = signal_gen_handler;
+       act.sa_flags = SA_RESTART;
+#ifndef CYGWIN
+       sigaction(SIGHUP, &act, NULL);
+#endif
+       sigaction(SIGTERM, &act, NULL);
+       sigaction(SIGINT, &act, NULL);
+       sigaction(SIGPIPE, &act, NULL);
 
-    create_threads(&thread_attrs, bridges);
-    sigwait (&sigset, &sig);
-    printf("Received signal %d\n", sig);
-    free_bridges(bridges);
-    if (sig == SIGTERM || sig == SIGINT)
-      break;
-  }
+      run_hypervisor(hypervisor_ip_address, hypervisor_tcp_port);
+      free_bridges(bridge_list);
+   }
+   else {
+      sigset_t sigset;
+      int sig;
 
-  printf("Exiting\n");
-  pthread_attr_destroy(&thread_attrs);
+      sigemptyset(&sigset);
+      sigaddset(&sigset, SIGINT);
+      sigaddset(&sigset, SIGTERM);
+#ifndef CYGWIN
+      sigaddset(&sigset, SIGHUP);
+#endif
+      pthread_sigmask(SIG_BLOCK, &sigset, NULL);
+
+      while (1) {
+         if (!parse_config(config_file, &bridge_list))
+            break;
+         create_threads(bridge_list);
+         sigwait(&sigset, &sig);
+
+         free_bridges(bridge_list);
+         if (sig == SIGTERM || sig == SIGINT)
+            break;
+         printf("Reloading configuration\n");
+     }
+   }
 }
 
 /* Display all network devices on this host */
@@ -197,21 +237,49 @@ static void print_usage(const char *program_name)
   printf("Usage: %s [OPTION]\n"
          "\n"
          "Options:\n"
-         "  -h                   print this message and exit\n"
-         "  -f FILE              specify a INI configuration file (default: %s)\n"
-         "  -e                   display all available network devices and exit\n"
-         "  -v                   print version and exit\n",
+         "  -h                           : Print this message and exit\n"
+         "  -f <file>                    : Specify a INI configuration file (default: %s)\n"
+         "  -H [<ip_address>:]<tcp_port> : Run in hypervisor mode\n"
+         "  -e                           : Display all available network devices and exit\n"
+         "  -v                           : Print version and exit\n",
          program_name,
          CONFIG_FILE);
 }
 
 int main(int argc, char **argv)
 {
+  int hypervisor_tcp_port = 0;
+  char *hypervisor_ip_address = NULL;
   char opt;
-  char *config_file = CONFIG_FILE;
+  int i;
+  char *index;
+  size_t len;
 
-  while ((opt = getopt(argc, argv, "hvef:")) != -1) {
+  for (i = 1; i < argc; i++)
+     if (!strcmp(argv[i], "-H")) {
+        hypervisor_mode = 1;
+        break;
+     }
+
+  while ((opt = getopt(argc, argv, "hvef:H:")) != -1) {
     switch (opt) {
+      case 'H':
+        index = strrchr(optarg, ':');
+        if (!index) {
+           hypervisor_tcp_port = atoi(optarg);
+        } else {
+           len = index - optarg;
+           hypervisor_ip_address = realloc(hypervisor_ip_address, len + 1);
+
+           if (!hypervisor_ip_address) {
+              fprintf(stderr, "Unable to set hypervisor IP address!\n");
+              exit(EXIT_FAILURE);
+           }
+           memcpy(hypervisor_ip_address, optarg, len);
+           hypervisor_ip_address[len] = '\0';
+           hypervisor_tcp_port = atoi(index + 1);
+        }
+        break;
 	  case 'v':
 	    printf("%s version %s\n", NAME, VERSION);
 	    exit(EXIT_SUCCESS);
@@ -228,7 +296,6 @@ int main(int argc, char **argv)
         exit(EXIT_FAILURE);
 	}
   }
-
-  ubridge(config_file);
+  ubridge(hypervisor_ip_address, hypervisor_tcp_port);
   return (EXIT_SUCCESS);
 }

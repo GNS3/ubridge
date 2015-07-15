@@ -141,7 +141,6 @@ int parse_config(char *filename, bridge_t **bridges)
 
         bridge_name = iniparser_getsecname(ubridge_config, i);
         printf("Parsing %s\n", bridge_name);
-
         if (getstr(ubridge_config, bridge_name, "source_udp", &value))
            source_nio = create_udp_tunnel(value);
         else if (getstr(ubridge_config, bridge_name, "source_ethernet", &value))
@@ -170,9 +169,12 @@ int parse_config(char *filename, bridge_t **bridges)
 
         if (source_nio && destination_nio) {
            bridge = add_bridge(bridges);
-           bridge->name = strdup(bridge_name);
            bridge->source_nio = source_nio;
            bridge->destination_nio = destination_nio;
+           if (!(bridge->name = strdup(bridge_name))) {
+              fprintf(stderr, "bridge creation: insufficient memory\n");
+              return FALSE;
+           }
            parse_capture(ubridge_config, bridge_name, bridge);
         }
         else if (source_nio != NULL)

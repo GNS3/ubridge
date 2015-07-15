@@ -10,7 +10,71 @@ Dependencies:
 - pcap library (wincap on Windows).
 - pthread library.
 
-Basic usage: create a file named ubridge.ini in the same directory as uBridge and then start it.
+Hypervisor mode
+---------------
+
+The hypervisor mode of uBridge allows you to dynamically
+add and remove bridges.
+
+You can connect directly to the TCP control port with telnet.
+
+Usage: ubridge -H [<ip_address>:]<tcp_port>
+
+The command syntax is simple: <module> <function> [arguments...]
+For example: "bridge create test" creates a bridge named "test".
+
+The modules that are currently defined are given below:
+
+* hypervisor   : General hypervisor management
+* bridge       : bridges management
+
+**Hypervisor module ("hypervisor")**
+
+* "hypervisor version" : Display the version of dynamips.
+
+* "hypervisor module_list" : Display the module list.
+
+* "hypervisor cmd_list <module>" : Display commands recognized by the specified module.
+
+* "hypervisor close" : Close the current session.
+
+* "hypervisor stop"  : Destroy all objects and stop hypervisor.
+
+* "hypervisor reset" : Destroy all objects. (used to get an empty configuration)
+
+**Bridge module ("bridge")**
+
+* "bridge list" : List all exiting Bridges.
+
+* "bridge create <bridge_name>" : Create a new bridge.
+
+* "bridge delete <bridge_name>" : Delete a bridge.
+
+* "bridge start <bridge_name>" : Start a bridge.
+  A bridge must have 2 NIOs added in order to start.
+
+* "bridge stop <bridge_name>" : Stop a bridge.
+
+* "bridge stop <old_bridge_name> <new_bridge_name>" : Rename a bridge.
+
+* "bridge add_nio_udp <bridge_name> <local_port> <remote_host> <remote_port>" :
+  Add an UDP NIO with the specified parameters to a bridge.
+
+* "bridge add_nio_tap <bridge_name> <tap_device>" :
+  Add an TAP NIO to a bridge. TAP devices are supported only on Linux and FreeBSD and require root access.
+
+* "bridge add_nio_ethernet <bridge_name> <eth_device>" :
+  Add a generic Ethernet NIO to a bridge, using PCAP (0.9.4 and greater). It requires root access.
+
+* "bridge add_nio_linux_raw <bridge_name> <eth_device>" :
+  Add a Linux RAW Ethernet NIO. It requires root access and is supported only on Linux platforms.
+
+Config file mode
+----------------
+
+Usage: create a file named ubridge.ini in the same directory as uBridge and then start the executable.
+
+Signal SIGHUP (not available on Windows) can be used to reload the config file.
 
 Example of content:
 
@@ -57,11 +121,12 @@ using ubridge.exe -e on a command line.
 
     ; using a Windows NPF interface
     [bridge5]
-    source_ethernet = \Device\NPF_{BC46623A-D65B-4498-9073-96B9DC4C8CBA}
+    source_ethernet = "\Device\NPF_{BC46623A-D65B-4498-9073-96B9DC4C8CBA}"
     destination_udp = 10000:127.0.0.1:10001
 
-A few notes:
+Notes
+-----
 
-- A Bridge name (e.g. bridge4) can be anything as long it is unique in the same file.
+- A Bridge name (e.g. bridge4) can be anything as long it is unique in the same file or inside the hypervisor.
 - Capabitilies must be set on the executable (Linux only) or you must have administrator rights to bridge Ethernet or TAP interfaces.
 - It is only possible to bridge two interfaces/tunnels together. uBridge is not a hub or a switch!

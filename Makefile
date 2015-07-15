@@ -29,7 +29,10 @@ SRC     =   ubridge.c               \
             iniparser/iniparser.c   \
             iniparser/dictionary.c  \
             parse.c                 \
-            pcap_capture.c
+            pcap_capture.c          \
+            hypervisor.c            \
+            hypervisor_parser.c     \
+            hypervisor_bridge.c
 
 OBJ     =   $(SRC:.c=.o)
 
