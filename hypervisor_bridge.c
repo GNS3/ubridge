@@ -279,7 +279,7 @@ static int cmd_add_nio_tap(hypervisor_conn_t *conn, int argc, char *argv[])
      return (-1);
    }
 
-   hypervisor_send_reply(conn, HSC_INFO_OK,1, "NIO TAP added to bridge '%s'", argv[0]);
+   hypervisor_send_reply(conn, HSC_INFO_OK, 1, "NIO TAP added to bridge '%s'", argv[0]);
    return (0);
 }
 
@@ -332,10 +332,60 @@ static int cmd_add_nio_linux_raw(hypervisor_conn_t *conn, int argc, char *argv[]
      return (-1);
    }
 
-   hypervisor_send_reply(conn, HSC_INFO_OK,1, "NIO Linux raw added to bridge '%s'", argv[0]);
+   hypervisor_send_reply(conn, HSC_INFO_OK, 1, "NIO Linux raw added to bridge '%s'", argv[0]);
    return (0);
 }
 #endif
+
+static int cmd_start_capture_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+   char *pcap_linktype = "EN10MB";
+   bridge_t *bridge;
+
+   bridge = find_bridge(argv[0]);
+   if (bridge == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
+      return (-1);
+   }
+
+   if (bridge->capture != NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_START, 1, "packet capture is already active on bridge '%s'", argv[0]);
+      return (-1);
+   }
+
+   if (argc == 3)
+     pcap_linktype = argv[2];
+
+   if (!(bridge->capture = create_pcap_capture(argv[1], pcap_linktype))) {
+      hypervisor_send_reply(conn, HSC_ERR_START, 1, "packet capture could not be started on bridge '%s'", argv[0]);
+      return (-1);
+   }
+
+   hypervisor_send_reply(conn, HSC_INFO_OK, 1, "packet capture started on bridge '%s'", argv[0]);
+   return (0);
+}
+
+static int cmd_stop_capture_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+   bridge_t *bridge;
+
+   bridge = find_bridge(argv[0]);
+   if (bridge == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
+      return (-1);
+   }
+
+   if (bridge->capture == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_START, 1, "no packet capture active on bridge '%s'", argv[0]);
+      return (-1);
+   }
+
+   free_pcap_capture(bridge->capture);
+   bridge->capture = NULL;
+   hypervisor_send_reply(conn, HSC_INFO_OK, 1, "packet capture stopped on bridge '%s'", argv[0]);
+   return (0);
+}
+
 
 /* Bridge commands */
 static hypervisor_cmd_t bridge_cmd_array[] = {
@@ -350,6 +400,8 @@ static hypervisor_cmd_t bridge_cmd_array[] = {
 #ifdef LINUX_RAW
    { "add_nio_linux_raw", 2, 2, cmd_add_nio_linux_raw, NULL },
 #endif
+   { "start_capture", 2, 3, cmd_start_capture_bridge, NULL },
+   { "stop_capture", 1, 1, cmd_stop_capture_bridge, NULL },
    { "list", 0, 0, cmd_list_bridges, NULL },
    { NULL, -1, -1, NULL, NULL },
 };

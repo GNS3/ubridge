@@ -69,6 +69,12 @@ The modules that are currently defined are given below:
 * "bridge add_nio_linux_raw <bridge_name> <eth_device>" :
   Add a Linux RAW Ethernet NIO. It requires root access and is supported only on Linux platforms.
 
+* "bridge start_capture <bridge_name> <pcap_file> [pcap_linktype]" :
+  Start a PCAP packet capture on a bridge. PCAP link type default is Ethernet "EN10MB".
+
+* "bridge stop_capture <bridge_name>" :
+  Stop a PCAP packet capture on a bridge.
+
 Config file mode
 ----------------
 

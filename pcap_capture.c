@@ -82,7 +82,7 @@ pcap_capture_t *create_pcap_capture(const char *filename, const char *pcap_linkt
       pcap_close(capture->fd);
    pcap_open_err:
       pthread_mutex_destroy(&capture->lock);
-   return(NULL);
+   return (NULL);
 }
 
 /* Packet handler: write packets to a file in CAP format */
