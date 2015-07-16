@@ -37,17 +37,17 @@
 
 static bridge_t *find_bridge(char *bridge_name)
 {
-  bridge_t *bridge;
-  bridge_t *next;
+   bridge_t *bridge;
+   bridge_t *next;
 
-  bridge = bridge_list;
-  while (bridge != NULL) {
-    if (!strcmp(bridge->name, bridge_name))
-        return bridge;
-    next = bridge->next;
-    bridge = next;
-  }
-  return (NULL);
+   bridge = bridge_list;
+   while (bridge != NULL) {
+     if (!strcmp(bridge->name, bridge_name))
+         return bridge;
+     next = bridge->next;
+     bridge = next;
+   }
+   return (NULL);
 }
 
 static int cmd_create_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
@@ -65,6 +65,9 @@ static int cmd_create_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
       goto memory_error;
    if ((new_bridge->name = strdup(argv[0])) == NULL)
       goto memory_error;
+   new_bridge->source_nio = NULL;
+   new_bridge->destination_nio = NULL;
+   new_bridge->capture = NULL;
    new_bridge->next = *head;
    *head = new_bridge;
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "bridge '%s' created", argv[0]);
@@ -75,40 +78,36 @@ static int cmd_create_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
    return (-1);
 }
 
-static bridge_t *delete_bridge(bridge_t *bridge, char *bridge_name)
-{
-  if (bridge == NULL)
-    return NULL;
-
-  if (!strcmp(bridge->name, bridge_name)) {
-    bridge_t *temp;
-    temp = bridge->next;
-    if (bridge->name)
-       free(bridge->name);
-    pthread_cancel(bridge->source_tid);
-    pthread_join(bridge->source_tid, NULL);
-    pthread_cancel(bridge->destination_tid);
-    pthread_join(bridge->destination_tid, NULL);
-    free_nio(bridge->source_nio);
-    free_nio(bridge->destination_nio);
-    free_pcap_capture(bridge->capture);
-    return temp;
-  }
-
-  bridge->next = delete_bridge(bridge->next, bridge_name);
-  return bridge;
-}
-
 static int cmd_delete_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
 {
-   if (find_bridge(argv[0]) == NULL) {
-      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
-      return (-1);
-   }
+    bridge_t **head;
+    bridge_t *bridge;
+    bridge_t *prev = NULL;
 
-   bridge_list = delete_bridge(bridge_list, argv[0]);
-   hypervisor_send_reply(conn, HSC_INFO_OK, 1, "bridge '%s' deleted", argv[0]);
-   return (0);
+    head = &bridge_list;
+    for (bridge = *head; bridge != NULL; prev = bridge, bridge = bridge->next) {
+       if (!strcmp(bridge->name, argv[0])) {
+          if (prev == NULL)
+             *head = bridge->next;
+          else
+             prev->next = bridge->next;
+
+          if (bridge->name)
+             free(bridge->name);
+          pthread_cancel(bridge->source_tid);
+          pthread_join(bridge->source_tid, NULL);
+          pthread_cancel(bridge->destination_tid);
+          pthread_join(bridge->destination_tid, NULL);
+          free_nio(bridge->source_nio);
+          free_nio(bridge->destination_nio);
+          free_pcap_capture(bridge->capture);
+          free(bridge);
+          hypervisor_send_reply(conn, HSC_INFO_OK, 1, "bridge '%s' deleted", argv[0]);
+          return (0);
+      }
+   }
+   hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
+   return (-1);
 }
 
 static int cmd_start_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
@@ -199,17 +198,23 @@ static int cmd_rename_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
 
 static int cmd_list_bridges(hypervisor_conn_t *conn, int argc, char *argv[])
 {
-  bridge_t *bridge;
-  bridge_t *next;
+   bridge_t *bridge;
+   bridge_t *next;
+   int nios;
 
-  bridge = bridge_list;
-  while (bridge != NULL) {
-    hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "%s", bridge->name);
-    next = bridge->next;
-    bridge = next;
-  }
-  hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
-  return (0);
+   bridge = bridge_list;
+   while (bridge != NULL) {
+     nios = 0;
+     if (bridge->source_nio)
+        nios += 1;
+     if (bridge->destination_nio)
+        nios += 1;
+     hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "%s (NIOs = %d)", bridge->name, nios);
+     next = bridge->next;
+     bridge = next;
+   }
+   hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
+   return (0);
 }
 
 static int add_nio_to_bridge(hypervisor_conn_t *conn, bridge_t *bridge, nio_t *nio)

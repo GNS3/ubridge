@@ -139,7 +139,7 @@ static hypervisor_cmd_t *hypervisor_find_cmd(hypervisor_module_t *module, char *
 static int cmd_version(hypervisor_conn_t *conn, int argc, char *argv[])
 {
    hypervisor_send_reply(conn,HSC_INFO_OK,1, "%s", VERSION);
-   return(0);
+   return (0);
 }
 
 
@@ -148,11 +148,11 @@ static int cmd_mod_list(hypervisor_conn_t *conn, int argc, char *argv[])
 {
    hypervisor_module_t *m;
 
-   for(m=module_list; m; m=m->next)
+   for(m = module_list; m; m = m->next)
       hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "%s", m->name);
 
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
-   return(0);
+   return (0);
 }
 
 /* Show module command list */
@@ -163,14 +163,14 @@ static int cmd_modcmd_list(hypervisor_conn_t *conn, int argc, char *argv[])
 
    if (!(m = hypervisor_find_module(argv[0]))) {
       hypervisor_send_reply(conn, HSC_ERR_UNK_MODULE, 1, "unknown module '%s'", argv[0]);
-      return(-1);
+      return (-1);
    }
 
-   for(cmd=m->cmd_list;cmd;cmd=cmd->next)
+   for(cmd = m->cmd_list; cmd; cmd = cmd->next)
       hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "%s (min/max args: %d/%d)", cmd->name, cmd->min_param, cmd->max_param);
 
    hypervisor_send_reply(conn,  HSC_INFO_OK, 1, "OK");
-   return(0);
+   return (0);
 }
 
 
@@ -179,7 +179,7 @@ static int cmd_reset(hypervisor_conn_t *conn, int argc, char *argv[])
 {
    ubridge_reset();
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
-   return(0);
+   return (0);
 }
 
 
@@ -188,7 +188,7 @@ static int cmd_close(hypervisor_conn_t *conn, int argc, char *argv[])
 {
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
    conn->active = FALSE;
-   return(0);
+   return (0);
 }
 
 /* Stop hypervisor */
@@ -196,7 +196,7 @@ static int cmd_stop(hypervisor_conn_t *conn,int argc,char *argv[])
 {
    hypervisor_send_reply(conn,HSC_INFO_OK, 1, "OK");
    hypervisor_running = FALSE;
-   return(0);
+   return (0);
 }
 
 /* Hypervisor commands */

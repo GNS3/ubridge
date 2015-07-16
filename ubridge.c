@@ -136,9 +136,7 @@ static void create_threads(bridge_t *bridge)
 
 void ubridge_reset()
 {
-   pthread_mutex_lock(&global_lock);
    free_bridges(bridge_list);
-   pthread_mutex_unlock(&global_lock);
 }
 
 /* Generic signal handler */

@@ -101,7 +101,7 @@ The modules that are currently defined are given below:
 .. code:: bash
 
     bridge list
-    101 br0
+    101 br0 (NIOs = 0)
     100-OK
 
 * "bridge delete <bridge_name>" : Delete a bridge.
