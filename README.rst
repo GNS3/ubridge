@@ -32,48 +32,175 @@ The modules that are currently defined are given below:
 
 * "hypervisor version" : Display the version of dynamips.
 
+.. code:: bash
+
+    hypervisor version
+    100-0.9.1
+
 * "hypervisor module_list" : Display the module list.
+
+.. code:: bash
+
+    101 bridge
+    101 hypervisor
+    100-OK
 
 * "hypervisor cmd_list <module>" : Display commands recognized by the specified module.
 
+.. code:: bash
+
+    hypervisor cmd_list bridge
+    101 list (min/max args: 0/0)
+    101 stop_capture (min/max args: 1/1)
+    101 start_capture (min/max args: 2/3)
+    101 add_nio_linux_raw (min/max args: 2/2)
+    101 add_nio_ethernet (min/max args: 2/2)
+    101 add_nio_tap (min/max args: 2/2)
+    101 add_nio_udp (min/max args: 4/4)
+    101 rename (min/max args: 2/2)
+    101 stop (min/max args: 1/1)
+    101 start (min/max args: 1/1)
+    101 delete (min/max args: 1/1)
+    101 create (min/max args: 1/1)
+    100-OK
+
 * "hypervisor close" : Close the current session.
+
+.. code:: bash
+
+    hypervisor close
+    100-OK
+    Connection closed by foreign host.
 
 * "hypervisor stop"  : Destroy all objects and stop hypervisor.
 
+.. code:: bash
+
+    hypervisor stop
+    100-OK
+    Connection closed by foreign host.
+
 * "hypervisor reset" : Destroy all objects. (used to get an empty configuration)
+
+.. code:: bash
+
+    hypervisor reset
+    100-OK
 
 **Bridge module ("bridge")**
 
+* "bridge create <bridge_name>" : Create a new bridge.
+
+.. code:: bash
+
+    bridge create br0  
+    100-bridge 'br0' created
+
 * "bridge list" : List all exiting Bridges.
 
-* "bridge create <bridge_name>" : Create a new bridge.
+.. code:: bash
+
+    bridge list
+    101 br0
+    100-OK
 
 * "bridge delete <bridge_name>" : Delete a bridge.
 
+.. code:: bash
+
+    bridge delete br0
+    100-bridge 'br0' deleted
+
 * "bridge start <bridge_name>" : Start a bridge.
   A bridge must have 2 NIOs added in order to start.
+  
+.. code:: bash
+
+    bridge start br0
+    100-bridge 'br0' started
 
 * "bridge stop <bridge_name>" : Stop a bridge.
 
-* "bridge stop <old_bridge_name> <new_bridge_name>" : Rename a bridge.
+.. code:: bash
+
+    bridge stop br0
+    100-bridge 'br0' stopped
+
+* "bridge rename <old_bridge_name> <new_bridge_name>" : Rename a bridge.
+
+.. code:: bash
+
+    bridge rename br0 br1
+    100-bridge 'br0' renamed to 'br1'
 
 * "bridge add_nio_udp <bridge_name> <local_port> <remote_host> <remote_port>" :
   Add an UDP NIO with the specified parameters to a bridge.
 
+.. code:: bash
+
+    bridge add_nio_udp br0 20000 127.0.0.1 30000
+    100-NIO UDP added to bridge 'br0'
+
 * "bridge add_nio_tap <bridge_name> <tap_device>" :
   Add an TAP NIO to a bridge. TAP devices are supported only on Linux and FreeBSD and require root access.
+
+.. code:: bash
+
+    bridge add_nio_tap br0 tap0
+    100-NIO TAP added to bridge 'br0'
 
 * "bridge add_nio_ethernet <bridge_name> <eth_device>" :
   Add a generic Ethernet NIO to a bridge, using PCAP (0.9.4 and greater). It requires root access.
 
+.. code:: bash
+
+    bridge add_nio_ethernet br0 eth0
+    100-NIO Ethernet added to bridge 'br0'
+
 * "bridge add_nio_linux_raw <bridge_name> <eth_device>" :
   Add a Linux RAW Ethernet NIO. It requires root access and is supported only on Linux platforms.
+
+.. code:: bash
+
+    bridge add_nio_linux_raw br0 eth0
+    100-NIO Linux raw added to bridge 'br0'
 
 * "bridge start_capture <bridge_name> <pcap_file> [pcap_linktype]" :
   Start a PCAP packet capture on a bridge. PCAP link type default is Ethernet "EN10MB".
 
+.. code:: bash
+
+    bridge start_capture br0 "/tmp/my_capture.pcap"
+    100-packet capture started on bridge 'br0'
+
 * "bridge stop_capture <bridge_name>" :
   Stop a PCAP packet capture on a bridge.
+
+.. code:: bash
+
+    bridge stop_capture br0
+    100-packet capture stopped on bridge 'br0'
+
+**Session example**
+
+This will bridge a tap0 interface to an UDP tunnel.
+
+.. code:: bash
+
+    bridge create br0  
+    100-bridge 'br0' created
+    
+    bridge start br0
+    209-bridge 'br0' must have 2 NIOs to be started
+    
+    bridge add_nio_tap br0 tap0
+    100-NIO TAP added to bridge 'br0'
+    
+    bridge add_nio_udp br0 20000 127.0.0.1 30000
+    100-NIO UDP added to bridge 'br0'
+    
+    bridge start br0
+    100-bridge 'br0' started
 
 Config file mode
 ----------------
