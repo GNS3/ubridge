@@ -18,8 +18,6 @@
  *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-/*  Hypervisor code mostly borrowed from Dynamips. */
-
 #include <string.h>
 #include <assert.h>
 

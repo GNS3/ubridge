@@ -52,7 +52,9 @@ endif
 # RAW Ethernet support for Linux
 ifeq ($(shell uname), Linux)
     CFLAGS += -DLINUX_RAW
-    SRC += nio_linux_raw.c
+    SRC += nio_linux_raw.c      \
+           hypervisor_docker.c  \
+           netlink/nl.c
 endif
 
 ##############################

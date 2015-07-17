@@ -36,6 +36,9 @@
 #include "hypervisor.h"
 #include "hypervisor_parser.h"
 #include "hypervisor_bridge.h"
+#ifdef __linux__
+#include "hypervisor_docker.h"
+#endif
 #include "ubridge.h"
 
 static hypervisor_module_t *module_list = NULL;
@@ -491,6 +494,10 @@ int run_hypervisor(char *ip_addr, int tcp_port)
 
    hypervisor_init();
    hypervisor_bridge_init();
+#ifdef __linux__
+   hypervisor_docker_init();
+#endif
+
    signal(SIGPIPE, SIG_IGN);
 
    if (!tcp_port)
