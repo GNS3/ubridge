@@ -35,7 +35,7 @@
 #include "nio.h"
 
 #define NAME          "ubridge"
-#define VERSION       "0.9.1"
+#define VERSION       "0.9.2dev1"
 #define CONFIG_FILE   "ubridge.ini"
 
 #ifndef FALSE
@@ -57,6 +57,7 @@ typedef struct {
 
 typedef struct bridge {
   char *name;
+  int running;
   pthread_t source_tid;
   pthread_t destination_tid;
   nio_t *source_nio;

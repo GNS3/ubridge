@@ -63,6 +63,7 @@ static int cmd_create_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
       goto memory_error;
    if ((new_bridge->name = strdup(argv[0])) == NULL)
       goto memory_error;
+   new_bridge->running = FALSE;
    new_bridge->source_nio = NULL;
    new_bridge->destination_nio = NULL;
    new_bridge->capture = NULL;
@@ -119,16 +120,15 @@ static int cmd_start_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
       return (-1);
    }
 
+   if (bridge->running) {
+      hypervisor_send_reply(conn, HSC_ERR_START, 1, "bridge '%s' is already running", argv[0]);
+      return (-1);
+   }
+
    if (!(bridge->source_nio && bridge->destination_nio)) {
       hypervisor_send_reply(conn, HSC_ERR_START, 1, "bridge '%s' must have 2 NIOs to be started", argv[0]);
       return (-1);
    }
-
-   /* stop the threads if already running */
-   pthread_cancel(bridge->source_tid);
-   pthread_join(bridge->source_tid, NULL);
-   pthread_cancel(bridge->destination_tid);
-   pthread_join(bridge->destination_tid, NULL);
 
    s = pthread_create(&(bridge->source_tid), NULL, &source_nio_listener, bridge);
    if (s != 0) {
@@ -144,6 +144,7 @@ static int cmd_start_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
       return (-1);
    }
 
+   bridge->running = TRUE;
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "bridge '%s' started", argv[0]);
    return (0);
 }
@@ -158,10 +159,16 @@ static int cmd_stop_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
       return (-1);
    }
 
+   if (!bridge->running) {
+      hypervisor_send_reply(conn, HSC_ERR_STOP, 1, "bridge '%s' is not running", argv[0]);
+      return (-1);
+   }
+
    pthread_cancel(bridge->source_tid);
    pthread_join(bridge->source_tid, NULL);
    pthread_cancel(bridge->destination_tid);
    pthread_join(bridge->destination_tid, NULL);
+   bridge->running = FALSE;
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "bridge '%s' stopped", argv[0]);
    return (0);
 }
