@@ -162,10 +162,10 @@ static int cmd_move_ns(hypervisor_conn_t *conn, int argc, char *argv[])
 	mkdir("/var/run/netns", S_IRWXU|S_IRGRP|S_IXGRP|S_IROTH|S_IXOTH);
 
 	/* Try to create a symlink to expose the net namespace to iproute2 tool */
-	snprintf(procns_path, sizeof(procns_path), "/proc/%d/ns/net", pid);
+	/* snprintf(procns_path, sizeof(procns_path), "/proc/%d/ns/net", pid);
 	snprintf(netns_path, sizeof(netns_path), "/var/run/netns/%d", pid);
 	if (symlink(procns_path, netns_path) == -1)
-	   perror("could not symlink to net namespace");
+	   perror("could not symlink to net namespace"); */
 
     hypervisor_send_reply(conn, HSC_INFO_OK, 1, "%s moved to namespace %d", interface, pid);
 	err = 0;

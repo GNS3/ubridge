@@ -93,10 +93,12 @@ static int cmd_delete_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
 
           if (bridge->name)
              free(bridge->name);
-          pthread_cancel(bridge->source_tid);
-          pthread_join(bridge->source_tid, NULL);
-          pthread_cancel(bridge->destination_tid);
-          pthread_join(bridge->destination_tid, NULL);
+          if (bridge->running) {
+             pthread_cancel(bridge->source_tid);
+             pthread_join(bridge->source_tid, NULL);
+             pthread_cancel(bridge->destination_tid);
+             pthread_join(bridge->destination_tid, NULL);
+          }
           free_nio(bridge->source_nio);
           free_nio(bridge->destination_nio);
           free_pcap_capture(bridge->capture);
