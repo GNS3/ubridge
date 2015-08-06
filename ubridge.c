@@ -52,8 +52,14 @@ static void bridge_nios(nio_t *source_nio, nio_t *destination_nio, bridge_t *bri
         break;
     }
 
-    if (debug_level > 0)
-        printf("Received %zd bytes on %s\n", bytes_received, bridge->name);
+    if (debug_level > 0) {
+        if (source_nio == bridge->source_nio)
+           printf("Received %zd bytes on bridge %s (source NIO)\n", bytes_received, bridge->name);
+        else
+           printf("Received %zd bytes on bridge %s (destination NIO)\n", bytes_received, bridge->name);
+        if (debug_level > 1)
+            dump_packet(stdout, pkt, bytes_received);
+    }
 
     /* dump the packet to a PCAP file if capture is activated */
     pcap_capture_packet(bridge->capture, pkt, bytes_received);
@@ -71,8 +77,6 @@ static void bridge_nios(nio_t *source_nio, nio_t *destination_nio, bridge_t *bri
          break;
        }
     }
-    if (debug_level > 0)
-        printf("Sent %zd bytes on %s\n", bytes_sent, bridge->name);
   }
 }
 
@@ -96,8 +100,8 @@ void *destination_nio_listener(void *data)
 
   printf("Destination NIO listener thread for %s has started\n", bridge->name);
   if (bridge->source_nio && bridge->destination_nio)
-    /* bridges from the destination NIO to the source NIO */
-    bridge_nios(bridge->destination_nio, bridge->source_nio, bridge);
+      /* bridges from the destination NIO to the source NIO */
+      bridge_nios(bridge->destination_nio, bridge->source_nio, bridge);
   printf("Destination NIO listener thread for %s has stopped\n", bridge->name);
   pthread_exit(NULL);
 }

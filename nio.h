@@ -77,5 +77,6 @@ int free_nio(void *data);
 
 ssize_t nio_send(nio_t *nio, void *pkt, size_t len);
 ssize_t nio_recv(nio_t *nio, void *pkt, size_t max_len);
+void dump_packet(FILE *f_output, u_char *pkt, u_int len);
 
 #endif /* !NIO_H_ */

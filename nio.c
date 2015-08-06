@@ -74,3 +74,38 @@ ssize_t nio_recv(nio_t *nio, void *pkt, size_t max_len)
 
    return(len);
 }
+
+void dump_packet(FILE *f_output, u_char *pkt, u_int len)
+{
+   u_int x, i = 0, tmp;
+
+   while (i < len)
+   {
+      if ((len - i) > 16)
+         x = 16;
+      else x = len - i;
+
+      fprintf(f_output, "%4.4x: ", i);
+
+      for (tmp = 0; tmp < x; tmp++)
+         fprintf(f_output, "%2.2x ",pkt[i + tmp]);
+      for (tmp = x;tmp < 16; tmp++) fprintf(f_output,"   ");
+
+      for (tmp = 0; tmp < x; tmp++) {
+         char c = pkt[i + tmp];
+
+         if (((c >= 'A') && (c <= 'Z')) ||
+             ((c >= 'a') && (c <= 'z')) ||
+             ((c >= '0') && (c <= '9')))
+            fprintf(f_output, "%c", c);
+         else
+            fputs(".", f_output);
+      }
+
+      i += x;
+      fprintf(f_output, "\n");
+   }
+
+   fprintf(f_output, "\n");
+   fflush(f_output);
+}
