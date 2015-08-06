@@ -59,6 +59,59 @@ struct link_req {
 #endif
 
 
+static int netdev_set_flag(hypervisor_conn_t *conn, const char *name, int flag)
+{
+	struct nl_handler nlh;
+	struct nlmsg *nlmsg = NULL, *answer = NULL;
+	struct link_req *link_req;
+	int ifindex, len;
+	int err = -1;
+
+	if (netlink_open(&nlh, NETLINK_ROUTE)) {
+	    hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "could not open netlink connection");
+	    return (-1);
+	}
+
+	len = strlen(name);
+	if (len == 1 || len >= IFNAMSIZ) {
+	    hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "name is too long");
+	    goto out;
+	}
+
+	nlmsg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+	answer = nlmsg_alloc(NLMSG_GOOD_SIZE);
+	if (!nlmsg || !answer) {
+	    hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "insufficient memory");
+	    goto out;
+	}
+
+    if (!(ifindex = if_nametoindex(name))) {
+       hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "could not find interface index");
+       goto out;
+    }
+
+	link_req = (struct link_req *)nlmsg;
+	link_req->ifinfomsg.ifi_family = AF_UNSPEC;
+	link_req->ifinfomsg.ifi_index = ifindex;
+	link_req->ifinfomsg.ifi_change |= IFF_UP;
+	link_req->ifinfomsg.ifi_flags |= flag;
+	nlmsg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+	nlmsg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST|NLM_F_ACK;
+	nlmsg->nlmsghdr.nlmsg_type = RTM_NEWLINK;
+
+	if (netlink_transaction(&nlh, nlmsg, answer)) {
+		hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "could not complete netlink transaction");
+		goto out;
+	}
+    err = 0;
+
+out:
+	netlink_close(&nlh);
+	nlmsg_free(nlmsg);
+	nlmsg_free(answer);
+	return (err);
+}
+
 static int cmd_create_veth_pair(hypervisor_conn_t *conn, int argc, char *argv[])
 {
 	struct nl_handler nlh;
@@ -108,6 +161,16 @@ static int cmd_create_veth_pair(hypervisor_conn_t *conn, int argc, char *argv[])
 		goto out;
 	}
 
+    if (netdev_set_flag(conn, if1, IFF_UP)) {
+        fprintf(stderr, "failed to enable interface '%s'", if1);
+        goto out;
+    }
+
+    if (netdev_set_flag(conn, if2, IFF_UP)) {
+        fprintf(stderr, "failed to enable interface '%s'", if2);
+        goto out;
+    }
+
     hypervisor_send_reply(conn, HSC_INFO_OK,1, "veth pair created: %s and %s", if1, if2);
     err = 0;
 
@@ -123,8 +186,8 @@ static int cmd_move_ns(hypervisor_conn_t *conn, int argc, char *argv[])
 	struct nl_handler nlh;
 	struct nlmsg *nlmsg = NULL;
 	struct link_req *link_req;
-	char netns_path[MAXPATHLEN];
-	char procns_path[MAXPATHLEN];
+	/*char netns_path[MAXPATHLEN];*/
+	/*char procns_path[MAXPATHLEN];*/
 	int ifindex;
 	int err = -1;
 	char *interface = argv[0];

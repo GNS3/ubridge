@@ -33,6 +33,7 @@
 char *config_file = CONFIG_FILE;
 pthread_mutex_t global_lock = PTHREAD_MUTEX_INITIALIZER;
 bridge_t *bridge_list = NULL;
+int debug_level = 0;
 int hypervisor_mode = 0;
 
 static void bridge_nios(nio_t *source_nio, nio_t *destination_nio, bridge_t *bridge)
@@ -51,7 +52,8 @@ static void bridge_nios(nio_t *source_nio, nio_t *destination_nio, bridge_t *bri
         break;
     }
 
-    //printf("received %zd bytes on %s\n", bytes_received, bridge->name);
+    if (debug_level > 0)
+        printf("Received %zd bytes on %s\n", bytes_received, bridge->name);
 
     /* dump the packet to a PCAP file if capture is activated */
     pcap_capture_packet(bridge->capture, pkt, bytes_received);
@@ -69,7 +71,8 @@ static void bridge_nios(nio_t *source_nio, nio_t *destination_nio, bridge_t *bri
          break;
        }
     }
-    //printf("sent %zd bytes on %s\n", bytes_sent, bridge->name);
+    if (debug_level > 0)
+        printf("Sent %zd bytes on %s\n", bytes_sent, bridge->name);
   }
 }
 
@@ -239,6 +242,7 @@ static void print_usage(const char *program_name)
          "  -f <file>                    : Specify a INI configuration file (default: %s)\n"
          "  -H [<ip_address>:]<tcp_port> : Run in hypervisor mode\n"
          "  -e                           : Display all available network devices and exit\n"
+         "  -d <level>                   : Debug level\n"
          "  -v                           : Print version and exit\n",
          program_name,
          CONFIG_FILE);
@@ -259,7 +263,7 @@ int main(int argc, char **argv)
         break;
      }
 
-  while ((opt = getopt(argc, argv, "hvef:H:")) != -1) {
+  while ((opt = getopt(argc, argv, "hved:f:H:")) != -1) {
     switch (opt) {
       case 'H':
         index = strrchr(optarg, ':');
@@ -287,6 +291,9 @@ int main(int argc, char **argv)
 	  case 'e':
 	    display_network_devices();
 	    exit(EXIT_SUCCESS);
+	  case 'd':
+        debug_level = atoi(optarg);
+        break;
 	  case 'f':
         config_file = optarg;
         break;
