@@ -46,7 +46,7 @@ static void bridge_nios(nio_t *source_nio, nio_t *destination_nio, bridge_t *bri
     /* received from the source NIO */
     bytes_received = nio_recv(source_nio, &pkt, NIO_MAX_PKT_SIZE);
     if (bytes_received == -1) {
-        if (errno == ECONNREFUSED)
+        if (errno == ECONNREFUSED || errno == ENETDOWN)
            continue;
         perror("recv");
         break;
@@ -67,15 +67,10 @@ static void bridge_nios(nio_t *source_nio, nio_t *destination_nio, bridge_t *bri
     /* send what we received to the destination NIO */
     bytes_sent = nio_send(destination_nio, pkt, bytes_received);
     if (bytes_sent == -1) {
-       switch (errno) {
-       /* Socket file doesn't exist */
-       case ENOENT:
-       case ECONNREFUSED:
-         continue;
-       default:
-         perror("send");
-         break;
-       }
+        if (errno == ECONNREFUSED || errno == ENETDOWN)
+           continue;
+        perror("send");
+        break;
     }
   }
 }
