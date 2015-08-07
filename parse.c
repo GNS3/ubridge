@@ -171,6 +171,7 @@ int parse_config(char *filename, bridge_t **bridges)
            bridge = add_bridge(bridges);
            bridge->source_nio = source_nio;
            bridge->destination_nio = destination_nio;
+           bridge->capture = NULL;
            if (!(bridge->name = strdup(bridge_name))) {
               fprintf(stderr, "bridge creation: insufficient memory\n");
               return FALSE;

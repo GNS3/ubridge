@@ -166,11 +166,6 @@ static int cmd_create_veth_pair(hypervisor_conn_t *conn, int argc, char *argv[])
         goto out;
     }
 
-    if (netdev_set_flag(conn, if2, IFF_UP)) {
-        fprintf(stderr, "failed to enable interface '%s'", if2);
-        goto out;
-    }
-
     hypervisor_send_reply(conn, HSC_INFO_OK,1, "veth pair created: %s and %s", if1, if2);
     err = 0;
 
@@ -186,8 +181,6 @@ static int cmd_move_ns(hypervisor_conn_t *conn, int argc, char *argv[])
 	struct nl_handler nlh;
 	struct nlmsg *nlmsg = NULL;
 	struct link_req *link_req;
-	/*char netns_path[MAXPATHLEN];*/
-	/*char procns_path[MAXPATHLEN];*/
 	int ifindex;
 	int err = -1;
 	char *interface = argv[0];
@@ -220,15 +213,6 @@ static int cmd_move_ns(hypervisor_conn_t *conn, int argc, char *argv[])
 		hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "could not complete netlink transaction");
 		goto out;
 	}
-
-	/* Create the base netns directory if it doesn't exist */
-	mkdir("/var/run/netns", S_IRWXU|S_IRGRP|S_IXGRP|S_IROTH|S_IXOTH);
-
-	/* Try to create a symlink to expose the net namespace to iproute2 tool */
-	/* snprintf(procns_path, sizeof(procns_path), "/proc/%d/ns/net", pid);
-	snprintf(netns_path, sizeof(netns_path), "/var/run/netns/%d", pid);
-	if (symlink(procns_path, netns_path) == -1)
-	   perror("could not symlink to net namespace"); */
 
     hypervisor_send_reply(conn, HSC_INFO_OK, 1, "%s moved to namespace %d", interface, pid);
 	err = 0;
