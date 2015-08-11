@@ -166,7 +166,55 @@ static int cmd_create_veth_pair(hypervisor_conn_t *conn, int argc, char *argv[])
         goto out;
     }
 
-    hypervisor_send_reply(conn, HSC_INFO_OK,1, "veth pair created: %s and %s", if1, if2);
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "veth pair created: %s and %s", if1, if2);
+    err = 0;
+
+out:
+	netlink_close(&nlh);
+	nlmsg_free(answer);
+	nlmsg_free(nlmsg);
+	return (err);
+}
+
+static int cmd_delete_veth(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+	struct nl_handler nlh;
+	struct nlmsg *nlmsg = NULL, *answer = NULL;
+	struct link_req *link_req;
+    int ifindex;
+	char *interface = argv[0];
+	int err = -1;
+
+	if (netlink_open(&nlh, NETLINK_ROUTE)) {
+	    hypervisor_send_reply(conn, HSC_ERR_DELETE, 1, "could not open netlink connection");
+	    return (-1);
+	}
+
+    if (!(ifindex = if_nametoindex(interface))) {
+       hypervisor_send_reply(conn, HSC_ERR_DELETE, 1, "could not find interface index for %s", interface);
+       goto out;
+    }
+
+	nlmsg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+	answer = nlmsg_alloc(NLMSG_GOOD_SIZE);
+	if (!nlmsg || !answer) {
+	    hypervisor_send_reply(conn, HSC_ERR_DELETE, 1, "insufficient memory");
+	    goto out;
+	}
+
+	link_req = (struct link_req *)nlmsg;
+	link_req->ifinfomsg.ifi_family = AF_UNSPEC;
+	link_req->ifinfomsg.ifi_index = ifindex;
+	nlmsg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+	nlmsg->nlmsghdr.nlmsg_flags = NLM_F_ACK|NLM_F_REQUEST;
+	nlmsg->nlmsghdr.nlmsg_type = RTM_DELLINK;
+
+	if (netlink_transaction(&nlh, nlmsg, answer)) {
+		hypervisor_send_reply(conn, HSC_ERR_DELETE, 1, "could not complete netlink transaction");
+		goto out;
+	}
+
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "veth interface %s has been deleted", interface);
     err = 0;
 
 out:
@@ -192,7 +240,7 @@ static int cmd_move_ns(hypervisor_conn_t *conn, int argc, char *argv[])
 	}
 
     if (!(ifindex = if_nametoindex(interface))) {
-       hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "could not find interface index");
+       hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "could not find interface index for %s", interface);
        goto out;
     }
 
@@ -226,6 +274,7 @@ out:
 /* Docker commands */
 static hypervisor_cmd_t docker_cmd_array[] = {
    { "create_veth", 2, 2, cmd_create_veth_pair, NULL },
+   { "delete_veth", 1, 1, cmd_delete_veth, NULL },
    { "move_to_ns", 2, 2, cmd_move_ns, NULL },
    { NULL, -1, -1, NULL, NULL },
 };
