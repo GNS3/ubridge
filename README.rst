@@ -27,6 +27,7 @@ The modules that are currently defined are given below:
 
 * hypervisor   : General hypervisor management
 * bridge       : bridges management
+* docker       : Docker veth management
 
 **Hypervisor module ("hypervisor")**
 
@@ -93,7 +94,7 @@ The modules that are currently defined are given below:
 
 .. code:: bash
 
-    bridge create br0  
+    bridge create br0
     100-bridge 'br0' created
 
 * "bridge list" : List all exiting Bridges.
@@ -113,7 +114,7 @@ The modules that are currently defined are given below:
 
 * "bridge start <bridge_name>" : Start a bridge.
   A bridge must have 2 NIOs added in order to start.
-  
+
 .. code:: bash
 
     bridge start br0
@@ -181,24 +182,50 @@ The modules that are currently defined are given below:
     bridge stop_capture br0
     100-packet capture stopped on bridge 'br0'
 
+**Docker module ("docker")**
+
+* "docker create_veth <interface_name_1> <interface_name_2>" :
+  Create virtual Ethernet interface pair.
+
+.. code:: bash
+
+    docker create_veth hostif guestif
+    100-veth pair created: hostif and guestif
+
+* "docker move_to_ns <namespace_id>" :
+  Move Ethernet interface to network namespace.
+
+.. code:: bash
+
+    docker move_to_ns guestif 6367
+    100-guestif moved to namespace 6367
+
+* "docker delete_veth <interface_name>" :
+  Delete virtual Ethernet interface.
+
+.. code:: bash
+
+    docker delete_veth hostif
+    100-veth interface hostif has been deleted
+
 **Session example**
 
 This will bridge a tap0 interface to an UDP tunnel.
 
 .. code:: bash
 
-    bridge create br0  
+    bridge create br0
     100-bridge 'br0' created
-    
+
     bridge start br0
     209-bridge 'br0' must have 2 NIOs to be started
-    
+
     bridge add_nio_tap br0 tap0
     100-NIO TAP added to bridge 'br0'
-    
+
     bridge add_nio_udp br0 20000 127.0.0.1 30000
     100-NIO UDP added to bridge 'br0'
-    
+
     bridge start br0
     100-bridge 'br0' started
 
