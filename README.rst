@@ -212,6 +212,21 @@ The modules that are currently defined are given below:
 
 This will bridge a tap0 interface to an UDP tunnel.
 
+Start the hypervisor:
+
+.. code:: bash
+    
+    user@host# ./ubridge -H 2232
+    Hypervisor TCP control server started (port 2232).
+
+
+Connect via telnet:
+
+.. code:: bash
+
+    user@host# telnet localhost 2232
+
+
 .. code:: bash
 
     bridge create br0
