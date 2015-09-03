@@ -42,7 +42,9 @@ CFLAGS  =   -O3 -Wall
 
 BINDIR  =   /usr/local/bin
 
-ifeq ($(shell uname -o), Cygwin)
+ifeq ($(shell uname), Darwin)
+   LIBS =   -lpthread -lpcap
+else ifeq ($(shell uname -o), Cygwin)
    CFLAGS += -DCYGWIN
    LIBS =   -lpthread -lwpcap
 else
