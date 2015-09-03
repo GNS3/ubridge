@@ -30,3 +30,5 @@
 
 # Debug files
 *.dSYM/
+ubridge
+ubridge.ini
