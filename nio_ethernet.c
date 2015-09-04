@@ -38,7 +38,12 @@ static pcap_t *nio_ethernet_open(char *device)
    if (!(p = pcap_open_live(device, 65535, TRUE, 10, pcap_errbuf)))
       goto pcap_error;
 
-   pcap_setdirection(p, PCAP_D_INOUT);
+#ifdef __APPLE__
+   pcap_setdirection(p,PCAP_D_IN);
+#else
+   pcap_setdirection(p,PCAP_D_INOUT);
+#endif /* __APPLE__ */
+
 #ifdef BIOCFEEDBACK
    {
      int on = 1;
