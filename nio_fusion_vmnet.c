@@ -34,7 +34,7 @@
 #include "nio_fusion_vmnet.h"
 
 /* Create a socket and connect it to the vmnet kext. */
-static int nio_fusion_vmnet_open_socket(char *device)
+static int nio_fusion_vmnet_open_socket(char *vmnet_name)
 {
    int fd;
    struct ctl_info info;
@@ -58,14 +58,14 @@ static int nio_fusion_vmnet_open_socket(char *device)
       return (-1);
    }
 
-   memset(&addr, 0, sizeof(struct addr));
+   memset(&addr, 0, sizeof(addr));
    addr.sc_len = sizeof addr;
    addr.sc_family = AF_SYSTEM;
    addr.ss_sysaddr = AF_SYS_CONTROL;
    addr.sc_id = info.ctl_id;
 
    /* This call requires root privileges. */
-   if (connect(fd, (struct sockaddr *)&addr, sizeof addr) < 0) {
+   if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
       fprintf(stderr, "nio_fusion_vmnet_open_socket: connect: %s\n", strerror(errno));
       return (-1);
    }
@@ -87,12 +87,20 @@ static int nio_fusion_vmnet_open_socket(char *device)
 
    /* The VMware Fusion network interface vmnet<N> is always connected to
      (virtual) hub number N. Connect our socket to another port on that hub. */
-   if (sscanf(argv[1], "vmnet%d", &hub_num) != 1) {
+   if (sscanf(vmnet_name, "vmnet%d", &hub_num) != 1) {
       fprintf(stderr, "nio_fusion_vmnet_open_socket: invalid vmnet interface name\n");
       return (-1);
    }
 
-   if (setsockopt(fd, SYSPROTO_CONTROL, VMNET_SO_BINDTOHUB, &hubNum, sizeof(hub_num)) < 0) {
+   if (setsockopt(fd, SYSPROTO_CONTROL, VMNET_SO_BINDTOHUB, &hub_num, sizeof(hub_num)) < 0) {
+      fprintf(stderr, "nio_fusion_vmnet_open_socket: setsockopt: %s\n", strerror(errno));
+      return (-1);
+   }
+
+   /* Put our port of the hub in promiscuous mode, to allow it to receive all 
+      network traffic that goes through the hub. */
+
+   if (setsockopt(fd, SYSPROTO_CONTROL, VMNET_SO_IFFLAGS, &flags, sizeof(flags)) < 0) {
       fprintf(stderr, "nio_fusion_vmnet_open_socket: setsockopt: %s\n", strerror(errno));
       return (-1);
    }
@@ -127,7 +135,7 @@ nio_t *create_nio_fusion_vmnet(char *vmnet_name)
 
    nio_fusion_vmnet = &nio->u.nio_fusion_vmnet;
 
-   if (strncmp("vmnet", vmnet_name, strlen(5)) != 0) {
+   if (strncmp("vmnet", vmnet_name, 5) != 0) {
       fprintf(stderr, "create_nio_fusion_vmnet: bad VMnet interface string specified.\n");
       free_nio(nio);
       return NULL;
