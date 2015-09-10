@@ -29,6 +29,9 @@
 #ifdef LINUX_RAW
 #include "nio_linux_raw.h"
 #endif
+#ifdef __APPLE__
+#include "nio_fusion_vmnet.h"
+#endif
 #include "hypervisor.h"
 #include "hypervisor_bridge.h"
 #include "pcap_capture.h"
@@ -349,6 +352,34 @@ static int cmd_add_nio_linux_raw(hypervisor_conn_t *conn, int argc, char *argv[]
 }
 #endif
 
+#ifdef __APPLE__
+static int cmd_add_nio_fusion_vmnet(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+   nio_t *nio;
+   bridge_t *bridge;
+
+   bridge = find_bridge(argv[0]);
+   if (bridge == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
+      return (-1);
+   }
+
+   nio = create_nio_fusion_vmnet(argv[1]);
+   if (!nio) {
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "unable to create NIO Fusion VMnet for bridge '%s'", argv[0]);
+      return (-1);
+   }
+
+   if (add_nio_to_bridge(conn, bridge, nio) == -1) {
+     free_nio(nio);
+     return (-1);
+   }
+
+   hypervisor_send_reply(conn, HSC_INFO_OK, 1, "NIO Fusion VMnet added to bridge '%s'", argv[0]);
+   return (0);
+}
+#endif
+
 static int cmd_start_capture_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
 {
    char *pcap_linktype = "EN10MB";
@@ -411,6 +442,9 @@ static hypervisor_cmd_t bridge_cmd_array[] = {
    { "add_nio_ethernet", 2, 2, cmd_add_nio_ethernet, NULL },
 #ifdef LINUX_RAW
    { "add_nio_linux_raw", 2, 2, cmd_add_nio_linux_raw, NULL },
+#endif
+#ifdef __APPLE__
+   { "add_nio_fusion_vmnet", 2, 2, cmd_add_nio_fusion_vmnet, NULL },
 #endif
    { "start_capture", 2, 3, cmd_start_capture_bridge, NULL },
    { "stop_capture", 1, 1, cmd_stop_capture_bridge, NULL },

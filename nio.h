@@ -34,6 +34,7 @@ enum {
     NIO_TYPE_ETHERNET,
     NIO_TYPE_TAP,
     NIO_LINUX_RAW,
+    NIO_FUSION_VMNET,
 };
 
 typedef struct {
@@ -57,6 +58,10 @@ typedef struct {
 } nio_linux_raw_t;
 
 typedef struct {
+    int fd;
+} nio_fusion_vmnet_t;
+
+typedef struct {
     u_int type;
     void *dptr;
 
@@ -65,6 +70,7 @@ typedef struct {
         nio_tap_t nio_tap;
         nio_ethernet_t nio_ethernet;
         nio_linux_raw_t nio_linux_raw;
+        nio_fusion_vmnet_t nio_fusion_vmnet;
     } u;
 
     ssize_t (*send)(void *nio, void *pkt, size_t len);

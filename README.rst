@@ -166,6 +166,14 @@ The modules that are currently defined are given below:
     bridge add_nio_linux_raw br0 eth0
     100-NIO Linux raw added to bridge 'br0'
 
+* "bridge add_nio_fusion_vmnet <bridge_name> <vmnet_device>" :
+  Add a Fusion VMnet NIO. It requires root access and is supported only on Mac OS X.
+
+.. code:: bash
+
+    bridge add_nio_fusion_vmnet br0 vmnet1
+    100-NIO Fusion VMnet added to bridge 'br0'
+
 * "bridge start_capture <bridge_name> <pcap_file> [pcap_linktype]" :
   Start a PCAP packet capture on a bridge. PCAP link type default is Ethernet "EN10MB".
 
@@ -289,13 +297,22 @@ On Linux you can use a RAW socket to bridge an Ethernet interface (a bit faster 
     source_linux_raw = eth0
     destination_udp = 42000:127.0.0.1:42001
 
+On Mac OS X you can use the proprietary vmnet ktext module to bridge an VMware Fusion vmnet interface.
+
+.. code:: ini
+
+    ; bridge VMware FUsion interface vmnet1 with an UDP tunnel
+    [bridge5]
+    source_fusion_vmnet = vmnet1
+    destination_udp = 12000:127.0.0.1:12001
+
 On Windows, interfaces must be specified with the NPF notation. You can display all available network devices
 using ubridge.exe -e on a command line.
 
 .. code:: ini
 
     ; using a Windows NPF interface
-    [bridge5]
+    [bridge6]
     source_ethernet = "\Device\NPF_{BC46623A-D65B-4498-9073-96B9DC4C8CBA}"
     destination_udp = 10000:127.0.0.1:10001
 

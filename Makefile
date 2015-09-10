@@ -44,6 +44,8 @@ BINDIR  =   /usr/local/bin
 
 ifeq ($(shell uname), Darwin)
    LIBS =   -lpthread -lpcap
+   SRC +=   nio_fusion_vmnet.c    \
+
 else ifeq ($(shell uname -o), Cygwin)
    CFLAGS += -DCYGWIN
    LIBS =   -lpthread -lwpcap
