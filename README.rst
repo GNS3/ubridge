@@ -10,6 +10,12 @@ Dependencies:
 - pcap library (wincap on Windows).
 - pthread library.
 
+Installation
+-----------------
+In the source directory:
+make
+make install
+
 Hypervisor mode
 ---------------
 
