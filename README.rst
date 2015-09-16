@@ -10,6 +10,9 @@ Dependencies:
 - pcap library (wincap on Windows).
 - pthread library.
 
+For ubuntu you need to install package:
+- libpcap-dev
+
 Installation
 -----------------
 In the source directory:
