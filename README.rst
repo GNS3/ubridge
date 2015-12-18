@@ -209,12 +209,13 @@ The modules that are currently defined are given below:
     docker create_veth hostif guestif
     100-veth pair created: hostif and guestif
 
-* "docker move_to_ns <namespace_id>" :
-  Move Ethernet interface to network namespace.
+* "docker move_to_ns <interface> <namespace_id> <dst_interface>" :
+  Move Ethernet interface to network namespace. And rename it after
+  the move.
 
 .. code:: bash
 
-    docker move_to_ns guestif 6367
+    docker move_to_ns guestif 6367 eth0
     100-guestif moved to namespace 6367
 
 * "docker delete_veth <interface_name>" :

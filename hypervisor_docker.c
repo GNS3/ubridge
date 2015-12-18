@@ -233,6 +233,7 @@ static int cmd_move_ns(hypervisor_conn_t *conn, int argc, char *argv[])
 	int err = -1;
 	char *interface = argv[0];
 	pid_t pid = atoi(argv[1]);
+    char *dst_interface = argv[2];
 
 	if (netlink_open(&nlh, NETLINK_ROUTE)) {
 	    hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "could not open netlink connection");
@@ -256,6 +257,8 @@ static int cmd_move_ns(hypervisor_conn_t *conn, int argc, char *argv[])
 	nlmsg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST|NLM_F_ACK;
 	nlmsg->nlmsghdr.nlmsg_type = RTM_NEWLINK;
 
+    nla_put_string(nlmsg, IFLA_IFNAME, dst_interface);
+
 	nla_put_u32(nlmsg, IFLA_NET_NS_PID, pid);
 	if (netlink_transaction(&nlh, nlmsg, nlmsg)) {
 		hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "could not complete netlink transaction");
@@ -275,7 +278,7 @@ out:
 static hypervisor_cmd_t docker_cmd_array[] = {
    { "create_veth", 2, 2, cmd_create_veth_pair, NULL },
    { "delete_veth", 1, 1, cmd_delete_veth, NULL },
-   { "move_to_ns", 2, 2, cmd_move_ns, NULL },
+   { "move_to_ns", 3, 3, cmd_move_ns, NULL },
    { NULL, -1, -1, NULL, NULL },
 };
 
