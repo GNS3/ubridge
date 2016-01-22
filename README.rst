@@ -200,7 +200,7 @@ The modules that are currently defined are given below:
     100-packet capture stopped on bridge 'br0'
 
 * "bridge stats <bridge_name>":
-  Show statistic about a bridge input/output.
+  Show statistics about a bridge input/output.
 
 .. code:: bash
 
