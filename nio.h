@@ -65,6 +65,9 @@ typedef struct {
     u_int type;
     void *dptr;
 
+    ssize_t bytes_sent;
+    ssize_t bytes_received;
+
     union {
         nio_udp_t nio_udp;
         nio_tap_t nio_tap;

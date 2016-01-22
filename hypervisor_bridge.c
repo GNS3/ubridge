@@ -227,6 +227,23 @@ static int cmd_list_bridges(hypervisor_conn_t *conn, int argc, char *argv[])
    return (0);
 }
 
+static int cmd_stats_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+   bridge_t *bridge;
+
+   bridge = find_bridge(argv[0]);
+   if (bridge == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
+      return (-1);
+   }
+   if (bridge->source_nio)
+      hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Source NIO:      %d received %d sent", bridge->source_nio->bytes_received, bridge->source_nio->bytes_sent);
+   if (bridge->destination_nio)
+      hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Destination NIO: %d received %d sent", bridge->destination_nio->bytes_received, bridge->destination_nio->bytes_sent);
+
+   return (0);
+}
+
 static int add_nio_to_bridge(hypervisor_conn_t *conn, bridge_t *bridge, nio_t *nio)
 {
    if (bridge->source_nio && bridge->destination_nio) {
@@ -436,6 +453,7 @@ static hypervisor_cmd_t bridge_cmd_array[] = {
    { "delete", 1, 1, cmd_delete_bridge, NULL },
    { "start", 1, 1, cmd_start_bridge, NULL },
    { "stop", 1, 1, cmd_stop_bridge, NULL },
+   { "stats", 1, 1, cmd_stats_bridge, NULL },
    { "rename", 2, 2, cmd_rename_bridge, NULL },
    { "add_nio_udp", 4, 4, cmd_add_nio_udp, NULL },
    { "add_nio_tap", 2, 2, cmd_add_nio_tap, NULL },

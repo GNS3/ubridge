@@ -199,6 +199,15 @@ The modules that are currently defined are given below:
     bridge stop_capture br0
     100-packet capture stopped on bridge 'br0'
 
+* "bridge stats <bridge_name>":
+  Show statistic about a bridge input/output.
+
+.. code:: bash
+
+    bridge stats bridge0
+    101 Source NIO:      90 received 410 sent
+    101 Destination NIO: 410 received 90 sent
+
 **Docker module ("docker")**
 
 * "docker create_veth <interface_name_1> <interface_name_2>" :
