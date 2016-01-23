@@ -254,19 +254,13 @@ int main(int argc, char **argv)
   int hypervisor_tcp_port = 0;
   char *hypervisor_ip_address = NULL;
   char opt;
-  int i;
   char *index;
   size_t len;
-
-  for (i = 1; i < argc; i++)
-     if (!strcmp(argv[i], "-H")) {
-        hypervisor_mode = 1;
-        break;
-     }
 
   while ((opt = getopt(argc, argv, "hved:f:H:")) != -1) {
     switch (opt) {
       case 'H':
+        hypervisor_mode = 1;
         index = strrchr(optarg, ':');
         if (!index) {
            hypervisor_tcp_port = atoi(optarg);
