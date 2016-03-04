@@ -125,10 +125,8 @@ static int turn_off_cx(char *ifname) {
     int rc;
 
     sock = socket(PF_INET, SOCK_DGRAM, IPPROTO_IP);
-    if (sock < 0) {
-        perror("socket");
+    if (sock < 0)
         return sock;
-    }
 
     strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
     ifr.ifr_data = (char *)&eval;
@@ -137,11 +135,10 @@ static int turn_off_cx(char *ifname) {
     eval.data = 0;
 
     rc = ioctl(sock, SIOCETHTOOL, &ifr);
-    if (rc < 0) {
-        perror("ioctl");
-        return rc;
-    }
-    return 0;
+
+    close(sock);
+
+    return rc;
 }
 
 
@@ -200,7 +197,7 @@ static int cmd_create_veth_pair(hypervisor_conn_t *conn, int argc, char *argv[])
     }
 
     if (turn_off_cx(if2)) {
-        goto out;
+        hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Warning: could not turn off checksum");
     }
 
     hypervisor_send_reply(conn, HSC_INFO_OK, 1, "veth pair created: %s and %s", if1, if2);
