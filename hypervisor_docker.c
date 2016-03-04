@@ -43,6 +43,7 @@
 #include <linux/sockios.h>
 #include <linux/if_bridge.h>
 #include <sched.h>
+#include <linux/ethtool.h>
 
 #include "ubridge.h"
 #include "hypervisor.h"
@@ -112,6 +113,38 @@ out:
 	return (err);
 }
 
+/*
+ * Turn off TCP checksum for the interface
+ * it's require otherwise the OS will not use
+ * the checksum from the container.
+ */
+static int turn_off_cx(char *ifname) {
+    int sock;
+    struct ifreq ifr;
+    struct ethtool_value eval;
+    int rc;
+
+    sock = socket(PF_INET, SOCK_DGRAM, IPPROTO_IP);
+    if (sock < 0) {
+        perror("socket");
+        return sock;
+    }
+
+    strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
+    ifr.ifr_data = (char *)&eval;
+
+    eval.cmd  = ETHTOOL_STXCSUM;
+    eval.data = 0;
+
+    rc = ioctl(sock, SIOCETHTOOL, &ifr);
+    if (rc < 0) {
+        perror("ioctl");
+        return rc;
+    }
+    return 0;
+}
+
+
 static int cmd_create_veth_pair(hypervisor_conn_t *conn, int argc, char *argv[])
 {
 	struct nl_handler nlh;
@@ -163,6 +196,10 @@ static int cmd_create_veth_pair(hypervisor_conn_t *conn, int argc, char *argv[])
 
     if (netdev_set_flag(conn, if1, IFF_UP)) {
         fprintf(stderr, "failed to enable interface '%s'", if1);
+        goto out;
+    }
+
+    if (turn_off_cx(if2)) {
         goto out;
     }
 
