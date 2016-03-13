@@ -7,17 +7,45 @@ Packet capture is also supported.
 
 Dependencies:
 
-- pcap library (wincap on Windows).
+- pcap library (Winpcap on Windows).
 - pthread library.
 
-For ubuntu you need to install package:
+For Ubuntu or other Debian based Linux you need to install this package:
+
 - libpcap-dev
 
 Installation
 -----------------
+
+**Linux**
+
 In the source directory:
-make
-make install
+
+.. code:: bash
+
+    make
+    sudo make install
+    
+**Windows**
+
+Install the dependencies:
+
+- Install Winpcap: https://www.winpcap.org/
+- Install Cygwin 32-bit (setup-x86.exe)
+- In Cygwin setup, install the ``make``, ``gcc-core`` and ``git`` packages
+- Download and unzip Winpcap developer pack: http://www.winpcap.org/devel.htm
+- Copy the libraries ``WpdPack\Lib\libpacket.a`` and ``WpdPack\Lib\libwpcap.a`` to ``cygwin\lib\``
+- Copy all headers from ``WpdPack\Include`` to ``cygwin\usr\include\``
+
+Open the Cygwin terminal:
+
+.. code:: bash
+
+    git clone git://github.com/GNS3/ubridge.git
+    cd ubridge
+    make
+
+You should get ubridge.exe if everything goes well.
 
 Hypervisor mode
 ---------------
