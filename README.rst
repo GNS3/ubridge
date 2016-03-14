@@ -227,15 +227,14 @@ The modules that are currently defined are given below:
     bridge stop_capture br0
     100-packet capture stopped on bridge 'br0'
 
-* "bridge set_pcap_filter <bridge_name> <filter>" :
+* "bridge set_pcap_filter <bridge_name> [filter]" :
   Set a PCAP filter on a bridge. There must be a least one NIO Ethernet attached to the bridge.
+  To reset any applied filter, same command without a filter.
 
 .. code:: bash
 
     bridge set_pcap_filter br0 "not ether src 00:50:56:c0:00:0a"
     100-filter 'not ether src 00:50:56:c0:00:0a' applied on bridge 'br0'
-
-  To reset any applied filter, same command without a filter.
 
 .. code:: bash
 
@@ -377,7 +376,7 @@ using ubridge.exe -e on a command line.
     [bridge6]
     source_ethernet = "\Device\NPF_{BC46623A-D65B-4498-9073-96B9DC4C8CBA}"
     destination_udp = 10000:127.0.0.1:10001
-    ; this will filter out packet with source MAC address 00:50:56:c0:00:0a
+    ; this will filter out frames with source MAC address 00:50:56:c0:00:0a
     pcap_filter = "not ether src 00:50:56:c0:00:0a"
 
 Notes
