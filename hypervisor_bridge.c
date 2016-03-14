@@ -35,6 +35,7 @@
 #include "hypervisor.h"
 #include "hypervisor_bridge.h"
 #include "pcap_capture.h"
+#include "pcap_filter.h"
 
 static bridge_t *find_bridge(char *bridge_name)
 {
@@ -446,6 +447,43 @@ static int cmd_stop_capture_bridge(hypervisor_conn_t *conn, int argc, char *argv
    return (0);
 }
 
+static int cmd_set_pcap_filter_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+   bridge_t *bridge;
+   char *filter = "";
+
+   bridge = find_bridge(argv[0]);
+   if (bridge == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
+      return (-1);
+   }
+
+   if (argc == 2)
+      filter = argv[1];
+
+   if (bridge->source_nio && bridge->source_nio->type == NIO_TYPE_ETHERNET) {
+      if (set_pcap_filter(bridge->source_nio->dptr, filter) < 0) {
+         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "unable to apply filter on bridge %s (source NIO)", argv[0]);
+         return (-1);
+      }
+   }
+   else if (bridge->destination_nio && bridge->destination_nio->type == NIO_TYPE_ETHERNET) {
+      if (set_pcap_filter(bridge->destination_nio->dptr, filter) < 0) {
+         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "unable to apply filter on bridge %s (destination NIO)", argv[0]);
+         return (-1);
+      }
+   }
+   else {
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "bridge %s must have at least one Ethernet NIO in order to apply a filter", argv[0]);
+      return (-1);
+   }
+
+   if (argc == 2)
+      hypervisor_send_reply(conn, HSC_INFO_OK, 1, "filter '%s' applied on bridge '%s'", argv[1], argv[0]);
+   else
+      hypervisor_send_reply(conn, HSC_INFO_OK, 1, "filter reset on bridge '%s'", argv[0]);
+   return (0);
+}
 
 /* Bridge commands */
 static hypervisor_cmd_t bridge_cmd_array[] = {
@@ -466,6 +504,7 @@ static hypervisor_cmd_t bridge_cmd_array[] = {
 #endif
    { "start_capture", 2, 3, cmd_start_capture_bridge, NULL },
    { "stop_capture", 1, 1, cmd_stop_capture_bridge, NULL },
+   { "set_pcap_filter", 1, 2, cmd_set_pcap_filter_bridge, NULL },
    { "list", 0, 0, cmd_list_bridges, NULL },
    { NULL, -1, -1, NULL, NULL },
 };

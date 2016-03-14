@@ -26,6 +26,7 @@
 #include "nio_ethernet.h"
 #include "nio_tap.h"
 #include "pcap_capture.h"
+#include "pcap_filter.h"
 
 #ifdef LINUX_RAW
 #include "nio_linux_raw.h"
@@ -140,6 +141,23 @@ static void parse_capture(dictionary *ubridge_config, const char *bridge_name, b
     }
 }
 
+static void parse_filter(dictionary *ubridge_config, const char *bridge_name, bridge_t *bridge)
+{
+    const char *pcap_filter = NULL;
+
+    if (getstr(ubridge_config, bridge_name, "pcap_filter", &pcap_filter)) {
+        printf("Applying PCAP filter '%s'\n", pcap_filter);
+        if (bridge->source_nio->type == NIO_TYPE_ETHERNET) {
+            if (set_pcap_filter(bridge->source_nio->dptr, pcap_filter) < 0)
+               fprintf(stderr, "unable to apply filter to source NIO\n");
+        }
+        else if (bridge->destination_nio->type == NIO_TYPE_ETHERNET) {
+            if (set_pcap_filter(bridge->destination_nio->dptr, pcap_filter) < 0)
+               fprintf(stderr, "unable to apply filter to destination NIO\n");
+        }
+    }
+}
+
 int parse_config(char *filename, bridge_t **bridges)
 {
     dictionary *ubridge_config = NULL;
@@ -203,6 +221,7 @@ int parse_config(char *filename, bridge_t **bridges)
               return FALSE;
            }
            parse_capture(ubridge_config, bridge_name, bridge);
+           parse_filter(ubridge_config, bridge_name, bridge);
         }
         else if (source_nio != NULL)
            free_nio(source_nio);

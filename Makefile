@@ -30,6 +30,7 @@ SRC     =   ubridge.c               \
             iniparser/dictionary.c  \
             parse.c                 \
             pcap_capture.c          \
+            pcap_filter.c           \
             hypervisor.c            \
             hypervisor_parser.c     \
             hypervisor_bridge.c
