@@ -157,7 +157,7 @@ static int cmd_create_veth_pair(hypervisor_conn_t *conn, int argc, char *argv[])
 	    return (-1);
 	}
 
-	if (strlen(if1) > IFNAMSIZ || strlen(if2) > IFNAMSIZ) {
+	if (strlen(if1) >= IFNAMSIZ || strlen(if2) >= IFNAMSIZ) {
 	    hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "name is too long");
 	    goto out;
 	}
