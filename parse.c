@@ -23,6 +23,7 @@
 
 #include "parse.h"
 #include "nio_udp.h"
+#include "nio_unix.h"
 #include "nio_ethernet.h"
 #include "nio_tap.h"
 #include "pcap_capture.h"
@@ -55,6 +56,25 @@ static nio_t *create_udp_tunnel(const char *params)
   nio = create_nio_udp(atoi(local_port), remote_host, atoi(remote_port));
   if (!nio)
     fprintf(stderr, "unable to create UDP NIO\n");
+  return nio;
+}
+
+static nio_t *create_unix_socket(const char *params)
+{
+  nio_t *nio;
+  char *local;
+  char *remote;
+
+  printf("Creating UNIX domain socket %s\n", params);
+  local = strtok((char *)params, ":");
+  remote = strtok(NULL, ":");
+  if (local == NULL || remote == NULL) {
+     fprintf(stderr, "invalid UNIX domain socket syntax\n");
+     return NULL;
+  }
+  nio = create_nio_unix(local, remote);
+  if (!nio)
+    fprintf(stderr, "unable to create UNIX NIO\n");
   return nio;
 }
 
@@ -179,6 +199,8 @@ int parse_config(char *filename, bridge_t **bridges)
         printf("Parsing %s\n", bridge_name);
         if (getstr(ubridge_config, bridge_name, "source_udp", &value))
            source_nio = create_udp_tunnel(value);
+        else if (getstr(ubridge_config, bridge_name, "source_unix", &value))
+           source_nio = create_unix_socket(value);
         else if (getstr(ubridge_config, bridge_name, "source_ethernet", &value))
            source_nio = open_ethernet_device(value);
         else if (getstr(ubridge_config, bridge_name, "source_tap", &value))
@@ -196,6 +218,8 @@ int parse_config(char *filename, bridge_t **bridges)
 
         if (getstr(ubridge_config, bridge_name, "destination_udp", &value))
            destination_nio = create_udp_tunnel(value);
+        else if (getstr(ubridge_config, bridge_name, "destination_unix", &value))
+           destination_nio = create_unix_socket(value);
         else if (getstr(ubridge_config, bridge_name, "destination_ethernet", &value))
            destination_nio = open_ethernet_device(value);
         else if (getstr(ubridge_config, bridge_name, "destination_tap", &value))

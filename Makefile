@@ -24,6 +24,7 @@ NAME    =   ubridge
 SRC     =   ubridge.c               \
             nio.c                   \
             nio_udp.c               \
+            nio_unix.c              \
             nio_ethernet.c          \
             nio_tap.c               \
             iniparser/iniparser.c   \

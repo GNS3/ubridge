@@ -95,7 +95,7 @@ static int udp_connect(int local_port, char *remote_host, int remote_port)
    }
 
    freeaddrinfo(res0);
-   return(sck);
+   return (sck);
 }
 
 static void nio_udp_free(nio_udp_t *nio_udp)

@@ -95,6 +95,7 @@ The modules that are currently defined are given below:
     101 add_nio_ethernet (min/max args: 2/2)
     101 add_nio_tap (min/max args: 2/2)
     101 add_nio_udp (min/max args: 4/4)
+    101 add_nio_unix (min/max args: 3/3)
     101 rename (min/max args: 2/2)
     101 stop (min/max args: 1/1)
     101 start (min/max args: 1/1)
@@ -178,6 +179,14 @@ The modules that are currently defined are given below:
 
     bridge add_nio_udp br0 20000 127.0.0.1 30000
     100-NIO UDP added to bridge 'br0'
+
+* "bridge add_nio_unix <local> <remote>" :
+  Add an UNIX NIO with 'local' the UNIX domain socket to receive and 'remote' to send
+
+.. code:: bash
+
+    bridge add_nio_unix br0 "/tmp/local" "/tmp/remote"
+    100-NIO UNIX added to bridge 'br0'
 
 * "bridge add_nio_tap <bridge_name> <tap_device>" :
   Add an TAP NIO to a bridge. TAP devices are supported only on Linux and FreeBSD and require root access.
@@ -358,12 +367,21 @@ On Linux you can use a RAW socket to bridge an Ethernet interface (a bit faster 
     source_linux_raw = eth0
     destination_udp = 42000:127.0.0.1:42001
 
+There is also the option to use a UNIX domain socket
+
+.. code:: ini
+
+    ; bridge UNIX domain socket with an UDP tunnel
+    [bridge5]
+    source_unix = /tmp/local_file:/tmp/remote_file
+    destination_udp = 42002:127.0.0.1:42003
+
 On Mac OS X you can use the proprietary vmnet ktext module to bridge an VMware Fusion vmnet interface.
 
 .. code:: ini
 
     ; bridge VMware FUsion interface vmnet1 with an UDP tunnel
-    [bridge5]
+    [bridge6]
     source_fusion_vmnet = vmnet1
     destination_udp = 12000:127.0.0.1:12001
 
@@ -373,7 +391,7 @@ using ubridge.exe -e on a command line.
 .. code:: ini
 
     ; using a Windows NPF interface
-    [bridge6]
+    [bridge7]
     source_ethernet = "\Device\NPF_{BC46623A-D65B-4498-9073-96B9DC4C8CBA}"
     destination_udp = 10000:127.0.0.1:10001
     ; this will filter out frames with source MAC address 00:50:56:c0:00:0a

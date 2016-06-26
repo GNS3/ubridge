@@ -143,7 +143,7 @@ nio_t *create_nio_linux_raw(char *dev_name)
       return NULL;
    }
 
-   nio->type = NIO_LINUX_RAW;
+   nio->type = NIO_TYPE_LINUX_RAW;
    nio->send = (void *)nio_linux_raw_send;
    nio->recv = (void *)nio_linux_raw_recv;
    nio->free = (void *)nio_linux_raw_free;

@@ -148,7 +148,7 @@ nio_t *create_nio_fusion_vmnet(char *vmnet_name)
       return NULL;
    }
 
-   nio->type = NIO_FUSION_VMNET;
+   nio->type = NIO_TYPE_FUSION_VMNET;
    nio->send = (void *)nio_fusion_vmnet_send;
    nio->recv = (void *)nio_fusion_vmnet_recv;
    nio->free = (void *)nio_fusion_vmnet_free;

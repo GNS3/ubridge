@@ -24,6 +24,7 @@
 #include "ubridge.h"
 #include "nio.h"
 #include "nio_udp.h"
+#include "nio_unix.h"
 #include "nio_tap.h"
 #include "nio_ethernet.h"
 #ifdef LINUX_RAW
@@ -290,6 +291,32 @@ static int cmd_add_nio_udp(hypervisor_conn_t *conn, int argc, char *argv[])
    return (0);
 }
 
+static int cmd_add_nio_unix(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+   nio_t *nio;
+   bridge_t *bridge;
+
+   bridge = find_bridge(argv[0]);
+   if (bridge == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
+      return (-1);
+   }
+
+   nio = create_nio_unix(argv[1], argv[2]);
+   if (!nio) {
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "unable to create NIO UNIX for bridge '%s'", argv[0]);
+      return (-1);
+   }
+
+   if (add_nio_to_bridge(conn, bridge, nio) == -1) {
+     free_nio(nio);
+     return (-1);
+   }
+
+   hypervisor_send_reply(conn, HSC_INFO_OK,1, "NIO UNIX added to bridge '%s'", argv[0]);
+   return (0);
+}
+
 static int cmd_add_nio_tap(hypervisor_conn_t *conn, int argc, char *argv[])
 {
    nio_t *nio;
@@ -494,6 +521,7 @@ static hypervisor_cmd_t bridge_cmd_array[] = {
    { "stats", 1, 1, cmd_stats_bridge, NULL },
    { "rename", 2, 2, cmd_rename_bridge, NULL },
    { "add_nio_udp", 4, 4, cmd_add_nio_udp, NULL },
+   { "add_nio_unix", 3, 3, cmd_add_nio_unix, NULL },
    { "add_nio_tap", 2, 2, cmd_add_nio_tap, NULL },
    { "add_nio_ethernet", 2, 2, cmd_add_nio_ethernet, NULL },
 #ifdef LINUX_RAW

@@ -22,6 +22,7 @@
 #define NIO_H_
 
 #include <stdlib.h>
+#include <sys/un.h>
 #include <pcap.h>
 
 #define m_min(a,b) (((a) < (b)) ? (a) : (b))
@@ -33,8 +34,9 @@ enum {
     NIO_TYPE_UDP = 1,
     NIO_TYPE_ETHERNET,
     NIO_TYPE_TAP,
-    NIO_LINUX_RAW,
-    NIO_FUSION_VMNET,
+    NIO_TYPE_LINUX_RAW,
+    NIO_TYPE_FUSION_VMNET,
+    NIO_TYPE_UNIX,
 };
 
 typedef struct {
@@ -64,6 +66,12 @@ typedef struct {
 } nio_fusion_vmnet_t;
 
 typedef struct {
+    int fd;
+    char *local_filename;
+    struct sockaddr_un remote_sock;
+} nio_unix_t;
+
+typedef struct {
     u_int type;
     void *dptr;
 
@@ -76,6 +84,7 @@ typedef struct {
         nio_ethernet_t nio_ethernet;
         nio_linux_raw_t nio_linux_raw;
         nio_fusion_vmnet_t nio_fusion_vmnet;
+        nio_unix_t nio_unix;
     } u;
 
     ssize_t (*send)(void *nio, void *pkt, size_t len);
