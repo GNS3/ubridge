@@ -22,6 +22,8 @@
 #include <unistd.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <arpa/inet.h>
+#include <limits.h>
 #include <netdb.h>
 
 #include "ubridge.h"
@@ -34,6 +36,8 @@ static int udp_connect(int local_port, char *remote_host, int remote_port)
    struct sockaddr_storage st;
    int error, sck = -1, yes = 1;
    char port_str[20];
+   char hostname[HOST_NAME_MAX];
+   void *ptr;
 
    memset(&hints, 0, sizeof(hints));
    hints.ai_family = PF_UNSPEC;
@@ -65,7 +69,8 @@ static int udp_connect(int local_port, char *remote_host, int remote_port)
          struct sockaddr_in *sin = (struct sockaddr_in *)&st;
          sin->sin_family = PF_INET;
          sin->sin_port = htons(local_port);
-          break;
+         ptr = &((struct sockaddr_in *) res->ai_addr)->sin_addr;
+         break;
        }
 
        case PF_INET6: {
@@ -75,6 +80,7 @@ static int udp_connect(int local_port, char *remote_host, int remote_port)
 #endif
          sin6->sin6_family = PF_INET6;
          sin6->sin6_port = htons(local_port);
+         ptr = &((struct sockaddr_in6 *) res->ai_addr)->sin6_addr;
          break;
        }
 
@@ -86,6 +92,10 @@ static int udp_connect(int local_port, char *remote_host, int remote_port)
      }
 
       setsockopt(sck, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+      inet_ntop(res->ai_family, ptr, hostname, HOST_NAME_MAX);
+      printf("UDP tunnel connecting from local port %d to IPv%d addresss %s on port %d\n",
+      local_port, res->ai_family == PF_INET6 ? 6 : 4, hostname, remote_port);
+
       /* try to connect to remote host */
       if (!bind(sck, (struct sockaddr *)&st, res->ai_addrlen) && !connect(sck, res->ai_addr, res->ai_addrlen))
         break;
