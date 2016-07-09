@@ -68,6 +68,7 @@ typedef struct bridge {
 
 extern bridge_t *bridge_list;
 extern pthread_mutex_t global_lock;
+extern int debug_level;
 
 void ubridge_reset();
 void *source_nio_listener(void *data);

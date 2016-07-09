@@ -225,6 +225,7 @@ static int cmd_list_bridges(hypervisor_conn_t *conn, int argc, char *argv[])
      next = bridge->next;
      bridge = next;
    }
+
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
    return (0);
 }
@@ -243,6 +244,7 @@ static int cmd_stats_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
    if (bridge->destination_nio)
       hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Destination NIO: %d received %d sent", bridge->destination_nio->bytes_received, bridge->destination_nio->bytes_sent);
 
+   hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
    return (0);
 }
 

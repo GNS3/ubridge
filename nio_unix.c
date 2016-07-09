@@ -81,8 +81,6 @@ nio_t *create_nio_unix(char *local, char *remote)
       return NULL;
 
    nio_unix = &nio->u.nio_unix;
-   nio_unix->remote_sock.sun_family = AF_UNIX;
-   strcpy(nio_unix->remote_sock.sun_path, remote);
 
    if ((strlen(local) >= sizeof(nio_unix->remote_sock.sun_path)) || (strlen(remote) >= sizeof(nio_unix->remote_sock.sun_path))) {
      fprintf(stderr, "create_nio_unix: invalid file path size\n");
@@ -97,10 +95,13 @@ nio_t *create_nio_unix(char *local, char *remote)
    }
 
    if ((nio_unix->fd = create_unix_socket(nio_unix->local_filename)) < 0) {
-     fprintf(stderr, "create_nio_udp: unable to create UNIX domain socket with %s\n", nio_unix->local_filename);
+     fprintf(stderr, "create_nio_unix: unable to create UNIX domain socket with %s\n", nio_unix->local_filename);
      free_nio(nio);
      return NULL;
    }
+
+   nio_unix->remote_sock.sun_family = AF_UNIX;
+   strcpy(nio_unix->remote_sock.sun_path, remote);
 
    nio->type = NIO_TYPE_UNIX;
    nio->send = (void *)nio_unix_send;

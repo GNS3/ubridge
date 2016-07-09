@@ -38,6 +38,7 @@
 #include "hypervisor_bridge.h"
 #ifdef __linux__
 #include "hypervisor_docker.h"
+#include "hypervisor_iol_bridge.h"
 #endif
 #include "ubridge.h"
 
@@ -496,6 +497,7 @@ int run_hypervisor(char *ip_addr, int tcp_port)
    hypervisor_bridge_init();
 #ifdef __linux__
    hypervisor_docker_init();
+   hypervisor_iol_bridge_init();
 #endif
 
    signal(SIGPIPE, SIG_IGN);
