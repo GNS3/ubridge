@@ -29,7 +29,9 @@
 #include "parse.h"
 #include "pcap_capture.h"
 #include "hypervisor.h"
+#ifdef __linux__
 #include "hypervisor_iol_bridge.h"
+#endif
 
 char *config_file = CONFIG_FILE;
 pthread_mutex_t global_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -124,6 +126,7 @@ static void free_bridges(bridge_t *bridge)
   }
 }
 
+#ifdef __linux__
 static void free_iol_bridges(iol_bridge_t *bridge)
 {
   iol_bridge_t *next;
@@ -154,6 +157,7 @@ static void free_iol_bridges(iol_bridge_t *bridge)
     bridge = next;
   }
 }
+#endif
 
 static void create_threads(bridge_t *bridge)
 {
@@ -173,7 +177,9 @@ static void create_threads(bridge_t *bridge)
 void ubridge_reset()
 {
    free_bridges(bridge_list);
+#ifdef __linux__
    free_iol_bridges(iol_bridge_list);
+#endif
 }
 
 /* Generic signal handler */
@@ -213,7 +219,9 @@ static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port)
 
       run_hypervisor(hypervisor_ip_address, hypervisor_tcp_port);
       free_bridges(bridge_list);
+#ifdef __linux__
       free_iol_bridges(iol_bridge_list);
+#endif
    }
    else {
       sigset_t sigset;
