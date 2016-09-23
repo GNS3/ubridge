@@ -61,6 +61,7 @@ ifeq ($(shell uname), Linux)
     SRC += nio_linux_raw.c             \
            hypervisor_docker.c         \
            hypervisor_iol_bridge.c     \
+           hypervisor_brctl.c   \
            netlink/nl.c
 endif
 

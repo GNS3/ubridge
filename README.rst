@@ -286,6 +286,12 @@ The modules that are currently defined are given below:
     docker delete_veth hostif
     100-veth interface hostif has been deleted
 
+**Linux bridge ("brctl") ***
+
+.. code:: bash
+    brctl addif virbr0 nat2
+    100-nat2 has been added to bridge virbr0
+
 **Session example**
 
 This will bridge a tap0 interface to an UDP tunnel.
