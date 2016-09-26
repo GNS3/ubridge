@@ -23,6 +23,14 @@
 
 #include "nio.h"
 
+#ifndef HOST_NAME_MAX
+# if defined(_POSIX_HOST_NAME_MAX)
+#  define HOST_NAME_MAX _POSIX_HOST_NAME_MAX
+# elif defined(MAXHOSTNAMELEN)
+#  define HOST_NAME_MAX MAXHOSTNAMELEN
+# endif
+#endif /* HOST_NAME_MAX */
+
 nio_t *create_nio_udp(int local_port, char *remote_host, int remote_port);
 
 #endif /* !NIO_UDP_H_ */
