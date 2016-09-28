@@ -32,7 +32,7 @@ Install the dependencies:
 
 - Install Winpcap: https://www.winpcap.org/
 - Install Cygwin 32-bit (setup-x86.exe): https://cygwin.com/install.html
-- In Cygwin setup, install the ``make``, ``gcc-core`` and ``git`` packages
+- In Cygwin setup, install the ``make``, ``gcc-core`` packages
 - Download and unzip Winpcap developer pack: http://www.winpcap.org/devel.htm
 - Copy the libraries ``WpdPack\Lib\libpacket.a`` and ``WpdPack\Lib\libwpcap.a`` to ``cygwin\lib\``
 - Copy all headers from ``WpdPack\Include`` to ``cygwin\usr\include\``
