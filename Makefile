@@ -79,7 +79,14 @@ clean:
 
 all	: $(NAME)
 
+ifeq ($(shell uname), Darwin)
+install : $(NAME)
+	cp $(NAME) $(BINDIR)
+	chmod 4755 $(BINDIR)/$(NAME)
+	chown root $(BINDIR)/$(NAME)
+else
 install : $(NAME)
 	chmod +x $(NAME)
 	cp $(NAME) $(BINDIR)
 	setcap cap_net_admin,cap_net_raw=ep $(BINDIR)/$(NAME)
+endif
