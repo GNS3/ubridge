@@ -147,11 +147,11 @@ static void free_iol_bridges(iol_bridge_t *bridge)
         if (bridge->port_table[i].destination_nio != NULL) {
            pthread_cancel(bridge->port_table[i].tid);
            pthread_join(bridge->port_table[i].tid, NULL);
+           free_pcap_capture(bridge->port_table[i].capture);
            free_nio(bridge->port_table[i].destination_nio);
         }
     }
     free(bridge->port_table);
-    free_pcap_capture(bridge->capture);
     next = bridge->next;
     free(bridge);
     bridge = next;

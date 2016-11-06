@@ -68,6 +68,7 @@ typedef struct
   struct sockaddr_un iol_sockaddr;
   nio_t *destination_nio;
   unsigned char header[IOL_HDR_SIZE];
+  pcap_capture_t *capture;
   pthread_t tid;
 } iol_nio_t;
 
@@ -80,7 +81,6 @@ typedef struct iol_bridge {
   struct sockaddr_un bridge_sockaddr;
   pthread_t bridge_tid;
   iol_nio_t *port_table;
-  pcap_capture_t *capture;
   struct iol_bridge *next;
 } iol_bridge_t;
 
