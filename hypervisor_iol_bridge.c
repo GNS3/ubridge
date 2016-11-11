@@ -23,6 +23,7 @@
 #include <assert.h>
 #include <sys/un.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <fcntl.h>
 
 #include "ubridge.h"
@@ -299,6 +300,8 @@ static int cmd_create_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
    pid_t lock_pid;
    iol_bridge_t *new_bridge;
    iol_bridge_t **head;
+   char netio_path[108];
+   struct stat st;
 
    if (find_bridge(argv[0]) != NULL) {
       hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "IOL bridge '%s' already exist", argv[0]);
@@ -314,6 +317,13 @@ static int cmd_create_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
    new_bridge->application_id = atoi(argv[1]);
    memset(&(new_bridge->bridge_sockaddr), 0, sizeof(new_bridge->bridge_sockaddr));
    new_bridge->bridge_sockaddr.sun_family = AF_UNIX;
+
+
+   snprintf(netio_path, sizeof(netio_path), "/tmp/netio%u", getuid());
+   if (stat(netio_path, &st) == -1) {
+       mkdir(netio_path, 0700);
+   }
+
    snprintf(new_bridge->bridge_sockaddr.sun_path, sizeof(new_bridge->bridge_sockaddr.sun_path), "/tmp/netio%u/%u", getuid(), new_bridge->application_id);
 
    if ((new_bridge->sock_lock = lock_unix_socket(new_bridge->bridge_sockaddr.sun_path)) < 0) {
