@@ -292,6 +292,21 @@ The modules that are currently defined are given below:
     brctl addif virbr0 nat2
     100-nat2 has been added to bridge virbr0
 
+**IOL Bridge module ("iol_bridge")**
+
+* iol_bridge create <name> <id>
+
+.. code:: bash
+
+    iol_bridge create IOL-BRIDGE-513 513
+    100-IOL bridge 'IOL-BRIDGE-513' created
+
+* iol_bridge add_nio_udp <name> <iol_id> <bay> <unit> <lport> <rhost> <rport>
+
+* iol_bridge start_capture <name> "<output_file>" <data_link_type>
+
+* iol_bridge delete <name>
+
 **Session example**
 
 This will bridge a tap0 interface to an UDP tunnel.
