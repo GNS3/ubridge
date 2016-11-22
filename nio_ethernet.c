@@ -23,6 +23,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <netdb.h>
+#include <pthread.h>
 
 #include "ubridge.h"
 #include "nio_ethernet.h"
@@ -61,7 +62,7 @@ static pcap_t *nio_ethernet_open(char *device)
 
    if (!p)
       goto pcap_error;
-#endif
+#endif /* CYGWIN */
 
    return p;
 
@@ -95,6 +96,7 @@ static ssize_t nio_ethernet_recv(nio_ethernet_t *nio_ethernet, void *pkt, size_t
    timedout:
    res = pcap_next_ex(nio_ethernet->pcap_dev, &pkt_info, &pkt_data);
    if (res == 0) {
+      pthread_testcancel();
       /* Timeout elapsed */
       goto timedout;
     }
@@ -127,10 +129,12 @@ nio_t *create_nio_ethernet(char *dev_name)
    }
 
    if (pcap_lookupnet(dev_name, &nio_ethernet->net, &nio_ethernet->mask, pcap_errbuf) < 0) {
-	  fprintf(stderr, "Cannot get netmask for device '%s': %s\n", dev_name, pcap_errbuf);
-	  free_nio(nio);
+      fprintf(stderr, "Cannot get netmask for device '%s': %s\n", dev_name, pcap_errbuf);
+      free_nio(nio);
       return NULL;
    }
+
+   printf("Ethernet interface %s\n", dev_name);
 
    nio->type = NIO_TYPE_ETHERNET;
    nio->send = (void *)nio_ethernet_send;
