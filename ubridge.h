@@ -35,7 +35,7 @@
 #include "nio.h"
 
 #define NAME          "ubridge"
-#define VERSION       "0.9.7"
+#define VERSION       "0.9.8"
 #define CONFIG_FILE   "ubridge.ini"
 
 #ifndef FALSE
