@@ -145,7 +145,7 @@ void *iol_bridge_listener(void *data)
        nio = bridge->port_table[port].destination_nio;
 
        /* Dump the packet to a PCAP file if capture is activated */
-       pcap_capture_packet(bridge->port_table[port].capture, pkt, bytes_received);
+       pcap_capture_packet(bridge->port_table[port].capture, &pkt[IOL_HDR_SIZE], bytes_received);
 
        /* Destination NIO hasn't been created yet */
        if (nio == NULL)
