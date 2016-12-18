@@ -70,13 +70,18 @@ static void bridge_nios(nio_t *source_nio, nio_t *destination_nio, bridge_t *bri
 
     /* send what we received to the destination NIO */
     bytes_sent = nio_send(destination_nio, pkt, bytes_received);
-    destination_nio->bytes_received += bytes_sent;
     if (bytes_sent == -1) {
         if (errno == ECONNREFUSED || errno == ENETDOWN)
            continue;
+
+        /* The linux tap driver returns EIO if the device is not up. From the ubridge side this is not an error, so we should ignore it. */
+        if (destination_nio->type == NIO_TYPE_TAP && errno == EIO)
+            continue;
+
         perror("send");
         break;
     }
+    destination_nio->bytes_received += bytes_sent;
   }
 }
 

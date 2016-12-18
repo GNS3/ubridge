@@ -185,6 +185,14 @@ The modules that are currently defined are given below:
 
 .. code:: bash
 
+    bridge remove_nio_udp br0 20000 127.0.0.1 30000
+    100-NIO UDP removed from bridge 'br0'
+
+* "bridge remove_nio_udp <bridge_name> <local_port> <remote_host> <remote_port>" :
+  Remove an UDP NIO with the specified parameters to a bridge.
+
+.. code:: bash
+
     bridge add_nio_unix br0 "/tmp/local" "/tmp/remote"
     100-NIO UNIX added to bridge 'br0'
 
@@ -286,7 +294,7 @@ The modules that are currently defined are given below:
     docker delete_veth hostif
     100-veth interface hostif has been deleted
 
-**Linux bridge ("brctl") ***
+**Linux bridge ("brctl") **
 
 .. code:: bash
     brctl addif virbr0 nat2
