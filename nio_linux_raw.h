@@ -23,6 +23,13 @@
 
 #include "nio.h"
 
+#define VLAN_HEADER_LEN 4
+
+typedef struct {
+    uint16_t vlan_tp_id;
+    uint16_t vlan_tci;
+} vlan_tag_t;
+
 nio_t *create_nio_linux_raw(char *dev_name);
 
 #endif /* !NIO_LINUX_RAW_H_ */

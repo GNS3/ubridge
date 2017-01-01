@@ -64,7 +64,7 @@ static int nio_linux_raw_open_socket(char *device)
 
    if ((sck = socket(PF_PACKET,SOCK_RAW,htons(ETH_P_ALL))) == -1) {
       fprintf(stderr, "nio_linux_raw_open_socket: socket: %s\n",strerror(errno));
-      return(-1);
+      return (-1);
    }
 
    memset(&sa,0,sizeof(struct sockaddr_ll));
@@ -79,18 +79,24 @@ static int nio_linux_raw_open_socket(char *device)
    mreq.mr_type = PACKET_MR_PROMISC;
 
    if (bind(sck,(struct sockaddr *)&sa,sizeof(struct sockaddr_ll)) == -1) {
-      fprintf(stderr, "nio_linux_raw_open_socket: bind: %s\n",strerror(errno));
-      return(-1);
+      fprintf(stderr, "nio_linux_raw_open_socket: bind: %s\n", strerror(errno));
+      return (-1);
    }
 
-   if (setsockopt(sck,SOL_PACKET,PACKET_ADD_MEMBERSHIP,
-                  &mreq,sizeof(mreq)) == -1)
-   {
-      fprintf(stderr, "nio_linux_raw_open_socket: setsockopt: %s\n",strerror(errno));
-      return(-1);
+   if (setsockopt(sck, SOL_PACKET, PACKET_ADD_MEMBERSHIP, &mreq,sizeof(mreq)) == -1) {
+      fprintf(stderr, "nio_linux_raw_open_socket: setsockopt (PACKET_ADD_MEMBERSHIP): %s\n", strerror(errno));
+      return (-1);
    }
 
-   return(sck);
+#ifdef PACKET_AUXDATA
+   int val = 1;
+   if (setsockopt(sck, SOL_PACKET, PACKET_AUXDATA, &val, sizeof val) == -1) {
+      fprintf(stderr, "nio_linux_raw_open_socket: setsockopt (PACKET_AUXDATA): %s\n", strerror(errno));
+      return (-1);
+   }
+#endif
+
+   return (sck);
 }
 
 static void nio_linux_raw_free(nio_linux_raw_t *nio_linux_raw)
@@ -115,7 +121,56 @@ static ssize_t nio_linux_raw_send(nio_linux_raw_t *nio_linux_raw, void *pkt, siz
 
 static ssize_t nio_linux_raw_recv(nio_linux_raw_t *nio_linux_raw, void *pkt, size_t max_len)
 {
-   return (recv(nio_linux_raw->fd, pkt, max_len, 0));
+#ifdef PACKET_AUXDATA
+    ssize_t received;
+    struct iovec iov;
+    struct cmsghdr *cmsg;
+    struct msghdr msg;
+    struct sockaddr from;
+    union {
+      struct cmsghdr  cmsg;
+      char    buf[CMSG_SPACE(sizeof(struct tpacket_auxdata))];
+    } cmsg_buf;
+
+
+    memset(&msg, 0, sizeof(struct msghdr));
+    memset(cmsg_buf.buf, 0, CMSG_SPACE(sizeof(struct tpacket_auxdata)));
+
+    msg.msg_name = &from;
+    msg.msg_namelen  = sizeof(from);
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = &cmsg_buf;
+    msg.msg_controllen = sizeof(cmsg_buf);
+    msg.msg_flags = 0;
+    iov.iov_len = max_len - VLAN_HEADER_LEN;
+    iov.iov_base = pkt;
+
+    received = recvmsg(nio_linux_raw->fd, &msg, MSG_TRUNC);
+    if (received > 0) {
+
+       /* Code mostly copied from libpcap to reconstruct VLAN header */
+       for (cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+           struct tpacket_auxdata *aux;
+           vlan_tag_t *tag;
+
+           if (cmsg->cmsg_len < CMSG_LEN(sizeof(struct tpacket_auxdata)) || cmsg->cmsg_level != SOL_PACKET || cmsg->cmsg_type != PACKET_AUXDATA) {
+                aux = (struct tpacket_auxdata *)CMSG_DATA(cmsg);
+                if (aux->tp_vlan_tci == 0)
+                   continue;
+
+                /* VLAN tag found. Shift MAC addresses down and insert VLAN tag */
+                memmove(pkt, (unsigned char *)pkt + VLAN_HEADER_LEN, ETH_ALEN * 2);
+                tag = (vlan_tag_t *)((unsigned char *)pkt + ETH_ALEN * 2);
+                tag->vlan_tp_id = htons(ETH_P_8021Q);
+                tag->vlan_tci = htons(aux->tp_vlan_tci);
+            }
+       }
+    }
+    return (received);
+#else
+    return (recv(nio_linux_raw->fd, pkt, max_len, 0));
+#endif
 }
 
 /* Create a new NIO Linux RAW */
