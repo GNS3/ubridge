@@ -122,6 +122,13 @@ static ssize_t nio_linux_raw_send(nio_linux_raw_t *nio_linux_raw, void *pkt, siz
 static ssize_t nio_linux_raw_recv(nio_linux_raw_t *nio_linux_raw, void *pkt, size_t max_len)
 {
 #ifdef PACKET_AUXDATA
+
+#ifdef TP_STATUS_VLAN_TPID_VALID
+# define VLAN_TPID(hdr, hv)     (((hv)->tp_vlan_tpid || ((hdr)->tp_status & TP_STATUS_VLAN_TPID_VALID)) ? (hv)->tp_vlan_tpid : ETH_P_8021Q)
+#else
+# define VLAN_TPID(hdr, hv)     ETH_P_8021Q
+#endif
+
     ssize_t received;
     struct iovec iov;
     struct cmsghdr *cmsg;
@@ -133,8 +140,8 @@ static ssize_t nio_linux_raw_recv(nio_linux_raw_t *nio_linux_raw, void *pkt, siz
     } cmsg_buf;
 
 
-    memset(&msg, 0, sizeof(struct msghdr));
-    memset(cmsg_buf.buf, 0, CMSG_SPACE(sizeof(struct tpacket_auxdata)));
+    memset(&msg, 0, sizeof(msg));
+    memset(&cmsg_buf, 0, sizeof(cmsg_buf));
 
     msg.msg_name = &from;
     msg.msg_namelen  = sizeof(from);
@@ -154,15 +161,24 @@ static ssize_t nio_linux_raw_recv(nio_linux_raw_t *nio_linux_raw, void *pkt, siz
            struct tpacket_auxdata *aux;
            vlan_tag_t *tag;
 
-           if (cmsg->cmsg_len < CMSG_LEN(sizeof(struct tpacket_auxdata)) || cmsg->cmsg_level != SOL_PACKET || cmsg->cmsg_type != PACKET_AUXDATA) {
+           if (cmsg->cmsg_len >= CMSG_LEN(sizeof(struct tpacket_auxdata)) && cmsg->cmsg_level == SOL_PACKET && cmsg->cmsg_type == PACKET_AUXDATA) {
                 aux = (struct tpacket_auxdata *)CMSG_DATA(cmsg);
+#if defined(TP_STATUS_VLAN_VALID)
+                if ((aux->tp_vlan_tci == 0) && !(aux->tp_status & TP_STATUS_VLAN_VALID))
+#else
+                /* this is ambigious but without the TP_STATUS_VLAN_VALID flag,
+                   there is nothing that we can do */
                 if (aux->tp_vlan_tci == 0)
+#endif
                    continue;
 
                 /* VLAN tag found. Shift MAC addresses down and insert VLAN tag */
-                memmove(pkt, (unsigned char *)pkt + VLAN_HEADER_LEN, ETH_ALEN * 2);
+                memmove((unsigned char *)pkt + ETH_ALEN * 2 + VLAN_HEADER_LEN,
+                        (unsigned char *)pkt + ETH_ALEN * 2,
+                        received - ETH_ALEN * 2);
+                received += VLAN_HEADER_LEN;
                 tag = (vlan_tag_t *)((unsigned char *)pkt + ETH_ALEN * 2);
-                tag->vlan_tp_id = htons(ETH_P_8021Q);
+                tag->vlan_tp_id = htons(VLAN_TPID(aux,aux));
                 tag->vlan_tci = htons(aux->tp_vlan_tci);
             }
        }
