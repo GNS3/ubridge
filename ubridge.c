@@ -54,6 +54,12 @@ static void bridge_nios(nio_t *source_nio, nio_t *destination_nio, bridge_t *bri
         perror("recv");
         break;
     }
+
+    if (bytes_received > NIO_MAX_PKT_SIZE) {
+        fprintf(stderr, "received frame is %zd bytes (maximum is %d bytes)\n", bytes_received, NIO_MAX_PKT_SIZE);
+        continue;
+    }
+
     source_nio->bytes_sent += bytes_received;
 
     if (debug_level > 0) {

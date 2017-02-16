@@ -75,6 +75,12 @@ void *iol_nio_listener(void *data)
             perror("recv");
             break;
         }
+
+        if (bytes_received > MAX_MTU) {
+            fprintf(stderr, "received frame is %zd bytes (maximum is %d bytes)\n", bytes_received, MAX_MTU);
+            continue;
+        }
+
         nio->bytes_sent += bytes_received;
 
         if (debug_level > 0) {
