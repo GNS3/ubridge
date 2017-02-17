@@ -27,7 +27,7 @@
 
 #define m_min(a,b) (((a) < (b)) ? (a) : (b))
 
-#define NIO_MAX_PKT_SIZE    10000
+#define NIO_MAX_PKT_SIZE    65535
 #define NIO_DEV_MAXLEN      64
 
 enum {
