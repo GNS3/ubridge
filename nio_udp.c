@@ -25,6 +25,7 @@
 #include <arpa/inet.h>
 #include <limits.h>
 #include <netdb.h>
+#include <netinet/in.h>
 
 #include "ubridge.h"
 #include "nio_udp.h"
