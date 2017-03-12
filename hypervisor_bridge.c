@@ -230,6 +230,24 @@ static int cmd_list_bridges(hypervisor_conn_t *conn, int argc, char *argv[])
    return (0);
 }
 
+static int cmd_show_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+   bridge_t *bridge;
+
+   bridge = find_bridge(argv[0]);
+   if (bridge == NULL) {
+	  hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
+	  return (-1);
+   }
+   if (bridge->source_nio)
+      hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Source NIO:\t%s", bridge->source_nio->desc);
+   if (bridge->destination_nio)
+      hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Destination NIO:\t%s", bridge->destination_nio->desc);
+
+   hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
+   return (0);
+}
+
 static int cmd_stats_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
 {
    bridge_t *bridge;
@@ -288,6 +306,8 @@ static int cmd_add_nio_udp(hypervisor_conn_t *conn, int argc, char *argv[])
      free_nio(nio);
      return (-1);
    }
+
+   sprintf(nio->desc,"%s:%s:%s", argv[1], argv[2], argv[3]);
 
    hypervisor_send_reply(conn, HSC_INFO_OK,1, "NIO UDP added to bridge '%s'", argv[0]);
    return (0);
@@ -356,6 +376,8 @@ static int cmd_add_nio_unix(hypervisor_conn_t *conn, int argc, char *argv[])
      return (-1);
    }
 
+   sprintf(nio->desc,"%s -> %s", argv[1], argv[2]);
+
    hypervisor_send_reply(conn, HSC_INFO_OK,1, "NIO UNIX added to bridge '%s'", argv[0]);
    return (0);
 }
@@ -382,6 +404,8 @@ static int cmd_add_nio_tap(hypervisor_conn_t *conn, int argc, char *argv[])
      return (-1);
    }
 
+   sprintf(nio->desc, "%s", argv[1]);
+
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "NIO TAP added to bridge '%s'", argv[0]);
    return (0);
 }
@@ -407,6 +431,8 @@ static int cmd_add_nio_ethernet(hypervisor_conn_t *conn, int argc, char *argv[])
      free_nio(nio);
      return (-1);
    }
+
+   sprintf(nio->desc, "%s", argv[1]);
 
    hypervisor_send_reply(conn, HSC_INFO_OK,1, "NIO Ethernet added to bridge '%s'", argv[0]);
    return (0);
@@ -435,6 +461,8 @@ static int cmd_add_nio_linux_raw(hypervisor_conn_t *conn, int argc, char *argv[]
      return (-1);
    }
 
+   sprintf(nio->desc, "%s", argv[1]);
+
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "NIO Linux raw added to bridge '%s'", argv[0]);
    return (0);
 }
@@ -462,6 +490,8 @@ static int cmd_add_nio_fusion_vmnet(hypervisor_conn_t *conn, int argc, char *arg
      free_nio(nio);
      return (-1);
    }
+
+   sprintf(nio->desc, "%s", argv[1]);
 
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "NIO Fusion VMnet added to bridge '%s'", argv[0]);
    return (0);
@@ -561,6 +591,7 @@ static hypervisor_cmd_t bridge_cmd_array[] = {
    { "delete", 1, 1, cmd_delete_bridge, NULL },
    { "start", 1, 1, cmd_start_bridge, NULL },
    { "stop", 1, 1, cmd_stop_bridge, NULL },
+   { "show", 1, 1, cmd_show_bridge, NULL },
    { "stats", 1, 1, cmd_stats_bridge, NULL },
    { "rename", 2, 2, cmd_rename_bridge, NULL },
    { "add_nio_udp", 4, 4, cmd_add_nio_udp, NULL },
