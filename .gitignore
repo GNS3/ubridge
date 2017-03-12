@@ -32,6 +32,3 @@
 *.dSYM/
 ubridge
 ubridge.ini
-/.cproject
-/.project
-.settings/

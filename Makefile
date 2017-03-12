@@ -44,7 +44,6 @@ CFLAGS  =   -O3 -Wall
 
 BINDIR  =   /usr/local/bin
 
-
 ifeq ($(shell uname), Darwin)
    LIBS =   -lpthread -lpcap
    SRC +=   nio_fusion_vmnet.c    \
@@ -77,10 +76,6 @@ clean:
 	-rm -f $(OBJ)
 	-rm -f *~
 	-rm -f $(NAME)
-
-.PHONY: debug 
-debug: CFLAGS += -DDEBUG -g
-debug: $(NAME)
 
 all	: $(NAME)
 
