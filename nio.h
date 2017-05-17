@@ -52,8 +52,6 @@ typedef struct {
 
 typedef struct {
     pcap_t *pcap_dev;
-	bpf_u_int32 net;
-	bpf_u_int32 mask;
 } nio_ethernet_t;
 
 typedef struct {

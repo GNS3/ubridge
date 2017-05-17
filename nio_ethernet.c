@@ -114,7 +114,6 @@ static ssize_t nio_ethernet_recv(nio_ethernet_t *nio_ethernet, void *pkt, size_t
 /* Create a new NIO Ethernet (using PCAP) */
 nio_t *create_nio_ethernet(char *dev_name)
 {
-   char pcap_errbuf[PCAP_ERRBUF_SIZE];
    nio_ethernet_t *nio_ethernet;
    nio_t *nio;
 
@@ -124,12 +123,6 @@ nio_t *create_nio_ethernet(char *dev_name)
    nio_ethernet = &nio->u.nio_ethernet;
 
    if (!(nio_ethernet->pcap_dev = nio_ethernet_open(dev_name))) {
-      free_nio(nio);
-      return NULL;
-   }
-
-   if (pcap_lookupnet(dev_name, &nio_ethernet->net, &nio_ethernet->mask, pcap_errbuf) < 0) {
-      fprintf(stderr, "Cannot get netmask for device '%s': %s\n", dev_name, pcap_errbuf);
       free_nio(nio);
       return NULL;
    }
