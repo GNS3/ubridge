@@ -40,22 +40,45 @@ static int nio_tap_open(char *tap_devname)
 {
 #ifdef __linux__
    struct ifreq ifr;
-   int fd,err;
+   int err, fd;
+   if (*tap_devname == '/') {
+      if ((fd = open(tap_devname, O_RDWR)) < 0)
+         return(-1);
 
-   if ((fd = open("/dev/net/tun", O_RDWR)) < 0)
-      return(-1);
+      if ((err = ioctl(fd, TUNGETIFF, &ifr)) < 0) {
+         close(fd);
+         return err;
+      }
+      if (ifr.ifr_flags | IFF_VNET_HDR) {
+         ifr.ifr_flags &= ~IFF_VNET_HDR;
+         if ((err = ioctl(fd, TUNSETIFF, &ifr)) < 0) {
+            fprintf(stderr, "nio_tap_open: cannot clean IFF_VNET_HDR bit.\n");
+            close(fd);
+            return err;
+         }
+      }
+      if (ifr.ifr_flags != (IFF_TAP | IFF_NO_PI)) {
+         fprintf(stderr, "nio_tap_open: bad TAP device specified (%d).\n",
+                 ifr.ifr_flags);
+         close(fd);
+         return(-1);
+      }
+   } else {
+      if ((fd = open("/dev/net/tun", O_RDWR)) < 0)
+         return(-1);
 
-   memset(&ifr,0,sizeof(ifr));
-   ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
-   if (*tap_devname)
-      strncpy(ifr.ifr_name, tap_devname, IFNAMSIZ);
+      memset(&ifr,0,sizeof(ifr));
+      ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
+      if (*tap_devname)
+         strncpy(ifr.ifr_name, tap_devname, IFNAMSIZ);
 
-   if ((err = ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0) {
-      close(fd);
-      return err;
+      if ((err = ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0) {
+         close(fd);
+         return err;
+      }
+
+      strcpy(tap_devname, ifr.ifr_name);
    }
-
-   strcpy(tap_devname, ifr.ifr_name);
    return(fd);
 #else
    int i, fd = -1;
