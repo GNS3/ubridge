@@ -12,6 +12,18 @@ environment:
 install:
     - 'appveyor DownloadFile http://cygwin.com/setup-%CYG_ARCH%.exe -FileName setup.exe'
     - 'setup.exe -qnNdO -R "%CYG_ROOT%" -s "%CYG_MIRROR%" -l "%CYG_CACHE%" -P make -P gcc-core >NUL'
+    - 'cinst 7zip.commandline'
+    - 'cinst winpcap'
+    - 'appveyor DownloadFile http://www.winpcap.org/install/bin/WpdPack_4_1_2.zip'
+    - 'dir'
+    - '7za x .\WpdPack_4_1_2.zip -o.'
+    - 'xcopy .\WpdPack\Lib\libwpcap.a C:\cygwin\lib'
+    - 'xcopy .\WpdPack\Lib\libpacket.a C:\cygwin\lib'
 
 build_script:
-    - '%CYG_ROOT%/bin/bash -lc "make"'
+    - '%CYG_ROOT%/bin/bash -lc "ls $APPVEYOR_BUILD_FOLDER'
+    - '%CYG_ROOT%/bin/bash -lc "cd $APPVEYOR_BUILD_FOLDER && make CFLAGS=\"-O3 -Wall -lpthread -lpcap -IWpdPack\\Include\"'
+
+
+artifacts:
+  - path: 'ubridge.exe'
