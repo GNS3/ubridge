@@ -25,4 +25,14 @@
 
 int set_pcap_filter(nio_ethernet_t *nio_ethernet, const char *filter);
 
+#if !defined(PCAP_NETMASK_UNKNOWN)
+/*
+ *  Value to pass to pcap_compile() as the netmask if you don't know what
+ *  the netmask is.
+ *
+ *  Not defined by WinPcap
+ */
+#define PCAP_NETMASK_UNKNOWN    0xffffffff
+#endif
+
 #endif /* !PCAP_FILTER_H_ */
