@@ -31,7 +31,7 @@ int set_pcap_filter(nio_ethernet_t *nio_ethernet, const char *filter)
 {
      struct bpf_program fp;
 
-	 if (pcap_compile(nio_ethernet->pcap_dev, &fp, filter, 1, nio_ethernet->mask) < 0) {
+	 if (pcap_compile(nio_ethernet->pcap_dev, &fp, filter, 1, PCAP_NETMASK_UNKNOWN) < 0) {
 	    fprintf(stderr, "Cannot compile filter '%s': %s\n", filter, pcap_geterr(nio_ethernet->pcap_dev));
 		return (-1);
 	 }
