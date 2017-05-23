@@ -72,6 +72,7 @@ typedef struct {
 typedef struct {
     u_int type;
     void *dptr;
+    char *desc;
 
     ssize_t bytes_sent;
     ssize_t bytes_received;
