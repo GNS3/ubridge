@@ -45,12 +45,29 @@ int free_nio(void *data)
    nio_t *nio = data;
 
    if (nio) {
+     if (nio->desc != NULL)
+       free(nio->desc);
      if (nio->free != NULL)
        nio->free(nio->dptr);
      free(nio);
    }
 
    return (TRUE);
+}
+
+void add_nio_desc(nio_t *nio, const char *fmt, ...)
+{
+	int len;
+	va_list argptr;
+
+	va_start(argptr, fmt);
+	len = vsnprintf(NULL, 0, fmt, argptr);
+
+    if ((nio->desc = malloc((len + 1) * sizeof(char)))) {
+       va_start(argptr, fmt);
+       vsnprintf(nio->desc, len + 1, fmt, argptr);
+       va_end(argptr);
+    }
 }
 
 ssize_t nio_send(nio_t *nio, void *pkt, size_t len)

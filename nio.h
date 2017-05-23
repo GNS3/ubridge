@@ -22,6 +22,7 @@
 #define NIO_H_
 
 #include <stdlib.h>
+#include <stdarg.h>
 #include <sys/un.h>
 #include <pcap.h>
 
@@ -72,6 +73,7 @@ typedef struct {
 typedef struct {
     u_int type;
     void *dptr;
+    char *desc;
 
     ssize_t bytes_sent;
     ssize_t bytes_received;
@@ -91,6 +93,7 @@ typedef struct {
 } nio_t;
 
 nio_t *create_nio(void);
+void add_nio_desc(nio_t *nio, const char *fmt, ...);
 int free_nio(void *data);
 
 ssize_t nio_send(nio_t *nio, void *pkt, size_t len);
