@@ -73,7 +73,7 @@ The modules that are currently defined are given below:
 .. code:: bash
 
     hypervisor version
-    100-0.9.1
+    100-0.9.11
 
 * "hypervisor module_list" : Display the module list.
 
@@ -89,14 +89,18 @@ The modules that are currently defined are given below:
 
     hypervisor cmd_list bridge
     101 list (min/max args: 0/0)
+    101 set_pcap_filter (min/max args: 1/2)
     101 stop_capture (min/max args: 1/1)
     101 start_capture (min/max args: 2/3)
     101 add_nio_linux_raw (min/max args: 2/2)
     101 add_nio_ethernet (min/max args: 2/2)
     101 add_nio_tap (min/max args: 2/2)
-    101 add_nio_udp (min/max args: 4/4)
     101 add_nio_unix (min/max args: 3/3)
+    101 remove_nio_udp (min/max args: 4/4)
+    101 add_nio_udp (min/max args: 4/4)
     101 rename (min/max args: 2/2)
+    101 stats (min/max args: 1/1)
+    101 show (min/max args: 1/1)
     101 stop (min/max args: 1/1)
     101 start (min/max args: 1/1)
     101 delete (min/max args: 1/1)
@@ -228,6 +232,15 @@ The modules that are currently defined are given below:
     bridge add_nio_fusion_vmnet br0 vmnet1
     100-NIO Fusion VMnet added to bridge 'br0'
 
+* "bridge show <bridge_name>":
+  Show the NIOs on a bridge.
+
+.. code:: bash
+
+    bridge show bridge0
+    101 Source NIO:	20000:127.0.0.1:30000
+    101 Destination NIO: eth0
+
 * "bridge start_capture <bridge_name> <pcap_file> [pcap_linktype]" :
   Start a PCAP packet capture on a bridge. PCAP link type default is Ethernet "EN10MB".
 
@@ -347,6 +360,11 @@ Connect via telnet:
 
     bridge add_nio_udp br0 20000 127.0.0.1 30000
     100-NIO UDP added to bridge 'br0'
+
+    bridge show br0
+    101 Source NIO:	tap0
+    101 Destination NIO: 20000:127.0.0.1:30000
+    100-OK
 
     bridge start br0
     100-bridge 'br0' started

@@ -18,7 +18,6 @@
  *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <stdarg.h>
 #include <string.h>
 #include <assert.h>
 
@@ -39,21 +38,6 @@
 #include "pcap_capture.h"
 #include "pcap_filter.h"
 
-static int add_nio_desc(nio_t *nio, const char *fmt, ...)
-{
-	int len;
-	va_list argptr;
-
-	va_start(argptr, fmt);
-	len = vsnprintf(NULL, 0, fmt, argptr);
-
-    if (!(nio->desc = malloc((len + 1) * sizeof(char))))
-        return -1;
-    va_start(argptr, fmt);
-    vsnprintf(nio->desc, len + 1, fmt, argptr);
-    va_end(argptr);
-    return len;
-}
 
 static bridge_t *find_bridge(char *bridge_name)
 {
@@ -257,9 +241,9 @@ static int cmd_show_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
 	  return (-1);
    }
    if (bridge->source_nio)
-      hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Source NIO:\t%s", bridge->source_nio->desc);
+      hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Source NIO: %s", bridge->source_nio->desc);
    if (bridge->destination_nio)
-      hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Destination NIO:\t%s", bridge->destination_nio->desc);
+      hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Destination NIO: %s", bridge->destination_nio->desc);
 
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
    return (0);
