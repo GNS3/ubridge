@@ -277,8 +277,8 @@ The modules that are currently defined are given below:
 .. code:: bash
 
     bridge stats bridge0
-    101 Source NIO:      90 received 410 sent
-    101 Destination NIO: 410 received 90 sent
+    101 Source NIO:      IN: 5 packets (90 bytes) OUT: 15 packets (410 bytes)
+    101 Destination NIO: IN: 15 packets (410 bytes) OUT: 5 packets (90 bytes)
 
 **Docker module ("docker")**
 

@@ -81,7 +81,8 @@ void *iol_nio_listener(void *data)
             continue;
         }
 
-        nio->bytes_sent += bytes_received;
+        nio->packets_in++;
+        nio->bytes_in += bytes_received;
 
         if (debug_level > 0) {
             printf("Received %zd bytes from destination NIO on IOL bridge %s\n", bytes_received, bridge->name);
@@ -158,7 +159,8 @@ void *iol_bridge_listener(void *data)
           continue;
 
        bytes_sent = nio->send(nio->dptr, &pkt[IOL_HDR_SIZE], bytes_received);
-       nio->bytes_received += bytes_sent;
+       nio->packets_out++;
+       nio->bytes_out += bytes_sent;
        if (bytes_sent == -1) {
           if (errno == ECONNREFUSED || errno == ENETDOWN)
              continue;
@@ -546,9 +548,9 @@ static int cmd_stats_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
 
    for (i = 0; i < MAX_PORTS; i++) {
       if (bridge->port_table[i].destination_nio != NULL) {
-         hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "port %d/%d:      %d received %d sent",
+         hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "port %d/%d:      IN: %d packets (%d bytes) OUT: %d packets (%d bytes)",
          bridge->port_table[i].port.bay, bridge->port_table[i].port.unit,
-         bridge->port_table[i].destination_nio->bytes_received, bridge->port_table[i].destination_nio->bytes_sent);
+         bridge->port_table[i].destination_nio->bytes_in, bridge->port_table[i].destination_nio->bytes_out);
       }
 
    }

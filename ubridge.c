@@ -60,7 +60,8 @@ static void bridge_nios(nio_t *source_nio, nio_t *destination_nio, bridge_t *bri
         continue;
     }
 
-    source_nio->bytes_sent += bytes_received;
+    source_nio->packets_in++;
+    source_nio->bytes_in += bytes_received;
 
     if (debug_level > 0) {
         if (source_nio == bridge->source_nio)
@@ -87,7 +88,9 @@ static void bridge_nios(nio_t *source_nio, nio_t *destination_nio, bridge_t *bri
         perror("send");
         break;
     }
-    destination_nio->bytes_received += bytes_sent;
+
+    destination_nio->packets_out++;
+    destination_nio->bytes_out += bytes_sent;
   }
 }
 

@@ -75,8 +75,8 @@ typedef struct {
     void *dptr;
     char *desc;
 
-    ssize_t bytes_sent;
-    ssize_t bytes_received;
+    ssize_t packets_in, packets_out;
+    ssize_t bytes_in, bytes_out;
 
     union {
         nio_udp_t nio_udp;

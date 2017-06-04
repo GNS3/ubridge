@@ -259,9 +259,13 @@ static int cmd_stats_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
       return (-1);
    }
    if (bridge->source_nio)
-      hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Source NIO:      %d received %d sent", bridge->source_nio->bytes_received, bridge->source_nio->bytes_sent);
+      hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Source NIO:      IN: %d packets (%d bytes) OUT: %d packets (%d bytes)",
+      bridge->source_nio->packets_in, bridge->source_nio->bytes_in,
+      bridge->source_nio->packets_out, bridge->source_nio->bytes_out);
    if (bridge->destination_nio)
-      hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Destination NIO: %d received %d sent", bridge->destination_nio->bytes_received, bridge->destination_nio->bytes_sent);
+      hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Destination NIO: IN: %d packets (%d bytes) OUT: %d packets (%d bytes)",
+      bridge->destination_nio->packets_in, bridge->destination_nio->bytes_in,
+      bridge->destination_nio->packets_out, bridge->destination_nio->bytes_out);
 
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
    return (0);
