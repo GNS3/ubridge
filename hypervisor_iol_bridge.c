@@ -550,7 +550,8 @@ static int cmd_stats_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
       if (bridge->port_table[i].destination_nio != NULL) {
          hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "port %d/%d:      IN: %d packets (%d bytes) OUT: %d packets (%d bytes)",
          bridge->port_table[i].port.bay, bridge->port_table[i].port.unit,
-         bridge->port_table[i].destination_nio->bytes_in, bridge->port_table[i].destination_nio->bytes_out);
+         bridge->port_table[i].destination_nio->packets_in, bridge->port_table[i].destination_nio->bytes_in,
+         bridge->port_table[i].destination_nio->packets_out, bridge->port_table[i].destination_nio->bytes_out);
       }
 
    }
