@@ -104,7 +104,7 @@ void *iol_nio_listener(void *data)
         memcpy(pkt, &(iol_nio->header), sizeof(iol_nio->header));
         bytes_sent = sendto(iol_nio->iol_bridge_sock, pkt, bytes_received, 0, (struct sockaddr *)&iol_nio->iol_sockaddr, sizeof(iol_nio->iol_sockaddr));
         if (bytes_sent == -1) {
-           if (errno == ECONNREFUSED || errno == ENETDOWN)
+           if (errno == ECONNREFUSED || errno == ENETDOWN || errno == ENOENT)
               continue;
            perror("sendto");
            break;
