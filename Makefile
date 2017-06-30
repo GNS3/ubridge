@@ -21,21 +21,21 @@
 
 NAME    =   ubridge
 
-SRC     =   ubridge.c               \
-            nio.c                   \
-            nio_udp.c               \
-            nio_unix.c              \
-            nio_ethernet.c          \
-            nio_tap.c               \
-            iniparser/iniparser.c   \
-            iniparser/dictionary.c  \
-            parse.c                 \
-            packet_filter.c         \
-            pcap_capture.c          \
-            pcap_filter.c           \
-            hypervisor.c            \
-            hypervisor_parser.c     \
-            hypervisor_bridge.c
+SRC     =   src/ubridge.c               \
+            src/nio.c                   \
+            src/nio_udp.c               \
+            src/nio_unix.c              \
+            src/nio_ethernet.c          \
+            src/nio_tap.c               \
+            src/iniparser/iniparser.c   \
+            src/iniparser/dictionary.c  \
+            src/parse.c                 \
+            src/packet_filter.c         \
+            src/pcap_capture.c          \
+            src/pcap_filter.c           \
+            src/hypervisor.c            \
+            src/hypervisor_parser.c     \
+            src/hypervisor_bridge.c
 
 OBJ     =   $(SRC:.c=.o)
 
@@ -47,7 +47,7 @@ BINDIR  =   /usr/local/bin
 
 ifeq ($(shell uname), Darwin)
    LIBS =   -lpthread -lpcap
-   SRC +=   nio_fusion_vmnet.c    \
+   SRC +=   src/nio_fusion_vmnet.c    \
 
 else ifeq ($(shell uname -o), Cygwin)
    CFLAGS += -DCYGWIN
@@ -59,11 +59,11 @@ endif
 # RAW Ethernet support for Linux
 ifeq ($(shell uname), Linux)
     CFLAGS += -DLINUX_RAW
-    SRC += nio_linux_raw.c             \
-           hypervisor_docker.c         \
-           hypervisor_iol_bridge.c     \
-           hypervisor_brctl.c   \
-           netlink/nl.c
+    SRC += src/nio_linux_raw.c             \
+           src/hypervisor_docker.c         \
+           src/hypervisor_iol_bridge.c     \
+           src/hypervisor_brctl.c   \
+           src/netlink/nl.c
 endif
 
 ##############################
