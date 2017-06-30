@@ -28,6 +28,7 @@
 #include "ubridge.h"
 #include "parse.h"
 #include "pcap_capture.h"
+#include "packet_filter.h"
 #include "hypervisor.h"
 #ifdef __linux__
 #include "hypervisor_iol_bridge.h"
@@ -39,15 +40,17 @@ bridge_t *bridge_list = NULL;
 int debug_level = 0;
 int hypervisor_mode = 0;
 
-static void bridge_nios(nio_t *source_nio, nio_t *destination_nio, bridge_t *bridge)
+static void bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
 {
   ssize_t bytes_received, bytes_sent;
   unsigned char pkt[NIO_MAX_PKT_SIZE];
+  int drop_packet;
 
   while (1) {
 
-    /* received from the source NIO */
-    bytes_received = nio_recv(source_nio, &pkt, NIO_MAX_PKT_SIZE);
+    /* receive from the receiving NIO */
+    drop_packet = FALSE;
+    bytes_received = nio_recv(rx_nio, &pkt, NIO_MAX_PKT_SIZE);
     if (bytes_received == -1) {
         if (errno == ECONNREFUSED || errno == ENETDOWN)
            continue;
@@ -60,37 +63,57 @@ static void bridge_nios(nio_t *source_nio, nio_t *destination_nio, bridge_t *bri
         continue;
     }
 
-    source_nio->packets_in++;
-    source_nio->bytes_in += bytes_received;
+    rx_nio->packets_in++;
+    rx_nio->bytes_in += bytes_received;
 
     if (debug_level > 0) {
-        if (source_nio == bridge->source_nio)
-           printf("Received %zd bytes on bridge %s (source NIO)\n", bytes_received, bridge->name);
+        if (rx_nio == bridge->source_nio)
+           printf("Received %zd bytes on bridge '%s' (source NIO)\n", bytes_received, bridge->name);
         else
-           printf("Received %zd bytes on bridge %s (destination NIO)\n", bytes_received, bridge->name);
+           printf("Received %zd bytes on bridge '%s' (destination NIO)\n", bytes_received, bridge->name);
         if (debug_level > 1)
             dump_packet(stdout, pkt, bytes_received);
     }
 
+    /* filter the packet if there is a filter configured */
+    if (bridge->packet_filters != NULL) {
+         packet_filter_t *filter = bridge->packet_filters;
+         packet_filter_t *next;
+         while (filter != NULL) {
+             if (filter->handler(pkt, bytes_received, filter->data) == FILTER_ACTION_DROP) {
+                 if (debug_level > 0)
+                    printf("Packet dropped by packet filter '%s' on bridge '%s'\n", filter->name, bridge->name);
+                 drop_packet = TRUE;
+                 break;
+             }
+             next = filter->next;
+             filter = next;
+         }
+     }
+
+    if (drop_packet == TRUE)
+       continue;
+
     /* dump the packet to a PCAP file if capture is activated */
     pcap_capture_packet(bridge->capture, pkt, bytes_received);
 
-    /* send what we received to the destination NIO */
-    bytes_sent = nio_send(destination_nio, pkt, bytes_received);
+    /* send what we received to the transmitting NIO */
+    bytes_sent = nio_send(tx_nio, pkt, bytes_received);
     if (bytes_sent == -1) {
         if (errno == ECONNREFUSED || errno == ENETDOWN)
            continue;
 
-        /* The linux tap driver returns EIO if the device is not up. From the ubridge side this is not an error, so we should ignore it. */
-        if (destination_nio->type == NIO_TYPE_TAP && errno == EIO)
+        /* The linux TAP driver returns EIO if the device is not up.
+           From the ubridge side this is not an error, so we should ignore it. */
+        if (tx_nio->type == NIO_TYPE_TAP && errno == EIO)
             continue;
 
         perror("send");
         break;
     }
 
-    destination_nio->packets_out++;
-    destination_nio->bytes_out += bytes_sent;
+    tx_nio->packets_out++;
+    tx_nio->bytes_out += bytes_sent;
   }
 }
 
@@ -134,6 +157,7 @@ static void free_bridges(bridge_t *bridge)
     free_nio(bridge->source_nio);
     free_nio(bridge->destination_nio);
     free_pcap_capture(bridge->capture);
+    free_packet_filters(bridge->packet_filters);
     next = bridge->next;
     free(bridge);
     bridge = next;
@@ -162,6 +186,7 @@ static void free_iol_bridges(iol_bridge_t *bridge)
            pthread_cancel(bridge->port_table[i].tid);
            pthread_join(bridge->port_table[i].tid, NULL);
            free_pcap_capture(bridge->port_table[i].capture);
+           free_packet_filters(bridge->port_table[i].packet_filters);
            free_nio(bridge->port_table[i].destination_nio);
         }
     }

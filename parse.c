@@ -143,6 +143,7 @@ static bridge_t *add_bridge(bridge_t **head)
    bridge_t *bridge;
 
    if ((bridge = malloc(sizeof(*bridge))) != NULL) {
+      memset(bridge, 0, sizeof(*bridge));
       bridge->next = *head;
       *head = bridge;
    }
@@ -239,7 +240,6 @@ int parse_config(char *filename, bridge_t **bridges)
            bridge = add_bridge(bridges);
            bridge->source_nio = source_nio;
            bridge->destination_nio = destination_nio;
-           bridge->capture = NULL;
            if (!(bridge->name = strdup(bridge_name))) {
               fprintf(stderr, "bridge creation: insufficient memory\n");
               return FALSE;

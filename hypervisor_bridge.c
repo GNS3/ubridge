@@ -35,6 +35,7 @@
 #endif
 #include "hypervisor.h"
 #include "hypervisor_bridge.h"
+#include "packet_filter.h"
 #include "pcap_capture.h"
 #include "pcap_filter.h"
 
@@ -67,12 +68,10 @@ static int cmd_create_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
    head = &bridge_list;
    if ((new_bridge = malloc(sizeof(*new_bridge))) == NULL)
       goto memory_error;
+   memset(new_bridge, 0, sizeof(*new_bridge));
    if ((new_bridge->name = strdup(argv[0])) == NULL)
       goto memory_error;
    new_bridge->running = FALSE;
-   new_bridge->source_nio = NULL;
-   new_bridge->destination_nio = NULL;
-   new_bridge->capture = NULL;
    new_bridge->next = *head;
    *head = new_bridge;
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "bridge '%s' created", argv[0]);
@@ -108,6 +107,7 @@ static int cmd_delete_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
           free_nio(bridge->source_nio);
           free_nio(bridge->destination_nio);
           free_pcap_capture(bridge->capture);
+          free_packet_filters(bridge->packet_filters);
           free(bridge);
           hypervisor_send_reply(conn, HSC_INFO_OK, 1, "bridge '%s' deleted", argv[0]);
           return (0);
@@ -240,16 +240,33 @@ static int cmd_show_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
 	  hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
 	  return (-1);
    }
+
+   if (bridge->running == TRUE)
+      hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "bridge '%s' is running", argv[0]);
+   else
+      hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "bridge '%s' is not running", argv[0]);
+
+   if (bridge->packet_filters) {
+      packet_filter_t *filter = bridge->packet_filters;
+      packet_filter_t *next;
+      int count = 1;
+      while (filter != NULL) {
+          hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Filter '%s' configured in position %d", filter->name, count);
+          next = filter->next;
+          filter = next;
+          count++;
+       }
+   }
+
    if (bridge->source_nio)
       hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Source NIO: %s", bridge->source_nio->desc);
    if (bridge->destination_nio)
       hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Destination NIO: %s", bridge->destination_nio->desc);
-
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
    return (0);
 }
 
-static int cmd_stats_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
+static int cmd_get_stats_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
 {
    bridge_t *bridge;
 
@@ -259,14 +276,35 @@ static int cmd_stats_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
       return (-1);
    }
    if (bridge->source_nio)
-      hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Source NIO:      IN: %d packets (%d bytes) OUT: %d packets (%d bytes)",
+      hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Source NIO:      IN: %zd packets (%zd bytes) OUT: %zd packets (%zd bytes)",
       bridge->source_nio->packets_in, bridge->source_nio->bytes_in,
       bridge->source_nio->packets_out, bridge->source_nio->bytes_out);
    if (bridge->destination_nio)
-      hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Destination NIO: IN: %d packets (%d bytes) OUT: %d packets (%d bytes)",
+      hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Destination NIO: IN: %zd packets (%zd bytes) OUT: %zd packets (%zd bytes)",
       bridge->destination_nio->packets_in, bridge->destination_nio->bytes_in,
       bridge->destination_nio->packets_out, bridge->destination_nio->bytes_out);
 
+   hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
+   return (0);
+}
+
+static int cmd_reset_stats_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+   bridge_t *bridge;
+
+   bridge = find_bridge(argv[0]);
+   if (bridge == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
+      return (-1);
+   }
+   if (bridge->source_nio) {
+      bridge->source_nio->packets_in = bridge->source_nio->bytes_in = 0;
+      bridge->source_nio->packets_out = bridge->source_nio->bytes_out = 0;
+   }
+   if (bridge->destination_nio) {
+      bridge->destination_nio->packets_in = bridge->destination_nio->bytes_in = 0;
+      bridge->destination_nio->packets_out = bridge->destination_nio->bytes_out = 0;
+   }
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
    return (0);
 }
@@ -318,7 +356,7 @@ static int cmd_add_nio_udp(hypervisor_conn_t *conn, int argc, char *argv[])
    return (0);
 }
 
-static int cmd_remove_nio_udp(hypervisor_conn_t *conn, int argc, char *argv[])
+static int cmd_delete_nio_udp(hypervisor_conn_t *conn, int argc, char *argv[])
 {
    bridge_t *bridge;
    nio_udp_t *nio_udp;
@@ -551,6 +589,61 @@ static int cmd_stop_capture_bridge(hypervisor_conn_t *conn, int argc, char *argv
    return (0);
 }
 
+static int cmd_add_packet_filter(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+   bridge_t *bridge;
+   int res;
+
+   bridge = find_bridge(argv[0]);
+   if (bridge == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
+      return (-1);
+   }
+
+   res = add_packet_filter(&bridge->packet_filters, argv[1], argv[2], argc-3, &argv[3]);
+   if (!res)
+      hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Filter '%s' type '%s' added to bridge '%s'", argv[1], argv[2], argv[0]);
+   else
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Failed to add filter '%s'", argv[1]);
+   return (0);
+}
+
+static int cmd_delete_packet_filter(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+   bridge_t *bridge;
+   int res;
+
+   bridge = find_bridge(argv[0]);
+   if (bridge == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
+      return (-1);
+   }
+
+   res = delete_packet_filter(&bridge->packet_filters, argv[1]);
+   if (!res)
+      hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Filter '%s' delete from bridge '%s'", argv[1], argv[0]);
+   else
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Failed to delete filter '%s'", argv[1]);
+   return (0);
+}
+
+static int cmd_reset_packet_filters(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+   bridge_t *bridge;
+
+   bridge = find_bridge(argv[0]);
+   if (bridge == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
+      return (-1);
+   }
+
+   free_packet_filters(bridge->packet_filters);
+   bridge->packet_filters = NULL;
+
+   hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
+   return (0);
+}
+
 static int cmd_set_pcap_filter_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
 {
    bridge_t *bridge;
@@ -596,10 +689,12 @@ static hypervisor_cmd_t bridge_cmd_array[] = {
    { "start", 1, 1, cmd_start_bridge, NULL },
    { "stop", 1, 1, cmd_stop_bridge, NULL },
    { "show", 1, 1, cmd_show_bridge, NULL },
-   { "stats", 1, 1, cmd_stats_bridge, NULL },
+   { "get_stats", 1, 1, cmd_get_stats_bridge, NULL },
+   { "reset_stats", 1, 1, cmd_reset_stats_bridge, NULL },
    { "rename", 2, 2, cmd_rename_bridge, NULL },
    { "add_nio_udp", 4, 4, cmd_add_nio_udp, NULL },
-   { "remove_nio_udp", 4, 4, cmd_remove_nio_udp, NULL },
+   { "remove_nio_udp", 4, 4, cmd_delete_nio_udp, NULL }, /* kept for compatibility */
+   { "delete_nio_udp", 4, 4, cmd_delete_nio_udp, NULL },
    { "add_nio_unix", 3, 3, cmd_add_nio_unix, NULL },
    { "add_nio_tap", 2, 2, cmd_add_nio_tap, NULL },
    { "add_nio_ethernet", 2, 2, cmd_add_nio_ethernet, NULL },
@@ -611,6 +706,9 @@ static hypervisor_cmd_t bridge_cmd_array[] = {
 #endif
    { "start_capture", 2, 3, cmd_start_capture_bridge, NULL },
    { "stop_capture", 1, 1, cmd_stop_capture_bridge, NULL },
+   { "add_packet_filter", 2, 10, cmd_add_packet_filter, NULL },
+   { "delete_packet_filter", 2, 2, cmd_delete_packet_filter, NULL },
+   { "reset_packet_filters", 1, 1, cmd_reset_packet_filters, NULL },
    { "set_pcap_filter", 1, 2, cmd_set_pcap_filter_bridge, NULL },
    { "list", 0, 0, cmd_list_bridges, NULL },
    { NULL, -1, -1, NULL, NULL },

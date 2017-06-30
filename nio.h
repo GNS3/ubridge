@@ -75,9 +75,6 @@ typedef struct {
     void *dptr;
     char *desc;
 
-    ssize_t packets_in, packets_out;
-    ssize_t bytes_in, bytes_out;
-
     union {
         nio_udp_t nio_udp;
         nio_tap_t nio_tap;
@@ -90,6 +87,10 @@ typedef struct {
     ssize_t (*send)(void *nio, void *pkt, size_t len);
     ssize_t (*recv)(void *nio, void *pkt, size_t len);
     void (*free)(void *nio);
+
+    ssize_t packets_in, packets_out;
+    ssize_t bytes_in, bytes_out;
+
 } nio_t;
 
 nio_t *create_nio(void);

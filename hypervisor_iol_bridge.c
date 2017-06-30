@@ -32,6 +32,7 @@
 #include "hypervisor.h"
 #include "hypervisor_iol_bridge.h"
 #include "pcap_capture.h"
+#include "packet_filter.h"
 
 iol_bridge_t *iol_bridge_list = NULL;
 
@@ -57,6 +58,7 @@ void *iol_nio_listener(void *data)
    ssize_t bytes_received, bytes_sent;
    unsigned char pkt[IOL_HDR_SIZE + MAX_MTU];
    nio_t *nio = iol_nio->destination_nio;
+   int drop_packet;
 
    printf("Listener thread for IOL instance %d on port %d/%d has started\n", iol_nio->iol_id, iol_nio->port.bay, iol_nio->port.unit);
    bridge = find_bridge(iol_nio->parent_bridge_name);
@@ -85,10 +87,29 @@ void *iol_nio_listener(void *data)
         nio->bytes_in += bytes_received;
 
         if (debug_level > 0) {
-            printf("Received %zd bytes from destination NIO on IOL bridge %s\n", bytes_received, bridge->name);
+            printf("Received %zd bytes from destination NIO on IOL bridge '%s'\n", bytes_received, bridge->name);
             if (debug_level > 1)
                dump_packet(stdout, &pkt[IOL_HDR_SIZE], bytes_received);
         }
+
+        /* filter the packet if there is a filter configured */
+        if (iol_nio->packet_filters != NULL) {
+             packet_filter_t *filter = iol_nio->packet_filters;
+             packet_filter_t *next;
+             while (filter != NULL) {
+                 if (filter->handler(pkt, bytes_received, filter->data) == FILTER_ACTION_DROP) {
+                     if (debug_level > 0)
+                        printf("Packet dropped by packet filter '%s' from destination NIO on IOL bridge '%s'\n", filter->name, bridge->name);
+                     drop_packet = TRUE;
+                     break;
+                 }
+                 next = filter->next;
+                 filter = next;
+             }
+         }
+
+        if (drop_packet == TRUE)
+           continue;
 
         /* Dump the packet to a PCAP file if capture is activated */
         pcap_capture_packet(iol_nio->capture, &pkt[IOL_HDR_SIZE], bytes_received);
@@ -122,6 +143,7 @@ void *iol_bridge_listener(void *data)
    ssize_t bytes_received, bytes_sent;
    unsigned char pkt[IOL_HDR_SIZE + MAX_MTU];
    unsigned int port;
+   int drop_packet;
 
    printf("IOL bridge listener thread for %s with ID %d has started\n", bridge->name, bridge->application_id);
    while (1)
@@ -136,7 +158,7 @@ void *iol_bridge_listener(void *data)
        }
 
        if (debug_level > 0) {
-           printf("Received %zd bytes from IOL instance on IOL bridge %s\n", bytes_received, bridge->name);
+           printf("Received %zd bytes from IOL instance on IOL bridge '%s'\n", bytes_received, bridge->name);
            if (debug_level > 1)
               dump_packet(stdout, pkt, bytes_received);
        }
@@ -150,6 +172,25 @@ void *iol_bridge_listener(void *data)
        /* Send on the packet, minus the IOL header */
        bytes_received -= IOL_HDR_SIZE;
        nio = bridge->port_table[port].destination_nio;
+
+        /* filter the packet if there is a filter configured */
+       if (bridge->port_table[port].packet_filters != NULL) {
+            packet_filter_t *filter = bridge->port_table[port].packet_filters;
+            packet_filter_t *next;
+            while (filter != NULL) {
+                if (filter->handler(pkt, bytes_received, filter->data) == FILTER_ACTION_DROP) {
+                    if (debug_level > 0)
+                       printf("Packet dropped by packet filter '%s' from IOL instance on IOL bridge '%s'\n", filter->name, bridge->name);
+                    drop_packet = TRUE;
+                    break;
+                }
+                next = filter->next;
+                filter = next;
+            }
+       }
+
+       if (drop_packet == TRUE)
+          continue;
 
        /* Dump the packet to a PCAP file if capture is activated */
        pcap_capture_packet(bridge->port_table[port].capture, &pkt[IOL_HDR_SIZE], bytes_received);
@@ -319,6 +360,7 @@ static int cmd_create_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
    head = &iol_bridge_list;
    if ((new_bridge = malloc(sizeof(*new_bridge))) == NULL)
       goto memory_error;
+   memset(new_bridge, 0, sizeof(*new_bridge));
    if ((new_bridge->name = strdup(argv[0])) == NULL)
       goto memory_error;
    new_bridge->running = FALSE;
@@ -535,7 +577,7 @@ static int cmd_list_bridges(hypervisor_conn_t *conn, int argc, char *argv[])
    return (0);
 }
 
-static int cmd_stats_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
+static int cmd_get_stats_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
 {
    iol_bridge_t *bridge;
    int i;
@@ -548,12 +590,34 @@ static int cmd_stats_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
 
    for (i = 0; i < MAX_PORTS; i++) {
       if (bridge->port_table[i].destination_nio != NULL) {
-         hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "port %d/%d:      IN: %d packets (%d bytes) OUT: %d packets (%d bytes)",
+         hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "port %d/%d:      IN: %zd packets (%zd bytes) OUT: %zd packets (%zd bytes)",
          bridge->port_table[i].port.bay, bridge->port_table[i].port.unit,
          bridge->port_table[i].destination_nio->packets_in, bridge->port_table[i].destination_nio->bytes_in,
          bridge->port_table[i].destination_nio->packets_out, bridge->port_table[i].destination_nio->bytes_out);
       }
 
+   }
+
+   hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
+   return (0);
+}
+
+static int cmd_reset_stats_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+   iol_bridge_t *bridge;
+   int i;
+
+   bridge = find_bridge(argv[0]);
+   if (bridge == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
+      return (-1);
+   }
+
+   for (i = 0; i < MAX_PORTS; i++) {
+      if (bridge->port_table[i].destination_nio != NULL) {
+         bridge->port_table[i].destination_nio->packets_in = bridge->port_table[i].destination_nio->bytes_in = 0;
+         bridge->port_table[i].destination_nio->packets_out = bridge->port_table[i].destination_nio->bytes_out = 0;
+      }
    }
 
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
@@ -612,6 +676,7 @@ static int create_iol_port_entry(hypervisor_conn_t *conn, iol_bridge_t *bridge, 
       pthread_cancel(iol_nio->tid);
       pthread_join(iol_nio->tid, NULL);
       free_pcap_capture(iol_nio->capture);
+      free_packet_filters(iol_nio->packet_filters);
       free_nio(iol_nio->destination_nio);
    }
 
@@ -689,6 +754,7 @@ static int cmd_delete_nio_udp(hypervisor_conn_t *conn, int argc, char *argv[])
       pthread_cancel(iol_nio->tid);
       pthread_join(iol_nio->tid, NULL);
       free_pcap_capture(iol_nio->capture);
+      free_packet_filters(iol_nio->packet_filters);
       free_nio(iol_nio->destination_nio);
    }
 
@@ -782,18 +848,131 @@ static int cmd_stop_capture_bridge(hypervisor_conn_t *conn, int argc, char *argv
    return (0);
 }
 
+static int cmd_add_packet_filter(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+   iol_bridge_t *bridge;
+   iol_nio_t *iol_nio;
+   unsigned char port_bay;
+   unsigned char port_unit;
+   unsigned char port_key;
+   int res;
+
+   bridge = find_bridge(argv[0]);
+   if (bridge == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
+      return (-1);
+   }
+
+   port_bay = atoi(argv[1]);
+   port_unit = atoi(argv[2]);
+   port_key = port_bay + port_unit * 16;
+   if (port_key > MAX_PORTS) {
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Port number %d exceeding %d on bridge '%s'", port_key, MAX_PORTS, bridge->name);
+      return (-1);
+   }
+
+   iol_nio = &bridge->port_table[port_key];
+   if (iol_nio == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "port %d/%d doesn't exist", port_bay, port_unit);
+      return (-1);
+   }
+
+   res = add_packet_filter(&iol_nio->packet_filters, argv[3], argv[4], argc-5, &argv[5]);
+   if (!res)
+      hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Filter '%s' type '%s' added to bridge '%s'", argv[3], argv[4], argv[0]);
+   else
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Failed to add filter '%s'", argv[3]);
+   return (0);
+}
+
+static int cmd_delete_packet_filter(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+   iol_bridge_t *bridge;
+   iol_nio_t *iol_nio;
+   unsigned char port_bay;
+   unsigned char port_unit;
+   unsigned char port_key;
+   int res;
+
+   bridge = find_bridge(argv[0]);
+   if (bridge == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
+      return (-1);
+   }
+
+   port_bay = atoi(argv[1]);
+   port_unit = atoi(argv[2]);
+   port_key = port_bay + port_unit * 16;
+   if (port_key > MAX_PORTS) {
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Port number %d exceeding %d on bridge '%s'", port_key, MAX_PORTS, bridge->name);
+      return (-1);
+   }
+
+   iol_nio = &bridge->port_table[port_key];
+   if (iol_nio == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "port %d/%d doesn't exist", port_bay, port_unit);
+      return (-1);
+   }
+
+   res = delete_packet_filter(&iol_nio->packet_filters, argv[3]);
+   if (!res)
+      hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Filter '%s' deleted from bridge '%s'", argv[3], argv[0]);
+   else
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Failed to delete filter '%s'", argv[3]);
+   return (0);
+}
+
+static int cmd_reset_packet_filters(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+   iol_bridge_t *bridge;
+   iol_nio_t *iol_nio;
+   unsigned char port_bay;
+   unsigned char port_unit;
+   unsigned char port_key;
+
+   bridge = find_bridge(argv[0]);
+   if (bridge == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
+      return (-1);
+   }
+
+   port_bay = atoi(argv[1]);
+   port_unit = atoi(argv[2]);
+   port_key = port_bay + port_unit * 16;
+   if (port_key > MAX_PORTS) {
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Port number %d exceeding %d on bridge '%s'", port_key, MAX_PORTS, bridge->name);
+      return (-1);
+   }
+
+   iol_nio = &bridge->port_table[port_key];
+   if (iol_nio == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "port %d/%d doesn't exist", port_bay, port_unit);
+      return (-1);
+   }
+
+   free_packet_filters(iol_nio->packet_filters);
+   iol_nio->packet_filters = NULL;
+
+   hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
+   return (0);
+}
+
 /* Bridge commands */
 static hypervisor_cmd_t iol_bridge_cmd_array[] = {
    { "create", 2, 2, cmd_create_bridge, NULL },
    { "delete", 1, 1, cmd_delete_bridge, NULL },
    { "start", 1, 1, cmd_start_bridge, NULL },
    { "stop", 1, 1, cmd_stop_bridge, NULL },
-   { "stats", 1, 1, cmd_stats_bridge, NULL },
+   { "get_stats", 1, 1, cmd_get_stats_bridge, NULL },
+   { "reset_stats", 1, 1, cmd_reset_stats_bridge, NULL },
    { "rename", 2, 2, cmd_rename_bridge, NULL },
    { "add_nio_udp", 7, 7, cmd_add_nio_udp, NULL },
    { "delete_nio_udp", 3, 3, cmd_delete_nio_udp, NULL },
    { "start_capture", 4, 5, cmd_start_capture_bridge, NULL },
    { "stop_capture", 3, 3, cmd_stop_capture_bridge, NULL },
+   { "add_packet_filter", 4, 15, cmd_add_packet_filter, NULL },
+   { "delete_packet_filter", 4, 4, cmd_delete_packet_filter, NULL },
+   { "reset_packet_filters", 3, 3, cmd_reset_packet_filters, NULL },
    { "list", 0, 0, cmd_list_bridges, NULL },
    { NULL, -1, -1, NULL, NULL },
 };

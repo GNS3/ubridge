@@ -33,9 +33,10 @@
 #include <pcap.h>
 
 #include "nio.h"
+#include "packet_filter.h"
 
 #define NAME          "ubridge"
-#define VERSION       "0.9.11"
+#define VERSION       "0.9.12"
 #define CONFIG_FILE   "ubridge.ini"
 
 #ifndef FALSE
@@ -63,6 +64,7 @@ typedef struct bridge {
   nio_t *source_nio;
   nio_t *destination_nio;
   pcap_capture_t *capture;
+  packet_filter_t *packet_filters;
   struct bridge *next;
 } bridge_t;
 

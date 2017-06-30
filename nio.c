@@ -27,6 +27,7 @@
 #include "ubridge.h"
 #include "nio.h"
 #include "pcap_capture.h"
+#include "packet_filter.h"
 
 
 nio_t *create_nio(void)

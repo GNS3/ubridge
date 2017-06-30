@@ -64,7 +64,9 @@ The modules that are currently defined are given below:
 
 * hypervisor   : General hypervisor management
 * bridge       : bridges management
+* iol_bridge   : IOL (IOS on Linux) bridges management
 * docker       : Docker veth management
+* brctl        : Linux bridge management
 
 **Hypervisor module ("hypervisor")**
 
@@ -73,12 +75,15 @@ The modules that are currently defined are given below:
 .. code:: bash
 
     hypervisor version
-    100-0.9.11
+    100-0.9.12
 
 * "hypervisor module_list" : Display the module list.
 
 .. code:: bash
 
+    101 brctl
+    101 iol_bridge
+    101 docker
     101 bridge
     101 hypervisor
     100-OK
@@ -96,10 +101,11 @@ The modules that are currently defined are given below:
     101 add_nio_ethernet (min/max args: 2/2)
     101 add_nio_tap (min/max args: 2/2)
     101 add_nio_unix (min/max args: 3/3)
-    101 remove_nio_udp (min/max args: 4/4)
+    101 delete_nio_udp (min/max args: 4/4)
     101 add_nio_udp (min/max args: 4/4)
     101 rename (min/max args: 2/2)
-    101 stats (min/max args: 1/1)
+    101 get_stats (min/max args: 1/1)
+    101 reset_stats (min/max args: 1/1)
     101 show (min/max args: 1/1)
     101 stop (min/max args: 1/1)
     101 start (min/max args: 1/1)
@@ -184,16 +190,16 @@ The modules that are currently defined are given below:
     bridge add_nio_udp br0 20000 127.0.0.1 30000
     100-NIO UDP added to bridge 'br0'
 
-* "bridge add_nio_unix <local> <remote>" :
-  Add an UNIX NIO with 'local' the UNIX domain socket to receive and 'remote' to send
+* "bridge delete_nio_udp <bridge_name> <local_port> <remote_host> <remote_port>" :
+  Remove an UDP NIO with the specified parameters to a bridge.
 
 .. code:: bash
 
-    bridge remove_nio_udp br0 20000 127.0.0.1 30000
-    100-NIO UDP removed from bridge 'br0'
+    bridge delete_nio_udp br0 20000 127.0.0.1 30000
+    100-NIO UDP deleted from bridge 'br0'
 
-* "bridge remove_nio_udp <bridge_name> <local_port> <remote_host> <remote_port>" :
-  Remove an UDP NIO with the specified parameters to a bridge.
+* "bridge add_nio_unix <local> <remote>" :
+  Add an UNIX NIO with 'local' the UNIX domain socket to receive and 'remote' to send
 
 .. code:: bash
 
@@ -238,6 +244,7 @@ The modules that are currently defined are given below:
 .. code:: bash
 
     bridge show bridge0
+    101 bridge 'br0' is running
     101 Source NIO:	20000:127.0.0.1:30000
     101 Destination NIO: eth0
 
@@ -276,9 +283,56 @@ The modules that are currently defined are given below:
 
 .. code:: bash
 
-    bridge stats bridge0
+    bridge get_stats bridge0
     101 Source NIO:      IN: 5 packets (90 bytes) OUT: 15 packets (410 bytes)
     101 Destination NIO: IN: 15 packets (410 bytes) OUT: 5 packets (90 bytes)
+
+* "bridge reset_stats <bridge_name>":
+  Reset the statistics of a bridge.
+
+.. code:: bash
+
+    bridge reset_stats bridge0
+    100-OK
+
+* "bridge add_packet_filter <bridge_name> <filter_name> <filter_type> [<a4> [...<a10>]]":
+  Add a packet filter to a bridge.
+
+  Filter types:
+
+  "frequency_drop" has 1 argument "<frequency>". It will drop
+  everything with a -1 frequency, drop every Nth packet with a
+  positive frequency, or drop nothing.
+
+  "latency" has 1 argument "<milliseconds>" to delay packets in milliseconds.
+
+.. code:: bash
+
+    bridge add_packet_filter br0 "my_filter1" "latency" 50
+    bridge add_packet_filter br0 "my_filter2" "frequency_drop" 5
+    bridge show br0
+    101 bridge 'br0' is not running
+    101 Filter 'my_filter1' configured in position 1
+    101 Filter 'my_filter2' configured in position 2
+    101 Source NIO: 20000:127.0.0.1:30000
+    101 Destination NIO: 20001:127.0.0.1:30001
+    100-OK
+
+* "bridge add_packet_filter <bridge_name> <filter_name>":
+  Delete a packet filter configured on a bridge.
+
+.. code:: bash
+
+    bridge delete_packet_filter br0 "my_filter1"
+    100-Filter 'my_filter1' delete from bridge 'br0'
+
+* "bridge add_packet_filter <bridge_name> <filter_name>":
+  Delete all packet filters configured on a bridge.
+
+.. code:: bash
+
+    bridge reset_packet_filters br0
+    100-OK
 
 **Docker module ("docker")**
 
@@ -307,7 +361,7 @@ The modules that are currently defined are given below:
     docker delete_veth hostif
     100-veth interface hostif has been deleted
 
-**Linux bridge ("brctl") **
+**Linux bridge ("brctl")**
 
 .. code:: bash
     brctl addif virbr0 nat2
@@ -449,4 +503,4 @@ Notes
 
 - A Bridge name (e.g. bridge4) can be anything as long it is unique in the same file or inside the hypervisor.
 - Capabitilies must be set on the executable (Linux only) or you must have administrator rights to bridge Ethernet or TAP interfaces.
-- It is only possible to bridge two interfaces/tunnels together. uBridge is not a hub or a switch!
+- It is only possible to bridge two interfaces or tunnels together. uBridge is not a hub or a switch!

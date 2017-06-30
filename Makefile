@@ -30,6 +30,7 @@ SRC     =   ubridge.c               \
             iniparser/iniparser.c   \
             iniparser/dictionary.c  \
             parse.c                 \
+            packet_filter.c         \
             pcap_capture.c          \
             pcap_filter.c           \
             hypervisor.c            \

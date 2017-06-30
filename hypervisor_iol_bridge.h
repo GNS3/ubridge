@@ -67,6 +67,7 @@ typedef struct
   port_t port;
   struct sockaddr_un iol_sockaddr;
   nio_t *destination_nio;
+  packet_filter_t *packet_filters;
   unsigned char header[IOL_HDR_SIZE];
   pcap_capture_t *capture;
   pthread_t tid;
