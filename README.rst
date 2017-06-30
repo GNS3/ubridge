@@ -95,6 +95,9 @@ The modules that are currently defined are given below:
     hypervisor cmd_list bridge
     101 list (min/max args: 0/0)
     101 set_pcap_filter (min/max args: 1/2)
+    101 reset_packet_filters (min/max args: 1/1)
+    101 delete_packet_filter (min/max args: 2/2)
+    101 add_packet_filter (min/max args: 2/10)
     101 stop_capture (min/max args: 1/1)
     101 start_capture (min/max args: 2/3)
     101 add_nio_linux_raw (min/max args: 2/2)
@@ -102,10 +105,11 @@ The modules that are currently defined are given below:
     101 add_nio_tap (min/max args: 2/2)
     101 add_nio_unix (min/max args: 3/3)
     101 delete_nio_udp (min/max args: 4/4)
+    101 remove_nio_udp (min/max args: 4/4)
     101 add_nio_udp (min/max args: 4/4)
     101 rename (min/max args: 2/2)
-    101 get_stats (min/max args: 1/1)
     101 reset_stats (min/max args: 1/1)
+    101 get_stats (min/max args: 1/1)
     101 show (min/max args: 1/1)
     101 stop (min/max args: 1/1)
     101 start (min/max args: 1/1)
@@ -304,12 +308,16 @@ The modules that are currently defined are given below:
   everything with a -1 frequency, drop every Nth packet with a
   positive frequency, or drop nothing.
 
+  "random_drop" has 1 argument "<percentage>" (0 to 100%). The percentage represents
+  the chance for a packet to be dropped.
+
   "latency" has 1 argument "<milliseconds>" to delay packets in milliseconds.
 
 .. code:: bash
 
     bridge add_packet_filter br0 "my_filter1" "latency" 50
     bridge add_packet_filter br0 "my_filter2" "frequency_drop" 5
+    bridge add_packet_filter br0 "my_filter3" "random_drop" 10
     bridge show br0
     101 bridge 'br0' is not running
     101 Filter 'my_filter1' configured in position 1

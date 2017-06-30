@@ -67,7 +67,7 @@ static int frequency_drop_handler(void *pkt, size_t len, void *opt)
             data->current++;
             if (data->current == data->frequency) {
                data->current = 0;
-               return(FILTER_ACTION_DROP);
+               return (FILTER_ACTION_DROP);
             }
       }
    }
@@ -88,6 +88,63 @@ static void create_frequency_drop_filter(packet_filter_t *filter)
     filter->setup = (void *)frequency_drop_setup;
     filter->handler = (void *)frequency_drop_handler;
     filter->free = (void *)frequency_drop_free;
+}
+
+/* ======================================================================== */
+/* Random Dropping                                                          */
+/* ======================================================================== */
+
+struct random_drop_data {
+   int percentage;
+};
+
+/* Setup filter */
+static int random_drop_setup(void **opt, int argc, char *argv[])
+{
+   struct random_drop_data *data = *opt;
+
+   if (argc != 1)
+      return (-1);
+
+   if (!data) {
+      if (!(data = malloc(sizeof(*data))))
+         return (-1);
+      *opt = data;
+   }
+
+   data->percentage = atoi(argv[0]);
+   if (data->percentage < 0 || data->percentage > 100)
+      return (-1);
+
+   return (0);
+}
+
+/* Packet handler: randomly drop packet */
+static int random_drop_handler(void *pkt, size_t len, void *opt)
+{
+   struct random_drop_data *data = opt;
+
+   if (data != NULL) {
+      if (random() % 100 <= data->percentage)
+         return (FILTER_ACTION_DROP);
+   }
+   return (FILTER_ACTION_PASS);
+}
+
+/* Free resources used by filter */
+static void random_drop_free(void **opt)
+{
+   if (*opt)
+      free(*opt);
+   *opt = NULL;
+}
+
+static void create_random_drop_filter(packet_filter_t *filter)
+{
+    filter->type = FILTER_TYPE_RANDOM_DROP;
+    filter->setup = (void *)random_drop_setup;
+    filter->handler = (void *)random_drop_handler;
+    filter->free = (void *)random_drop_free;
 }
 
 /* ======================================================================== */
@@ -158,6 +215,7 @@ typedef struct {
 
 static filter_table_t lookup_table[] = {
     { "frequency_drop", create_frequency_drop_filter },
+    { "random_drop", create_random_drop_filter },
     { "latency", create_latency_filter },
 };
 
