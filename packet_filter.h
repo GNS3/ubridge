@@ -21,6 +21,10 @@
 #ifndef FILTER_H_
 #define FILTER_H_
 
+#ifdef __APPLE__
+#include <sys/types.h>
+#endif
+
 #include <stdlib.h>
 
 enum {
