@@ -318,9 +318,9 @@ static filter_table_t lookup_table[] = {
 
 static int create_filter(packet_filter_t *filter, char *filter_type)
 {
-   for (filter_table_t *plookup = lookup_table;
-   plookup != lookup_table + sizeof(lookup_table) / sizeof(lookup_table[0]);
-   plookup++) {
+   filter_table_t *plookup;
+
+   for (plookup = lookup_table; plookup != lookup_table + sizeof(lookup_table) / sizeof(lookup_table[0]); plookup++) {
        if (!strcmp(plookup->type, filter_type)) {
            (*plookup->func)(filter);
            return (TRUE);
