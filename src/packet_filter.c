@@ -92,17 +92,17 @@ static void create_frequency_drop_filter(packet_filter_t *filter)
 }
 
 /* ======================================================================== */
-/* Random Dropping                                                          */
+/* Packet Loss                                                              */
 /* ======================================================================== */
 
-struct random_drop_data {
+struct packet_loss_data {
    int percentage;
 };
 
 /* Setup filter */
-static int random_drop_setup(void **opt, int argc, char *argv[])
+static int packet_loss_setup(void **opt, int argc, char *argv[])
 {
-   struct random_drop_data *data = *opt;
+   struct packet_loss_data *data = *opt;
 
    if (argc != 1)
       return (-1);
@@ -122,9 +122,9 @@ static int random_drop_setup(void **opt, int argc, char *argv[])
 }
 
 /* Packet handler: randomly drop packet */
-static int random_drop_handler(void *pkt, size_t len, void *opt)
+static int packet_loss_handler(void *pkt, size_t len, void *opt)
 {
-   struct random_drop_data *data = opt;
+   struct packet_loss_data *data = opt;
 
    if (data != NULL) {
       if (random() % 100 <= data->percentage)
@@ -134,33 +134,114 @@ static int random_drop_handler(void *pkt, size_t len, void *opt)
 }
 
 /* Free resources used by filter */
-static void random_drop_free(void **opt)
+static void packet_loss_free(void **opt)
 {
    if (*opt)
       free(*opt);
    *opt = NULL;
 }
 
-static void create_random_drop_filter(packet_filter_t *filter)
+static void create_packet_loss_filter(packet_filter_t *filter)
 {
-    filter->type = FILTER_TYPE_RANDOM_DROP;
-    filter->setup = (void *)random_drop_setup;
-    filter->handler = (void *)random_drop_handler;
-    filter->free = (void *)random_drop_free;
+    filter->type = FILTER_TYPE_PACKET_LOSS;
+    filter->setup = (void *)packet_loss_setup;
+    filter->handler = (void *)packet_loss_handler;
+    filter->free = (void *)packet_loss_free;
 }
 
 /* ======================================================================== */
-/* Latency                                                                  */
+/* Delay                                                                    */
 /* ======================================================================== */
 
-struct latency_data {
-   int ms;
+struct delay_data {
+   int latency;
+   int jitter;
 };
 
 /* Setup filter */
-static int latency_setup(void **opt, int argc, char *argv[])
+static int delay_setup(void **opt, int argc, char *argv[])
 {
-   struct latency_data *data = *opt;
+   struct delay_data *data = *opt;
+
+   if (argc != 1 && argc != 2)
+      return (-1);
+
+   if (!data) {
+      if (!(data = malloc(sizeof(*data))))
+         return (-1);
+      memset(data, 0, sizeof(*data));
+      *opt = data;
+   }
+
+   data->latency = atoi(argv[0]);
+   data->jitter = 0;
+   if (argc == 2)
+      data->jitter = atoi(argv[1]);
+   if (data->latency <= 0 || data->jitter < 0)
+      return (-1);
+   if (data->latency - data->jitter < 0)
+      return (-1);
+   return (0);
+}
+
+/* Packet handler: add delay (latency and optionally jitter) */
+static int delay_handler(void *pkt, size_t len, void *opt)
+{
+   struct delay_data *data = opt;
+   struct timespec ts;
+   int delay;
+
+   if (data != NULL) {
+      delay = data->latency;
+      if (data->jitter)
+         delay = (delay - data->jitter) + random() % ((delay + data->jitter + 1) - (delay - data->jitter));
+      ts.tv_sec = delay / 1000;
+      ts.tv_nsec = (delay % 1000) * 1000000;
+      nanosleep(&ts, NULL);
+   }
+   return (FILTER_ACTION_PASS);
+}
+
+/* Free resources used by filter */
+static void delay_free(void **opt)
+{
+   if (*opt)
+      free(*opt);
+   *opt = NULL;
+}
+
+static void create_delay_filter(packet_filter_t *filter)
+{
+    filter->type = FILTER_TYPE_DELAY;
+    filter->setup = (void *)delay_setup;
+    filter->handler = (void *)delay_handler;
+    filter->free = (void *)delay_free;
+}
+
+/* ======================================================================== */
+/* Corrupt                                                                  */
+/* ======================================================================== */
+
+struct corrupt_data {
+   int percentage;
+   int index;
+};
+
+static char patterns[] = {
+   0x64,
+   0x13,
+   0x88,
+   0x40,
+   0x1F,
+   0xA0,
+   0xAA,
+   0x55
+};
+
+/* Setup filter */
+static int corrupt_setup(void **opt, int argc, char *argv[])
+{
+   struct corrupt_data *data = *opt;
 
    if (argc != 1)
       return (-1);
@@ -172,111 +253,50 @@ static int latency_setup(void **opt, int argc, char *argv[])
       *opt = data;
    }
 
-   data->ms = atoi(argv[0]);
-   return (0);
-}
-
-/* Packet handler: add latency */
-static int latency_handler(void *pkt, size_t len, void *opt)
-{
-   struct latency_data *data = opt;
-   struct timespec ts;
-
-   if (data != NULL) {
-      ts.tv_sec = data->ms / 1000;
-      ts.tv_nsec = (data->ms % 1000) * 1000000;
-      nanosleep(&ts, NULL);
-   }
-   return (FILTER_ACTION_PASS);
-}
-
-/* Free resources used by filter */
-static void latency_free(void **opt)
-{
-   if (*opt)
-      free(*opt);
-   *opt = NULL;
-}
-
-static void create_latency_filter(packet_filter_t *filter)
-{
-    filter->type = FILTER_TYPE_LATENCY;
-    filter->setup = (void *)latency_setup;
-    filter->handler = (void *)latency_handler;
-    filter->free = (void *)latency_free;
-}
-
-/* ======================================================================== */
-/* Jitter                                                                   */
-/* ======================================================================== */
-
-struct jitter_data {
-   int percentage;
-   int minimum_ms;
-   int maximum_ms;
-};
-
-/* Setup filter */
-static int jitter_setup(void **opt, int argc, char *argv[])
-{
-   struct jitter_data *data = *opt;
-
-   if (argc != 1 && argc != 3)
-      return (-1);
-
-   if (!data) {
-      if (!(data = malloc(sizeof(*data))))
-         return (-1);
-      memset(data, 0, sizeof(*data));
-      *opt = data;
-   }
-
    data->percentage = atoi(argv[0]);
+   data->index = 0;
    if (data->percentage < 0 || data->percentage > 100)
       return (-1);
-   data->minimum_ms = 20;
-   data->maximum_ms = 60;
-   if (argc == 3) {
-      data->minimum_ms = atoi(argv[1]);
-      data->maximum_ms = atoi(argv[2]);
-      if (data->minimum_ms < 0 || data->maximum_ms < 0 || data->minimum_ms > data->maximum_ms)
-         return (-1);
-   }
    return (0);
 }
 
-/* Packet handler: add random jitter */
-static int jitter_handler(void *pkt, size_t len, void *opt)
+static void corrupt_packet(char *pkt, size_t len, void *opt)
 {
-   struct jitter_data *data = opt;
-   struct timespec ts;
-   int ms;
+   struct corrupt_data *data = opt;
+   int i;
 
-   if (data != NULL) {
-      if (random() % 100 <= data->percentage) {
-         ms = data->minimum_ms + random() % (data->maximum_ms + 1 - data->minimum_ms);
-         ts.tv_sec = ms / 1000;
-         ts.tv_nsec = (ms % 1000) * 1000000;
-         nanosleep(&ts, NULL);
-      }
+   for (i = 0; i < len; ++i) {
+       pkt[i] ^= patterns[data->index++ & 0x7];
+   }
+}
+
+/* Packet handler: randomly corrupt packets */
+static int corrupt_handler(void *pkt, size_t len, void *opt)
+{
+   struct corrupt_data *data = opt;
+   int length;
+
+   if (data != NULL && random() % 100 <= data->percentage) {
+      length = len / 4;
+      corrupt_packet(pkt + len / 2 - length / 2 + 1, length, opt);
    }
    return (FILTER_ACTION_PASS);
 }
 
 /* Free resources used by filter */
-static void jitter_free(void **opt)
+static void corrupt_free(void **opt)
 {
    if (*opt)
       free(*opt);
    *opt = NULL;
 }
 
-static void create_jitter_filter(packet_filter_t *filter)
+static void create_corrupt_filter(packet_filter_t *filter)
 {
-    filter->type = FILTER_TYPE_JITTER;
-    filter->setup = (void *)jitter_setup;
-    filter->handler = (void *)jitter_handler;
-    filter->free = (void *)jitter_free;
+    filter->type = FILTER_TYPE_CORRUPT;
+    filter->setup = (void *)corrupt_setup;
+    filter->handler = (void *)corrupt_handler;
+    filter->free = (void *)corrupt_free;
 }
 
 /* ======================================================================== */
@@ -291,9 +311,9 @@ typedef struct {
 
 static filter_table_t lookup_table[] = {
     { "frequency_drop", create_frequency_drop_filter },
-    { "random_drop", create_random_drop_filter },
-    { "latency", create_latency_filter },
-    { "jitter", create_jitter_filter },
+    { "packet_loss", create_packet_loss_filter },
+    { "delay", create_delay_filter },
+    { "corrupt", create_corrupt_filter },
 };
 
 static int create_filter(packet_filter_t *filter, char *filter_type)

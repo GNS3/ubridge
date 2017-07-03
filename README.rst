@@ -308,20 +308,21 @@ The modules that are currently defined are given below:
   everything with a -1 frequency, drop every Nth packet with a
   positive frequency, or drop nothing.
 
-  "random_drop" has 1 argument "<percentage>" (0 to 100%). The percentage represents
-  the chance for a packet to be dropped.
+  "packet_loss" has 1 argument "<percentage>" (0 to 100%). The percentage represents
+  the chance for a packet to be lost.
 
-  "latency" has 1 argument "<milliseconds>" to delay packets in milliseconds.
+  "delay" has 1 argument "<latency>" to delay packets in milliseconds and 1 optional argument
+  <jitter> to add jitter in milliseconds (+/- of the delay
 
-  "jitter" has 1 argument "<percentage>" (0 to 100%) which represents the chance of a packet to be delayed,
-  and 2 optional arguments, "<minimum_milliseconds>" (default 20) and "<maximum_milliseconds>" (default 80)
-  for the minimum and maximum added random delay in milliseconds.
+  "corrupt" has 1 argument "<percentage>" (0 to 100%). The percentage represents
+  the chance for a packet to be corrupted.
 
 .. code:: bash
 
     bridge add_packet_filter br0 "my_filter1" "latency" 50
     bridge add_packet_filter br0 "my_filter2" "frequency_drop" 5
     bridge add_packet_filter br0 "my_filter3" "random_drop" 10
+    bridge add_packet_filter br0 "my_filter4" "jitter" 100 30 60
     bridge show br0
     101 bridge 'br0' is not running
     101 Filter 'my_filter1' configured in position 1
