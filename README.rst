@@ -313,6 +313,10 @@ The modules that are currently defined are given below:
 
   "latency" has 1 argument "<milliseconds>" to delay packets in milliseconds.
 
+  "jitter" has 1 argument "<percentage>" (0 to 100%) which represents the chance of a packet to be delayed,
+  and 2 optional arguments, "<minimum_milliseconds>" (default 20) and "<maximum_milliseconds>" (default 80)
+  for the minimum and maximum added random delay in milliseconds.
+
 .. code:: bash
 
     bridge add_packet_filter br0 "my_filter1" "latency" 50

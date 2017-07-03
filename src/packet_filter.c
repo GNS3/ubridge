@@ -44,6 +44,7 @@ static int frequency_drop_setup(void **opt, int argc, char *argv[])
    if (!data) {
       if (!(data = malloc(sizeof(*data))))
          return (-1);
+      memset(data, 0, sizeof(*data));
       *opt = data;
    }
 
@@ -109,6 +110,7 @@ static int random_drop_setup(void **opt, int argc, char *argv[])
    if (!data) {
       if (!(data = malloc(sizeof(*data))))
          return (-1);
+      memset(data, 0, sizeof(*data));
       *opt = data;
    }
 
@@ -166,6 +168,7 @@ static int latency_setup(void **opt, int argc, char *argv[])
    if (!data) {
       if (!(data = malloc(sizeof(*data))))
          return (-1);
+      memset(data, 0, sizeof(*data));
       *opt = data;
    }
 
@@ -204,6 +207,79 @@ static void create_latency_filter(packet_filter_t *filter)
 }
 
 /* ======================================================================== */
+/* Jitter                                                                   */
+/* ======================================================================== */
+
+struct jitter_data {
+   int percentage;
+   int minimum_ms;
+   int maximum_ms;
+};
+
+/* Setup filter */
+static int jitter_setup(void **opt, int argc, char *argv[])
+{
+   struct jitter_data *data = *opt;
+
+   if (argc != 1 && argc != 3)
+      return (-1);
+
+   if (!data) {
+      if (!(data = malloc(sizeof(*data))))
+         return (-1);
+      memset(data, 0, sizeof(*data));
+      *opt = data;
+   }
+
+   data->percentage = atoi(argv[0]);
+   if (data->percentage < 0 || data->percentage > 100)
+      return (-1);
+   data->minimum_ms = 20;
+   data->maximum_ms = 60;
+   if (argc == 3) {
+      data->minimum_ms = atoi(argv[1]);
+      data->maximum_ms = atoi(argv[2]);
+      if (data->minimum_ms < 0 || data->maximum_ms < 0 || data->minimum_ms > data->maximum_ms)
+         return (-1);
+   }
+   return (0);
+}
+
+/* Packet handler: add random jitter */
+static int jitter_handler(void *pkt, size_t len, void *opt)
+{
+   struct jitter_data *data = opt;
+   struct timespec ts;
+   int ms;
+
+   if (data != NULL) {
+      if (random() % 100 <= data->percentage) {
+         ms = data->minimum_ms + random() % (data->maximum_ms + 1 - data->minimum_ms);
+         ts.tv_sec = ms / 1000;
+         ts.tv_nsec = (ms % 1000) * 1000000;
+         nanosleep(&ts, NULL);
+      }
+   }
+   return (FILTER_ACTION_PASS);
+}
+
+/* Free resources used by filter */
+static void jitter_free(void **opt)
+{
+   if (*opt)
+      free(*opt);
+   *opt = NULL;
+}
+
+static void create_jitter_filter(packet_filter_t *filter)
+{
+    filter->type = FILTER_TYPE_JITTER;
+    filter->setup = (void *)jitter_setup;
+    filter->handler = (void *)jitter_handler;
+    filter->free = (void *)jitter_free;
+}
+
+/* ======================================================================== */
 /* Generic functions for filter management                                  */
 /* ======================================================================== */
 
@@ -217,6 +293,7 @@ static filter_table_t lookup_table[] = {
     { "frequency_drop", create_frequency_drop_filter },
     { "random_drop", create_random_drop_filter },
     { "latency", create_latency_filter },
+    { "jitter", create_jitter_filter },
 };
 
 static int create_filter(packet_filter_t *filter, char *filter_type)
