@@ -332,10 +332,10 @@ the chance for a packet to be corrupted.
 
 .. code:: bash
 
-    bridge add_packet_filter br0 "my_filter1" "latency" 50
+    bridge add_packet_filter br0 "my_filter1" "delay" 50 10
     bridge add_packet_filter br0 "my_filter2" "frequency_drop" 5
-    bridge add_packet_filter br0 "my_filter3" "random_drop" 10
-    bridge add_packet_filter br0 "my_filter4" "jitter" 100 30 60
+    bridge add_packet_filter br0 "my_filter3" "packet_loss" 20
+    bridge add_packet_filter br0 "my_filter4" "corrupt" 30
     bridge show br0
     101 bridge 'br0' is not running
     101 Filter 'my_filter1' configured in position 1
