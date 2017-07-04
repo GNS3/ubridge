@@ -179,8 +179,6 @@ static int delay_setup(void **opt, int argc, char *argv[])
       data->jitter = atoi(argv[1]);
    if (data->latency <= 0 || data->jitter < 0)
       return (-1);
-   if (data->latency - data->jitter < 0)
-      return (-1);
    return (0);
 }
 
@@ -195,6 +193,8 @@ static int delay_handler(void *pkt, size_t len, void *opt)
       delay = data->latency;
       if (data->jitter)
          delay = (delay - data->jitter) + random() % ((delay + data->jitter + 1) - (delay - data->jitter));
+      if (delay < 0)
+          delay = 0;
       ts.tv_sec = delay / 1000;
       ts.tv_nsec = (delay % 1000) * 1000000;
       nanosleep(&ts, NULL);
