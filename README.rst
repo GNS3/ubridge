@@ -5,7 +5,14 @@ uBridge is a simple application to create user-land bridges between various tech
 Currently bridging between UDP tunnels, Ethernet and TAP interfaces is supported.
 Packet capture is also supported.
 
-Dependencies:
+
+.. contents:: :local:
+
+Installation
+-----------------
+
+Dependencies
+#############
 
 - pcap library (Winpcap on Windows).
 - pthread library.
@@ -13,9 +20,6 @@ Dependencies:
 For Ubuntu or other Debian based Linux you need to install this package:
 
 - libpcap-dev
-
-Installation
------------------
 
 Linux
 ################################################
