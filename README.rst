@@ -17,7 +17,8 @@ For Ubuntu or other Debian based Linux you need to install this package:
 Installation
 -----------------
 
-**Linux**
+Linux
+################################################
 
 In the source directory:
 
@@ -26,7 +27,8 @@ In the source directory:
     make
     sudo make install
     
-**Windows**
+Windows
+################################################
 
 Install the dependencies:
 
@@ -57,7 +59,7 @@ You can connect directly to the TCP control port with telnet.
 
 Usage: ubridge -H [<ip_address>:]<tcp_port>
 
-The command syntax is simple: <module> <function> [arguments...]
+The command syntax is simple: *<module>* *<function>* [arguments...]
 For example: "bridge create test" creates a bridge named "test".
 
 The modules that are currently defined are given below:
@@ -68,16 +70,17 @@ The modules that are currently defined are given below:
 * docker       : Docker veth management
 * brctl        : Linux bridge management
 
-**Hypervisor module ("hypervisor")**
+Hypervisor module ("hypervisor")
+################################################
 
-* "hypervisor version" : Display the version of dynamips.
+* "**hypervisor version**" : Display the version of dynamips.
 
 .. code:: bash
 
     hypervisor version
     100-0.9.12
 
-* "hypervisor module_list" : Display the module list.
+* "**hypervisor module_list**" : Display the module list.
 
 .. code:: bash
 
@@ -88,7 +91,7 @@ The modules that are currently defined are given below:
     101 hypervisor
     100-OK
 
-* "hypervisor cmd_list <module>" : Display commands recognized by the specified module.
+* "**hypervisor cmd_list** *<module>*" : Display commands recognized by the specified module.
 
 .. code:: bash
 
@@ -117,7 +120,7 @@ The modules that are currently defined are given below:
     101 create (min/max args: 1/1)
     100-OK
 
-* "hypervisor close" : Close the current session.
+* "**hypervisor close**" : Close the current session.
 
 .. code:: bash
 
@@ -125,7 +128,7 @@ The modules that are currently defined are given below:
     100-OK
     Connection closed by foreign host.
 
-* "hypervisor stop"  : Destroy all objects and stop hypervisor.
+* "**hypervisor stop**"  : Destroy all objects and stop hypervisor.
 
 .. code:: bash
 
@@ -133,23 +136,24 @@ The modules that are currently defined are given below:
     100-OK
     Connection closed by foreign host.
 
-* "hypervisor reset" : Destroy all objects. (used to get an empty configuration)
+* "**hypervisor reset**" : Destroy all objects. (used to get an empty configuration)
 
 .. code:: bash
 
     hypervisor reset
     100-OK
 
-**Bridge module ("bridge")**
+Bridge module ("bridge")
+################################################
 
-* "bridge create <bridge_name>" : Create a new bridge.
+* "**bridge create** *<bridge_name>*" : Create a new bridge.
 
 .. code:: bash
 
     bridge create br0
     100-bridge 'br0' created
 
-* "bridge list" : List all exiting Bridges.
+* "**bridge list**" : List all exiting Bridges.
 
 .. code:: bash
 
@@ -157,14 +161,14 @@ The modules that are currently defined are given below:
     101 br0 (NIOs = 0)
     100-OK
 
-* "bridge delete <bridge_name>" : Delete a bridge.
+* "**bridge delete** *<bridge_name>*" : Delete a bridge.
 
 .. code:: bash
 
     bridge delete br0
     100-bridge 'br0' deleted
 
-* "bridge start <bridge_name>" : Start a bridge.
+* "**bridge start** *<bridge_name>*" : Start a bridge.
   A bridge must have 2 NIOs added in order to start.
 
 .. code:: bash
@@ -172,21 +176,21 @@ The modules that are currently defined are given below:
     bridge start br0
     100-bridge 'br0' started
 
-* "bridge stop <bridge_name>" : Stop a bridge.
+* "**bridge stop** *<bridge_name>*" : Stop a bridge.
 
 .. code:: bash
 
     bridge stop br0
     100-bridge 'br0' stopped
 
-* "bridge rename <old_bridge_name> <new_bridge_name>" : Rename a bridge.
+* "**bridge rename** *<old_bridge_name>* *<new_bridge_name>*" : Rename a bridge.
 
 .. code:: bash
 
     bridge rename br0 br1
     100-bridge 'br0' renamed to 'br1'
 
-* "bridge add_nio_udp <bridge_name> <local_port> <remote_host> <remote_port>" :
+* "**bridge add_nio_udp** *<bridge_name>* *<local_port>* *<remote_host>* *<remote_port>*" :
   Add an UDP NIO with the specified parameters to a bridge.
 
 .. code:: bash
@@ -194,7 +198,7 @@ The modules that are currently defined are given below:
     bridge add_nio_udp br0 20000 127.0.0.1 30000
     100-NIO UDP added to bridge 'br0'
 
-* "bridge delete_nio_udp <bridge_name> <local_port> <remote_host> <remote_port>" :
+* "**bridge delete_nio_udp** *<bridge_name>* *<local_port>* *<remote_host>* *<remote_port>*" :
   Remove an UDP NIO with the specified parameters to a bridge.
 
 .. code:: bash
@@ -202,7 +206,7 @@ The modules that are currently defined are given below:
     bridge delete_nio_udp br0 20000 127.0.0.1 30000
     100-NIO UDP deleted from bridge 'br0'
 
-* "bridge add_nio_unix <local> <remote>" :
+* "**bridge add_nio_unix** *<local>* *<remote>*" :
   Add an UNIX NIO with 'local' the UNIX domain socket to receive and 'remote' to send
 
 .. code:: bash
@@ -210,7 +214,7 @@ The modules that are currently defined are given below:
     bridge add_nio_unix br0 "/tmp/local" "/tmp/remote"
     100-NIO UNIX added to bridge 'br0'
 
-* "bridge add_nio_tap <bridge_name> <tap_device>" :
+* "**bridge add_nio_tap** *<bridge_name>* *<tap_device>*" :
   Add an TAP NIO to a bridge. TAP devices are supported only on Linux and FreeBSD and require root access.
 
 .. code:: bash
@@ -218,7 +222,7 @@ The modules that are currently defined are given below:
     bridge add_nio_tap br0 tap0
     100-NIO TAP added to bridge 'br0'
 
-* "bridge add_nio_ethernet <bridge_name> <eth_device>" :
+* "**bridge add_nio_ethernet** *<bridge_name>* *<eth_device>*" :
   Add a generic Ethernet NIO to a bridge, using PCAP (0.9.4 and greater). It requires root access.
 
 .. code:: bash
@@ -226,7 +230,7 @@ The modules that are currently defined are given below:
     bridge add_nio_ethernet br0 eth0
     100-NIO Ethernet added to bridge 'br0'
 
-* "bridge add_nio_linux_raw <bridge_name> <eth_device>" :
+* "**bridge add_nio_linux_raw** *<bridge_name>* *<eth_device>*" :
   Add a Linux RAW Ethernet NIO. It requires root access and is supported only on Linux platforms.
 
 .. code:: bash
@@ -234,7 +238,7 @@ The modules that are currently defined are given below:
     bridge add_nio_linux_raw br0 eth0
     100-NIO Linux raw added to bridge 'br0'
 
-* "bridge add_nio_fusion_vmnet <bridge_name> <vmnet_device>" :
+* "**bridge add_nio_fusion_vmnet** *<bridge_name>* *<vmnet_device>*" :
   Add a Fusion VMnet NIO. It requires root access and is supported only on Mac OS X.
 
 .. code:: bash
@@ -242,7 +246,7 @@ The modules that are currently defined are given below:
     bridge add_nio_fusion_vmnet br0 vmnet1
     100-NIO Fusion VMnet added to bridge 'br0'
 
-* "bridge show <bridge_name>":
+* "**bridge show** *<bridge_name>*":
   Show the NIOs on a bridge.
 
 .. code:: bash
@@ -252,7 +256,7 @@ The modules that are currently defined are given below:
     101 Source NIO:	20000:127.0.0.1:30000
     101 Destination NIO: eth0
 
-* "bridge start_capture <bridge_name> <pcap_file> [pcap_linktype]" :
+* "**bridge start_capture** *<bridge_name>* *<pcap_file>* [pcap_linktype]" :
   Start a PCAP packet capture on a bridge. PCAP link type default is Ethernet "EN10MB".
 
 .. code:: bash
@@ -260,7 +264,7 @@ The modules that are currently defined are given below:
     bridge start_capture br0 "/tmp/my_capture.pcap"
     100-packet capture started on bridge 'br0'
 
-* "bridge stop_capture <bridge_name>" :
+* "**bridge stop_capture** *<bridge_name>*" :
   Stop a PCAP packet capture on a bridge.
 
 .. code:: bash
@@ -268,7 +272,7 @@ The modules that are currently defined are given below:
     bridge stop_capture br0
     100-packet capture stopped on bridge 'br0'
 
-* "bridge set_pcap_filter <bridge_name> [filter]" :
+* "**bridge set_pcap_filter** *<bridge_name>* [filter]" :
   Set a PCAP filter on a bridge. There must be a least one NIO Ethernet attached to the bridge.
   To reset any applied filter, same command without a filter.
 
@@ -282,7 +286,7 @@ The modules that are currently defined are given below:
     bridge set_pcap_filter br0
     100-filter reset on bridge 'br0'
 
-* "bridge stats <bridge_name>":
+* "**bridge stats** *<bridge_name>*":
   Show statistics about a bridge input/output.
 
 .. code:: bash
@@ -291,7 +295,7 @@ The modules that are currently defined are given below:
     101 Source NIO:      IN: 5 packets (90 bytes) OUT: 15 packets (410 bytes)
     101 Destination NIO: IN: 15 packets (410 bytes) OUT: 5 packets (90 bytes)
 
-* "bridge reset_stats <bridge_name>":
+* "**bridge reset_stats** *<bridge_name>*":
   Reset the statistics of a bridge.
 
 .. code:: bash
@@ -299,23 +303,32 @@ The modules that are currently defined are given below:
     bridge reset_stats bridge0
     100-OK
 
-* "bridge add_packet_filter <bridge_name> <filter_name> <filter_type> [<a4> [...<a10>]]":
+* "**bridge add_packet_filter** *<bridge_name>* *<filter_name>* *<filter_type>* [*<a4>* [...*<a10>*]]":
   Add a packet filter to a bridge.
 
-  Filter types:
+Filter types
+*************
 
-  "frequency_drop" has 1 argument "<frequency>". It will drop
-  everything with a -1 frequency, drop every Nth packet with a
-  positive frequency, or drop nothing.
+frequency_drop
+^^^^^^^^^^^^^^^^
+"frequency_drop" has 1 argument "*<frequency>*". It will drop
+everything with a -1 frequency, drop every Nth packet with a
+positive frequency, or drop nothing.
 
-  "packet_loss" has 1 argument "<percentage>" (0 to 100%). The percentage represents
-  the chance for a packet to be lost.
+packet_loss
+^^^^^^^^^^^^^
+"packet_loss" has 1 argument "*<percentage>*" (0 to 100%). The percentage represents
+the chance for a packet to be lost.
 
-  "delay" has 1 argument "<latency>" to delay packets in milliseconds and 1 optional argument
-  <jitter> to add jitter in milliseconds (+/- of the delay
+delay
+^^^^^^
+"delay" has 1 argument "*<latency>*" to delay packets in milliseconds and 1 optional argument
+*<jitter>* to add jitter in milliseconds (+/-) of the delay
 
-  "corrupt" has 1 argument "<percentage>" (0 to 100%). The percentage represents
-  the chance for a packet to be corrupted.
+corrupt
+^^^^^^^^^
+"corrupt" has 1 argument "*<percentage>*" (0 to 100%). The percentage represents
+the chance for a packet to be corrupted.
 
 .. code:: bash
 
@@ -331,7 +344,7 @@ The modules that are currently defined are given below:
     101 Destination NIO: 20001:127.0.0.1:30001
     100-OK
 
-* "bridge add_packet_filter <bridge_name> <filter_name>":
+* "**bridge add_packet_filter** *<bridge_name>* *<filter_name>*":
   Delete a packet filter configured on a bridge.
 
 .. code:: bash
@@ -339,7 +352,7 @@ The modules that are currently defined are given below:
     bridge delete_packet_filter br0 "my_filter1"
     100-Filter 'my_filter1' delete from bridge 'br0'
 
-* "bridge add_packet_filter <bridge_name> <filter_name>":
+* "**bridge add_packet_filter** *<bridge_name>* *<filter_name>*":
   Delete all packet filters configured on a bridge.
 
 .. code:: bash
@@ -347,9 +360,10 @@ The modules that are currently defined are given below:
     bridge reset_packet_filters br0
     100-OK
 
-**Docker module ("docker")**
+Docker module ("docker")
+################################################
 
-* "docker create_veth <interface_name_1> <interface_name_2>" :
+* "**docker create_veth** *<interface_name_1>* *<interface_name_2>*" :
   Create virtual Ethernet interface pair.
 
 .. code:: bash
@@ -357,7 +371,7 @@ The modules that are currently defined are given below:
     docker create_veth hostif guestif
     100-veth pair created: hostif and guestif
 
-* "docker move_to_ns <interface> <namespace_id> <dst_interface>" :
+* "**docker move_to_ns** *<interface>* *<namespace_id>* *<dst_interface>*" :
   Move Ethernet interface to network namespace. And rename it after
   the move.
 
@@ -366,7 +380,7 @@ The modules that are currently defined are given below:
     docker move_to_ns guestif 6367 eth0
     100-guestif moved to namespace 6367
 
-* "docker delete_veth <interface_name>" :
+* "**docker delete_veth** *<interface_name>*" :
   Delete virtual Ethernet interface.
 
 .. code:: bash
@@ -374,28 +388,31 @@ The modules that are currently defined are given below:
     docker delete_veth hostif
     100-veth interface hostif has been deleted
 
-**Linux bridge ("brctl")**
+Linux bridge ("brctl")
+################################################
 
 .. code:: bash
     brctl addif virbr0 nat2
     100-nat2 has been added to bridge virbr0
 
-**IOL Bridge module ("iol_bridge")**
+IOL Bridge module ("iol_bridge")
+################################################
 
-* iol_bridge create <name> <id>
+* iol_bridge create *<name>* *<id>*
 
 .. code:: bash
 
     iol_bridge create IOL-BRIDGE-513 513
     100-IOL bridge 'IOL-BRIDGE-513' created
 
-* iol_bridge add_nio_udp <name> <iol_id> <bay> <unit> <lport> <rhost> <rport>
+* iol_bridge add_nio_udp *<name>* *<iol_id>* *<bay>* *<unit>* *<lport>* *<rhost>* *<rport>*
 
-* iol_bridge start_capture <name> "<output_file>" <data_link_type>
+* iol_bridge start_capture *<name>* "*<output_file>*" *<data_link_type>*
 
-* iol_bridge delete <name>
+* iol_bridge delete *<name>*
 
-**Session example**
+Session example
+################################################
 
 This will bridge a tap0 interface to an UDP tunnel.
 
