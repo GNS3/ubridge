@@ -70,6 +70,7 @@ void *iol_nio_listener(void *data)
    while (1)
      {
         /* Put received bytes after the (absent) IOU header */
+        drop_packet = FALSE;
         bytes_received = nio_recv(nio, &pkt[IOL_HDR_SIZE], MAX_MTU);
         if (bytes_received == -1) {
             if (errno == ECONNREFUSED || errno == ENETDOWN)
@@ -149,6 +150,7 @@ void *iol_bridge_listener(void *data)
    while (1)
     {
        /* This receives from an IOL instance */
+       drop_packet = FALSE;
        bytes_received = read(bridge->iol_bridge_sock, pkt, IOL_HDR_SIZE + MAX_MTU);
        if (bytes_received == -1) {
            if (errno == ECONNREFUSED || errno == ENETDOWN)
