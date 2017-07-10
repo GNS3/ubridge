@@ -20,7 +20,9 @@
 
 #include <string.h>
 #include <time.h>
+#include <pcap.h>
 #include "packet_filter.h"
+#include "pcap_filter.h"
 #include "ubridge.h"
 
 
@@ -300,6 +302,80 @@ static void create_corrupt_filter(packet_filter_t *filter)
 }
 
 /* ======================================================================== */
+/* BPF                                                                      */
+/* ======================================================================== */
+
+struct bpf_data {
+   struct bpf_program fp;
+};
+
+/* Setup filter */
+static int bpf_setup(void **opt, int argc, char *argv[])
+{
+   struct bpf_data *data = *opt;
+   int link_type;
+   pcap_t *pcap_dev;
+   char *filter;
+
+   if (argc != 1 && argc != 2)
+      return (-1);
+
+   if (!data) {
+      if (!(data = malloc(sizeof(*data))))
+         return (-1);
+      memset(data, 0, sizeof(*data));
+      *opt = data;
+   }
+
+   filter = argv[0];
+   link_type = DLT_EN10MB;
+   if (argc == 2)
+      if ((link_type = pcap_datalink_name_to_val(argv[1])) == -1) {
+         fprintf(stderr,"Unknown link type %s\n", argv[1]);
+         return (-1);
+      }
+   pcap_dev = pcap_open_dead(link_type, 65535);
+   if (pcap_compile(pcap_dev, &data->fp, filter, 1, PCAP_NETMASK_UNKNOWN) < 0) {
+       fprintf(stderr, "Cannot compile filter '%s': %s\n", filter, pcap_geterr(pcap_dev));
+       return (-1);
+   }
+   pcap_close(pcap_dev);
+   return (0);
+}
+
+/* Packet handler: apply BPF filter */
+static int bpf_handler(void *pkt, size_t len, void *opt)
+{
+   struct bpf_data *data = opt;
+   struct pcap_pkthdr pkthdr;
+
+   memset(&pkthdr, 0, sizeof(pkthdr));
+   pkthdr.caplen = len;
+   pkthdr.len = len;
+   if (data != NULL) {
+       if (pcap_offline_filter(&data->fp, &pkthdr, pkt))
+         return (FILTER_ACTION_DROP);
+   }
+   return (FILTER_ACTION_PASS);
+}
+
+/* Free resources used by filter */
+static void bpf_free(void **opt)
+{
+   if (*opt)
+      free(*opt);
+   *opt = NULL;
+}
+
+static void create_bpf_filter(packet_filter_t *filter)
+{
+    filter->type = FILTER_TYPE_BPF;
+    filter->setup = (void *)bpf_setup;
+    filter->handler = (void *)bpf_handler;
+    filter->free = (void *)bpf_free;
+}
+
+/* ======================================================================== */
 /* Generic functions for filter management                                  */
 /* ======================================================================== */
 
@@ -314,6 +390,7 @@ static filter_table_t lookup_table[] = {
     { "packet_loss", create_packet_loss_filter },
     { "delay", create_delay_filter },
     { "corrupt", create_corrupt_filter },
+    { "bpf", create_bpf_filter},
 };
 
 static int create_filter(packet_filter_t *filter, char *filter_type)

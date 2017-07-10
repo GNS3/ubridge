@@ -334,12 +334,20 @@ corrupt
 "corrupt" has 1 argument "*<percentage>*" (0 to 100%). The percentage represents
 the chance for a packet to be corrupted.
 
+bpf
+^^^^
+"bpf" has 1 argument "*<filter_expression>*", a string written with BPF syntax and 1 optional argument
+*<pcap_linktype>* which is the PCAP link type, the default is Ethernet "EN10MB".
+
 .. code:: bash
 
     bridge add_packet_filter br0 "my_filter1" "delay" 50 10
     bridge add_packet_filter br0 "my_filter2" "frequency_drop" 5
     bridge add_packet_filter br0 "my_filter3" "packet_loss" 20
     bridge add_packet_filter br0 "my_filter4" "corrupt" 30
+    bridge add_packet_filter br0 "my_filter5" "bpf" "icmp[icmptype] == 8"
+    bridge add_packet_filter br0 "my_filter6" "bpf" "ether host 11:22:33:44:55:66"
+    bridge add_packet_filter br0 "my_filter7" "bpf" "tcp src port 53"
     bridge show br0
     101 bridge 'br0' is not running
     101 Filter 'my_filter1' configured in position 1
@@ -348,7 +356,7 @@ the chance for a packet to be corrupted.
     101 Destination NIO: 20001:127.0.0.1:30001
     100-OK
 
-* "**bridge add_packet_filter** *<bridge_name>* *<filter_name>*":
+* "**bridge delete_packet_filter** *<bridge_name>* *<filter_name>*":
   Delete a packet filter configured on a bridge.
 
 .. code:: bash
@@ -356,7 +364,7 @@ the chance for a packet to be corrupted.
     bridge delete_packet_filter br0 "my_filter1"
     100-Filter 'my_filter1' delete from bridge 'br0'
 
-* "**bridge add_packet_filter** *<bridge_name>* *<filter_name>*":
+* "**bridge reset_packet_filters** *<bridge_name>*":
   Delete all packet filters configured on a bridge.
 
 .. code:: bash
