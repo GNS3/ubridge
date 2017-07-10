@@ -352,6 +352,11 @@ bpf
     101 bridge 'br0' is not running
     101 Filter 'my_filter1' configured in position 1
     101 Filter 'my_filter2' configured in position 2
+    101 Filter 'my_filter3' configured in position 3
+    101 Filter 'my_filter4' configured in position 4
+    101 Filter 'my_filter5' configured in position 5
+    101 Filter 'my_filter6' configured in position 6
+    101 Filter 'my_filter7' configured in position 7
     101 Source NIO: 20000:127.0.0.1:30000
     101 Destination NIO: 20001:127.0.0.1:30001
     100-OK
