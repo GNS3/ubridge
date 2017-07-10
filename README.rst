@@ -336,7 +336,8 @@ the chance for a packet to be corrupted.
 
 bpf
 ^^^^
-"bpf" has 1 argument "*<filter_expression>*", a string written with BPF syntax and 1 optional argument
+"bpf" has 1 argument "*<filter_expression>*", a string written with the Berkeley Packet Filter (BPF) syntax.
+This filter will drop any packet matching the expression. It also has 1 optional argument
 *<pcap_linktype>* which is the PCAP link type, the default is Ethernet "EN10MB".
 
 .. code:: bash
