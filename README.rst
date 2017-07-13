@@ -425,6 +425,10 @@ IOL Bridge module ("iol_bridge")
 
 * iol_bridge add_nio_udp *<name>* *<iol_id>* *<bay>* *<unit>* *<lport>* *<rhost>* *<rport>*
 
+* iol_bridge add_packet_filter *<name>* *<bay>* *<unit>* *<filter_name>* *<filter_type>*
+
+* iol_bridge reset_packet_filters *<name>* *<bay>* *<unit>* 
+
 * iol_bridge start_capture *<name>* "*<output_file>*" *<data_link_type>*
 
 * iol_bridge delete *<name>*
