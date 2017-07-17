@@ -402,6 +402,7 @@ static int cmd_create_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
       new_bridge->port_table[i].iol_id = 0;
       new_bridge->port_table[i].destination_nio = NULL;
       new_bridge->port_table[i].capture = NULL;
+      new_bridge->port_table[i].packet_filters = NULL;
    }
 
    new_bridge->next = *head;
@@ -445,6 +446,7 @@ static int cmd_delete_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
                     pthread_cancel(bridge->port_table[i].tid);
                     pthread_join(bridge->port_table[i].tid, NULL);
                     free_pcap_capture(bridge->port_table[i].capture);
+                    free_packet_filters(bridge->port_table[i].packet_filters);
                     free_nio(bridge->port_table[i].destination_nio);
                 }
              }
