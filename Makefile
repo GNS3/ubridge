@@ -88,6 +88,6 @@ install : $(NAME)
 else
 install : $(NAME)
 	chmod +x $(NAME)
-	cp $(NAME) $(BINDIR)
+	cp -p $(NAME) $(BINDIR)
 	setcap cap_net_admin,cap_net_raw=ep $(BINDIR)/$(NAME)
 endif
