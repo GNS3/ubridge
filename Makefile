@@ -67,6 +67,7 @@ endif
 
 ifeq ($(SYSTEM_INIPARSER),1)
     CFLAGS += -DUSE_SYSTEM_INIPARSER
+    LIBS += -liniparser
 else
     SRC += src/iniparser/iniparser.c   \
 	   src/iniparser/dictionary.c
