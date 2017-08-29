@@ -27,8 +27,6 @@ SRC     =   src/ubridge.c               \
             src/nio_unix.c              \
             src/nio_ethernet.c          \
             src/nio_tap.c               \
-            src/iniparser/iniparser.c   \
-            src/iniparser/dictionary.c  \
             src/parse.c                 \
             src/packet_filter.c         \
             src/pcap_capture.c          \
@@ -36,6 +34,7 @@ SRC     =   src/ubridge.c               \
             src/hypervisor.c            \
             src/hypervisor_parser.c     \
             src/hypervisor_bridge.c
+
 
 OBJ     =   $(SRC:.c=.o)
 
@@ -64,6 +63,13 @@ ifeq ($(shell uname), Linux)
            src/hypervisor_iol_bridge.c     \
            src/hypervisor_brctl.c   \
            src/netlink/nl.c
+endif
+
+ifeq ($(SYSTEM_INIPARSER),1)
+    CFLAGS += -DUSE_SYSTEM_INIPARSER
+else
+    SRC += src/iniparser/iniparser.c   \
+	   src/iniparser/dictionary.c
 endif
 
 ##############################
