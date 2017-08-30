@@ -22,7 +22,12 @@
 #define PARSE_H_
 
 #include "ubridge.h"
+
+#ifdef USE_SYSTEM_INIPARSER
+#include <iniparser.h>
+#else
 #include "iniparser/iniparser.h"
+#endif
 
 #define MAX_KEY_SIZE   256
 

@@ -27,8 +27,6 @@ SRC     =   src/ubridge.c               \
             src/nio_unix.c              \
             src/nio_ethernet.c          \
             src/nio_tap.c               \
-            src/iniparser/iniparser.c   \
-            src/iniparser/dictionary.c  \
             src/parse.c                 \
             src/packet_filter.c         \
             src/pcap_capture.c          \
@@ -36,6 +34,7 @@ SRC     =   src/ubridge.c               \
             src/hypervisor.c            \
             src/hypervisor_parser.c     \
             src/hypervisor_bridge.c
+
 
 OBJ     =   $(SRC:.c=.o)
 
@@ -66,6 +65,14 @@ ifeq ($(shell uname), Linux)
            src/netlink/nl.c
 endif
 
+ifeq ($(SYSTEM_INIPARSER),1)
+    CFLAGS += -DUSE_SYSTEM_INIPARSER
+    LIBS += -liniparser
+else
+    SRC += src/iniparser/iniparser.c   \
+	   src/iniparser/dictionary.c
+endif
+
 ##############################
 
 $(NAME)	: $(OBJ)
@@ -88,6 +95,6 @@ install : $(NAME)
 else
 install : $(NAME)
 	chmod +x $(NAME)
-	cp $(NAME) $(BINDIR)
+	cp -p $(NAME) $(BINDIR)
 	setcap cap_net_admin,cap_net_raw=ep $(BINDIR)/$(NAME)
 endif
