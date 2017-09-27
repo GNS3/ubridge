@@ -338,6 +338,9 @@ int main(int argc, char **argv)
   char *index;
   size_t len;
 
+  setvbuf(stdout, NULL, _IOLBF, 0);
+  setvbuf(stderr, NULL, _IOLBF, 0);
+
   printf("uBridge version %s running with %s\n", VERSION, pcap_lib_version());
   while ((opt = getopt(argc, argv, "hved:f:H:")) != -1) {
     switch (opt) {

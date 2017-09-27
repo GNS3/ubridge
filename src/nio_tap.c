@@ -82,9 +82,11 @@ static int nio_tap_open(char *tap_devname)
    return(fd);
 #else
    int i, fd = -1;
+   char tap_fullname[NETIO_DEV_MAXLEN];
 
    if (*tap_devname) {
-      fd = open(tap_devname, O_RDWR);
+      snprintf(tap_fullname,NETIO_DEV_MAXLEN, "/dev/%s", tap_devname);
+      fd = open(tap_fullname, O_RDWR);
    } else {
       for(i = 0; i < 16; i++) {
          snprintf(tap_devname, NIO_DEV_MAXLEN, "/dev/tap%d", i);
@@ -111,6 +113,14 @@ static ssize_t nio_tap_send(nio_tap_t *nio_tap, void *pkt, size_t pkt_len)
 
 static ssize_t nio_tap_recv(nio_tap_t *nio_tap, void *pkt, size_t max_len)
 {
+#ifdef __APPLE__
+  /* wait for an active IP interface and incoming data */
+  fd_set tap_fd_set;
+  FD_ZERO(&tap_fd_set);
+  FD_SET(nio_tap->fd, &tap_fd_set);
+  if (select(nio_tap->fd + 1, &tap_fd_set, NULL, NULL, NULL) < 0)
+     perror("nio_tap_recv: select");
+#endif
    return (read(nio_tap->fd, pkt, max_len));
 }
 
