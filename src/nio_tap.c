@@ -82,7 +82,7 @@ static int nio_tap_open(char *tap_devname)
    return(fd);
 #else
    int i, fd = -1;
-   char tap_fullname[NETIO_DEV_MAXLEN];
+   char tap_fullname[NIO_DEV_MAXLEN];
 
    if (*tap_devname) {
       snprintf(tap_fullname,NETIO_DEV_MAXLEN, "/dev/%s", tap_devname);
@@ -96,7 +96,7 @@ static int nio_tap_open(char *tap_devname)
       }
    }
 
-   return(fd);
+   return (fd);
 #endif
 }
 
@@ -119,7 +119,7 @@ static ssize_t nio_tap_recv(nio_tap_t *nio_tap, void *pkt, size_t max_len)
   FD_ZERO(&tap_fd_set);
   FD_SET(nio_tap->fd, &tap_fd_set);
   if (select(nio_tap->fd + 1, &tap_fd_set, NULL, NULL, NULL) < 0)
-     perror("nio_tap_recv: select");
+     return (-1);
 #endif
    return (read(nio_tap->fd, pkt, max_len));
 }
