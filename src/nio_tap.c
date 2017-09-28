@@ -85,7 +85,7 @@ static int nio_tap_open(char *tap_devname)
    char tap_fullname[NIO_DEV_MAXLEN];
 
    if (*tap_devname) {
-      snprintf(tap_fullname,NETIO_DEV_MAXLEN, "/dev/%s", tap_devname);
+      snprintf(tap_fullname, NIO_DEV_MAXLEN, "/dev/%s", tap_devname);
       fd = open(tap_fullname, O_RDWR);
    } else {
       for(i = 0; i < 16; i++) {
