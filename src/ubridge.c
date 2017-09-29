@@ -341,7 +341,6 @@ int main(int argc, char **argv)
   setvbuf(stdout, NULL, _IOLBF, 0);
   setvbuf(stderr, NULL, _IOLBF, 0);
 
-  printf("uBridge version %s running with %s\n", VERSION, pcap_lib_version());
   while ((opt = getopt(argc, argv, "hved:f:H:")) != -1) {
     switch (opt) {
       case 'H':
@@ -381,6 +380,7 @@ int main(int argc, char **argv)
         exit(EXIT_FAILURE);
 	}
   }
+  printf("uBridge version %s running with %s\n", VERSION, pcap_lib_version());
   ubridge(hypervisor_ip_address, hypervisor_tcp_port);
   return (EXIT_SUCCESS);
 }
