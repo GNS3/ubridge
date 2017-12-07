@@ -38,7 +38,7 @@ SRC     =   src/ubridge.c               \
 
 OBJ     =   $(SRC:.c=.o)
 
-CC      =   gcc
+CC      ?=   gcc
 
 CFLAGS  =   -O3 -Wall
 
@@ -92,6 +92,10 @@ install : $(NAME)
 	cp $(NAME) $(BINDIR)
 	chown root:admin $(BINDIR)/$(NAME)
 	chmod 4750 $(BINDIR)/$(NAME)
+else ifeq($(shell uname), FreeBSD)
+install : $(NAME)
+	cp $(NAME) $(DESTDIR)$(BINDIR)
+	chmod 4750 $(DESTDIR)$(BINDIR)/$(NAME)
 else
 install : $(NAME)
 	chmod +x $(NAME)
