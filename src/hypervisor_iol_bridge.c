@@ -98,7 +98,7 @@ void *iol_nio_listener(void *data)
              packet_filter_t *filter = iol_nio->packet_filters;
              packet_filter_t *next;
              while (filter != NULL) {
-                 if (filter->handler(pkt, bytes_received, filter->data) == FILTER_ACTION_DROP) {
+                 if (filter->handler(&pkt[IOL_HDR_SIZE], bytes_received, filter->data) == FILTER_ACTION_DROP) {
                      if (debug_level > 0)
                         printf("Packet dropped by packet filter '%s' from destination NIO on IOL bridge '%s'\n", filter->name, bridge->name);
                      drop_packet = TRUE;
@@ -180,7 +180,7 @@ void *iol_bridge_listener(void *data)
             packet_filter_t *filter = bridge->port_table[port].packet_filters;
             packet_filter_t *next;
             while (filter != NULL) {
-                if (filter->handler(pkt, bytes_received, filter->data) == FILTER_ACTION_DROP) {
+                if (filter->handler(&pkt[IOL_HDR_SIZE], bytes_received, filter->data) == FILTER_ACTION_DROP) {
                     if (debug_level > 0)
                        printf("Packet dropped by packet filter '%s' from IOL instance on IOL bridge '%s'\n", filter->name, bridge->name);
                     drop_packet = TRUE;
