@@ -31,6 +31,18 @@ In the source directory:
     make
     sudo make install
     
+FreeBSD
+################################################
+
+In the source directory:
+
+.. code:: bash
+    gmake
+    sudo make install
+    
+Be sure to modify gns_server.conf to point to /usr/local/bin/ubridge.
+    
+    
 Windows
 ################################################
 
