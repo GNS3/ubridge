@@ -37,8 +37,9 @@ FreeBSD
 In the source directory:
 
 .. code:: bash
+
     gmake
-    sudo make install
+    sudo gmake install
     
 Be sure to modify gns_server.conf to point to /usr/local/bin/ubridge.
     
