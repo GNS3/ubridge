@@ -40,7 +40,7 @@ OBJ     =   $(SRC:.c=.o)
 
 CC      ?=   gcc
 
-CFLAGS  =   -O3 -Wall
+CFLAGS  +=   -Wall
 
 BINDIR  =   /usr/local/bin
 
@@ -76,7 +76,7 @@ endif
 ##############################
 
 $(NAME)	: $(OBJ)
-	$(CC) -o $(NAME) $(OBJ) $(LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $(NAME) $(OBJ) $(LIBS)
 
 .PHONY: clean
 
