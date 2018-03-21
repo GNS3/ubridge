@@ -22,7 +22,7 @@ install:
 
 build_script:
     - '%CYG_ROOT%/bin/bash -lc "ls $APPVEYOR_BUILD_FOLDER'
-    - '%CYG_ROOT%/bin/bash -lc "cd $APPVEYOR_BUILD_FOLDER && make CFLAGS=\"-O3 -Wall -lpthread -lpcap -IWpdPack\\Include\"'
+    - '%CYG_ROOT%/bin/bash -lc "cd $APPVEYOR_BUILD_FOLDER && make CFLAGS=\"-O3 -Wall -IWpdPack\\Include\"'
 
 
 artifacts:
