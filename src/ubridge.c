@@ -334,7 +334,7 @@ int main(int argc, char **argv)
 {
   int hypervisor_tcp_port = 0;
   char *hypervisor_ip_address = NULL;
-  char opt;
+  int opt;
   char *index;
   size_t len;
 
