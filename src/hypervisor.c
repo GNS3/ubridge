@@ -461,8 +461,10 @@ static hypervisor_conn_t *hypervisor_create_conn(int client_fd)
    setlinebuf(conn->out);
 
    /* Create the managing thread */
-   if (pthread_create(&conn->tid, NULL, hypervisor_thread, conn) != 0)
+   if (pthread_create(&conn->tid, NULL, hypervisor_thread, conn) != 0) {
+      perror("hypervisor_create_conn: pthread_create");
       goto err_thread;
+   }
 
    /* Add it to the connection list */
    hypervisor_add_conn(conn);
