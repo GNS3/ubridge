@@ -15,12 +15,6 @@ jobs:
             echo "Today is $(date +"%Y-%m-%d %T")"
 
       - run:
-          name: Installed python and pip version
-          command: |
-            python3 -V
-            pip3 -V
-
-      - run:
           name: Install libpcap
           command: |
             brew install libpcap
