@@ -45,6 +45,18 @@ jobs:
           path: artifacts
           destination: artifacts
 
+      - run:
+          name: Upload nightly builds to SF
+          command: |
+            if [ -n "${RUN_NIGHTLY_BUILD}" ]; then
+              ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts
+              echo "mkdir \"/home/frs/project/gns-3/Nightly Builds/$(date +"%Y-%m-%d")/\"" | sftp gns3build@frs.sourceforge.net
+              echo -ne "
+                cd \"/home/frs/project/gns-3/Nightly Builds/$(date +"%Y-%m-%d")/\"
+                put \"artifacts/ubridge-osx\"
+              " | sftp gns3build@frs.sourceforge.net
+            fi
+
 # workflows:
 #   version: 2
 #   build_and_deploy:
