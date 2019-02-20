@@ -1,0 +1,56 @@
+# iOS CircleCI 2.0 configuration file
+version: 2
+jobs:
+  build:
+    macos:
+      xcode: "9.4.0"
+
+    steps:
+      - checkout
+
+      - run:
+          name: Set timezone and check current datetime
+          command: |
+            sudo systemsetup -settimezone Europe/Warsaw
+            echo "Today is $(date +"%Y-%m-%d %T")"
+
+      - run:
+          name: Installed python and pip version
+          command: |
+            python3 -V
+            pip3 -V
+
+      - run:
+          name: Install libpcap
+          command: |
+            brew install libpcap
+
+      - run:
+          name: Build ubridge
+          command: |
+            make
+
+      - run:
+          name: Verify ubridge build
+          command: |
+            ./ubridge -v
+
+      - run:
+          name: Gather artifacts
+          command: |
+            mkdir artifacts
+            mv ubridge artifacts/ubridge-osx
+
+      - store_artifacts:
+          path: artifacts
+          destination: artifacts
+
+# workflows:
+#   version: 2
+#   build_and_deploy:
+#     jobs:
+#       - build:
+#           filters:
+#             tags:
+#               only: /v.*/
+

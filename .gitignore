@@ -32,3 +32,6 @@
 *.dSYM/
 ubridge
 ubridge.ini
+
+# IDE files
+.idea/
