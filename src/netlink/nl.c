@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
+#include <sys/types.h>
 #include "nl.h"
 
 #define NLMSG_TAIL(nmsg) \
