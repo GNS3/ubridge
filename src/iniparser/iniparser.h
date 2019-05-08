@@ -290,7 +290,7 @@ int iniparser_find_entry(const dictionary * ini, const char * entry) ;
 /**
   @brief    Parse an ini file and return an allocated dictionary object
   @param    ininame Name of the ini file to read.
-  @param    options Name of the ini file to read.
+  @param    options Loading options.
   @return   Pointer to newly allocated dictionary
 
   This is the parser for ini files. This function is called, providing
