@@ -626,7 +626,7 @@ static line_status iniparser_line(
   The returned dictionary must be freed using iniparser_freedict().
  */
 /*--------------------------------------------------------------------------*/
-dictionary * iniparser_load(const char * ininame)
+dictionary * iniparser_load(const char * ininame, load_options options)
 {
     FILE * in ;
 
@@ -707,10 +707,18 @@ dictionary * iniparser_load(const char * ininame)
             break ;
 
             case LINE_ERROR:
-            fprintf(stderr, "iniparser: syntax error in %s (%d):\n",
-                    ininame,
-                    lineno);
-            fprintf(stderr, "-> %s\n", line);
+
+            if(options & HIDE_ERRORED_LINE_CONTENT) {
+              fprintf(stderr, "iniparser: syntax error in %s (%d)\n",
+                      ininame,
+                      lineno);
+            }
+            else {
+              fprintf(stderr, "iniparser: syntax error in %s (%d):\n",
+                      ininame,
+                      lineno);
+              fprintf(stderr, "-> %s\n", line);
+            }
             errs++ ;
             break;
 

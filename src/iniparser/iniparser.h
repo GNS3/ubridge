@@ -31,6 +31,10 @@
 extern "C" {
 #endif
 
+typedef enum {
+  HIDE_ERRORED_LINE_CONTENT = (1<<0)
+} load_options;
+
 /*-------------------------------------------------------------------------*/
 /**
   @brief    Get number of sections in a dictionary
@@ -286,6 +290,7 @@ int iniparser_find_entry(const dictionary * ini, const char * entry) ;
 /**
   @brief    Parse an ini file and return an allocated dictionary object
   @param    ininame Name of the ini file to read.
+  @param    options Loading options.
   @return   Pointer to newly allocated dictionary
 
   This is the parser for ini files. This function is called, providing
@@ -296,7 +301,7 @@ int iniparser_find_entry(const dictionary * ini, const char * entry) ;
   The returned dictionary must be freed using iniparser_freedict().
  */
 /*--------------------------------------------------------------------------*/
-dictionary * iniparser_load(const char * ininame);
+dictionary * iniparser_load(const char * ininame, load_options options);
 
 /*-------------------------------------------------------------------------*/
 /**
