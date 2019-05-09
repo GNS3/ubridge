@@ -27,3 +27,4 @@ build_script:
 
 artifacts:
   - path: 'ubridge.exe'
+  - path: 'cygwin1.dll'
