@@ -186,7 +186,7 @@ int parse_config(char *filename, bridge_t **bridges)
     const char *bridge_name;
     int i, nsec;
 
-    if ((ubridge_config = iniparser_load(filename, HIDE_ERRORED_LINE_CONTENT)) == NULL) {
+    if ((ubridge_config = iniparser_load(filename)) == NULL) {
        return FALSE;
     }
 

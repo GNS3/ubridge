@@ -31,9 +31,17 @@
 extern "C" {
 #endif
 
-typedef enum {
-  HIDE_ERRORED_LINE_CONTENT = (1<<0)
-} load_options;
+/*-------------------------------------------------------------------------*/
+/**
+  @brief    Configure a function to receive the error messages.
+  @param    errback  Function to call.
+
+  By default, the error will be printed on stderr. If a null pointer is passed
+  as errback the error callback will be switched back to default.
+ */
+/*--------------------------------------------------------------------------*/
+
+void iniparser_set_error_callback(int (*errback)(const char *, ...));
 
 /*-------------------------------------------------------------------------*/
 /**
@@ -196,6 +204,34 @@ int iniparser_getint(const dictionary * d, const char * key, int notfound);
 
 /*-------------------------------------------------------------------------*/
 /**
+  @brief    Get the string associated to a key, convert to an long int
+  @param    d Dictionary to search
+  @param    key Key string to look for
+  @param    notfound Value to return in case of error
+  @return   integer
+
+  This function queries a dictionary for a key. A key as read from an
+  ini file is given as "section:key". If the key cannot be found,
+  the notfound value is returned.
+
+  Supported values for integers include the usual C notation
+  so decimal, octal (starting with 0) and hexadecimal (starting with 0x)
+  are supported. Examples:
+
+  - "42"      ->  42
+  - "042"     ->  34 (octal -> decimal)
+  - "0x42"    ->  66 (hexa  -> decimal)
+
+  Warning: the conversion may overflow in various ways. Conversion is
+  totally outsourced to strtol(), see the associated man page for overflow
+  handling.
+ */
+/*--------------------------------------------------------------------------*/
+long int iniparser_getlongint(const dictionary * d, const char * key, long int notfound);
+
+
+/*-------------------------------------------------------------------------*/
+/**
   @brief    Get the string associated to a key, convert to a double
   @param    d Dictionary to search
   @param    key Key string to look for
@@ -290,7 +326,6 @@ int iniparser_find_entry(const dictionary * ini, const char * entry) ;
 /**
   @brief    Parse an ini file and return an allocated dictionary object
   @param    ininame Name of the ini file to read.
-  @param    options Loading options.
   @return   Pointer to newly allocated dictionary
 
   This is the parser for ini files. This function is called, providing
@@ -301,7 +336,7 @@ int iniparser_find_entry(const dictionary * ini, const char * entry) ;
   The returned dictionary must be freed using iniparser_freedict().
  */
 /*--------------------------------------------------------------------------*/
-dictionary * iniparser_load(const char * ininame, load_options options);
+dictionary * iniparser_load(const char * ininame);
 
 /*-------------------------------------------------------------------------*/
 /**
