@@ -257,8 +257,7 @@ int iniparser_error_handler(const char *format, ...)
      va_start(argptr, format);
      char *filename = va_arg(argptr, char *);
      int lineno = va_arg(argptr, int);
-     char *line = va_arg(argptr, char *);
-     ret = fprintf(stderr, "iniparser: syntax error in %s on line %d: %s\n", filename, lineno, line);
+     ret = fprintf(stderr, "iniparser: syntax error in %s on line %d\n", filename, lineno);
      va_end(argptr);
   }
   else {
