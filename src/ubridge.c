@@ -247,26 +247,24 @@ void signal_gen_handler(int sig)
    }
 }
 
-int iniparse_error_handler(const char *format, ...)
+int iniparser_error_handler(const char *format, ...)
 {
   int ret;
   va_list argptr;
   char *syntax_error = strstr(format, "iniparser: syntax error");
 
   if(syntax_error != NULL) {
-    va_start(argptr, format);
-    char *filename = va_arg(argptr, char *);
-    int lineno = va_arg(argptr, int);
-    ret = fprintf(
-      stderr, "iniparser: syntax error in %s (%d):\n",
-      filename,
-      lineno);
-    va_end(argptr);
+     va_start(argptr, format);
+     char *filename = va_arg(argptr, char *);
+     int lineno = va_arg(argptr, int);
+     char *line = va_arg(argptr, char *);
+     ret = fprintf(stderr, "iniparser: syntax error in %s on line %d: %s\n", filename, lineno, line);
+     va_end(argptr);
   }
   else {
-    va_start(argptr, format);
-    ret = vfprintf(stderr, format, argptr);
-    va_end(argptr);
+     va_start(argptr, format);
+     ret = vfprintf(stderr, format, argptr);
+     va_end(argptr);
   }
 
   return ret;
@@ -297,8 +295,7 @@ static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port)
       sigset_t sigset;
       int sig;
 
-      iniparser_set_error_callback(&iniparse_error_handler);
-
+      iniparser_set_error_callback(&iniparser_error_handler);
       sigemptyset(&sigset);
       sigaddset(&sigset, SIGINT);
       sigaddset(&sigset, SIGTERM);
