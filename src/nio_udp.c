@@ -94,7 +94,7 @@ static int udp_connect(int local_port, char *remote_host, int remote_port)
 
       setsockopt(sck, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
       inet_ntop(res->ai_family, ptr, hostname, HOST_NAME_MAX);
-      printf("UDP tunnel connecting from local port %d to IPv%d addresss %s on port %d\n",
+      printf("UDP tunnel connecting from local port %d to IPv%d address %s on port %d\n",
       local_port, res->ai_family == PF_INET6 ? 6 : 4, hostname, remote_port);
 
       /* try to connect to remote host */
