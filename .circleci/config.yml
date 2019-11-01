@@ -17,7 +17,7 @@ jobs:
       - run:
           name: Install libpcap
           command: |
-            brew install libpcap
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install libpcap
 
       - run:
           name: Build ubridge
