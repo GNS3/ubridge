@@ -46,7 +46,7 @@ bridge_t *bridge_list = NULL;
 int debug_level = 0;
 int hypervisor_mode = 0;
 
-static void bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
+static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
 {
   ssize_t bytes_received, bytes_sent;
   unsigned char pkt[NIO_MAX_PKT_SIZE];
@@ -58,10 +58,10 @@ static void bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
     drop_packet = FALSE;
     bytes_received = nio_recv(rx_nio, &pkt, NIO_MAX_PKT_SIZE);
     if (bytes_received == -1) {
+        perror("recv");
         if (errno == ECONNREFUSED || errno == ENETDOWN)
            continue;
-        perror("recv");
-        break;
+        return -1;
     }
 
     if (bytes_received > NIO_MAX_PKT_SIZE) {
@@ -106,7 +106,10 @@ static void bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
     /* send what we received to the transmitting NIO */
     bytes_sent = nio_send(tx_nio, pkt, bytes_received);
     if (bytes_sent == -1) {
-        if (errno == ECONNREFUSED || errno == ENETDOWN)
+        perror("send");
+
+        /* EINVAL can be caused by sending to a blackhole route, this happens if a NIC link status changes */
+        if (errno == ECONNREFUSED || errno == ENETDOWN || errno == EINVAL)
            continue;
 
         /* The linux TAP driver returns EIO if the device is not up.
@@ -114,13 +117,13 @@ static void bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
         if (tx_nio->type == NIO_TYPE_TAP && errno == EIO)
             continue;
 
-        perror("send");
-        break;
+        return -1;
     }
 
     tx_nio->packets_out++;
     tx_nio->bytes_out += bytes_sent;
   }
+  return 0;
 }
 
 /* Source NIO thread */
@@ -131,7 +134,10 @@ void *source_nio_listener(void *data)
   printf("Source NIO listener thread for %s has started\n", bridge->name);
   if (bridge->source_nio && bridge->destination_nio)
     /* bridges from the source NIO to the destination NIO */
-    bridge_nios(bridge->source_nio, bridge->destination_nio, bridge);
+    if (bridge_nios(bridge->source_nio, bridge->destination_nio, bridge) == -1) {
+        fprintf(stderr, "Source NIO listener thread for %s has stopped because of an error: %s \n", bridge->name, strerror(errno));
+        raise(SIGTERM);
+    }
   printf("Source NIO listener thread for %s has stopped\n", bridge->name);
   pthread_exit(NULL);
 }
@@ -144,7 +150,10 @@ void *destination_nio_listener(void *data)
   printf("Destination NIO listener thread for %s has started\n", bridge->name);
   if (bridge->source_nio && bridge->destination_nio)
       /* bridges from the destination NIO to the source NIO */
-      bridge_nios(bridge->destination_nio, bridge->source_nio, bridge);
+      if (bridge_nios(bridge->destination_nio, bridge->source_nio, bridge) == -1) {
+         fprintf(stderr, "Destination NIO listener thread for %s has stopped because of an error: %s \n", bridge->name, strerror(errno));
+         raise(SIGTERM);
+      }
   printf("Destination NIO listener thread for %s has stopped\n", bridge->name);
   pthread_exit(NULL);
 }

@@ -18,6 +18,7 @@
  *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <signal.h>
 #include <unistd.h>
 #include <string.h>
 #include <assert.h>
@@ -73,10 +74,10 @@ void *iol_nio_listener(void *data)
         drop_packet = FALSE;
         bytes_received = nio_recv(nio, &pkt[IOL_HDR_SIZE], MAX_MTU);
         if (bytes_received == -1) {
+            perror("recv");
             if (errno == ECONNREFUSED || errno == ENETDOWN)
                continue;
-            perror("recv");
-            break;
+            raise(SIGTERM);
         }
 
         if (bytes_received > MAX_MTU) {
@@ -126,10 +127,10 @@ void *iol_nio_listener(void *data)
         memcpy(pkt, &(iol_nio->header), sizeof(iol_nio->header));
         bytes_sent = sendto(iol_nio->iol_bridge_sock, pkt, bytes_received, 0, (struct sockaddr *)&iol_nio->iol_sockaddr, sizeof(iol_nio->iol_sockaddr));
         if (bytes_sent == -1) {
+           perror("sendto");
            if (errno == ECONNREFUSED || errno == ENETDOWN || errno == ENOENT)
               continue;
-           perror("sendto");
-           break;
+           raise(SIGTERM);
         }
      }
 
@@ -153,10 +154,10 @@ void *iol_bridge_listener(void *data)
        drop_packet = FALSE;
        bytes_received = read(bridge->iol_bridge_sock, pkt, IOL_HDR_SIZE + MAX_MTU);
        if (bytes_received == -1) {
+           perror("recv");
            if (errno == ECONNREFUSED || errno == ENETDOWN)
               continue;
-           perror("recv");
-           break;
+           raise(SIGTERM);
        }
 
        if (debug_level > 0) {
@@ -205,10 +206,12 @@ void *iol_bridge_listener(void *data)
        nio->packets_out++;
        nio->bytes_out += bytes_sent;
        if (bytes_sent == -1) {
-          if (errno == ECONNREFUSED || errno == ENETDOWN)
-             continue;
           perror("send");
-          break;
+
+          /* EINVAL can be caused by sending to a blackhole route, this happens if a NIC link status changes */
+          if (errno == ECONNREFUSED || errno == ENETDOWN || errno == EINVAL)
+             continue;
+          raise(SIGTERM);
        }
     }
 
