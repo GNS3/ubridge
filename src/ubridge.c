@@ -136,8 +136,7 @@ void *source_nio_listener(void *data)
     /* bridges from the source NIO to the destination NIO */
     if (bridge_nios(bridge->source_nio, bridge->destination_nio, bridge) == -1) {
         fprintf(stderr, "Source NIO listener thread for %s has stopped because of an error: %s \n", bridge->name, strerror(errno));
-        raise(SIGTERM);
-        pthread_exit((void*)-1);
+        exit(EXIT_FAILURE);
     }
   printf("Source NIO listener thread for %s has stopped\n", bridge->name);
   pthread_exit(NULL);
@@ -153,8 +152,7 @@ void *destination_nio_listener(void *data)
       /* bridges from the destination NIO to the source NIO */
       if (bridge_nios(bridge->destination_nio, bridge->source_nio, bridge) == -1) {
          fprintf(stderr, "Destination NIO listener thread for %s has stopped because of an error: %s \n", bridge->name, strerror(errno));
-         raise(SIGTERM);
-         pthread_exit((void*)-1);
+         exit(EXIT_FAILURE);
       }
   printf("Destination NIO listener thread for %s has stopped\n", bridge->name);
   pthread_exit(NULL);
@@ -163,18 +161,14 @@ void *destination_nio_listener(void *data)
 static void free_bridges(bridge_t *bridge)
 {
   bridge_t *next;
-  int failure = FALSE;
-  void* ret = NULL;
 
   while (bridge != NULL) {
     if (bridge->name)
        free(bridge->name);
     pthread_cancel(bridge->source_tid);
-    if (pthread_join(bridge->source_tid, &ret))
-        failure = TRUE;
+    pthread_join(bridge->source_tid, NULL);
     pthread_cancel(bridge->destination_tid);
-    if (pthread_join(bridge->destination_tid, &ret))
-        failure = TRUE;
+    pthread_join(bridge->destination_tid, NULL);
     free_nio(bridge->source_nio);
     free_nio(bridge->destination_nio);
     free_pcap_capture(bridge->capture);
@@ -183,8 +177,6 @@ static void free_bridges(bridge_t *bridge)
     free(bridge);
     bridge = next;
   }
-  if (failure)
-     exit(EXIT_FAILURE);
 }
 
 #ifdef __linux__

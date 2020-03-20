@@ -18,7 +18,6 @@
  *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <signal.h>
 #include <unistd.h>
 #include <string.h>
 #include <assert.h>
@@ -77,7 +76,7 @@ void *iol_nio_listener(void *data)
             perror("recv");
             if (errno == ECONNREFUSED || errno == ENETDOWN)
                continue;
-            raise(SIGTERM);
+            exit(EXIT_FAILURE);
         }
 
         if (bytes_received > MAX_MTU) {
@@ -130,7 +129,7 @@ void *iol_nio_listener(void *data)
            perror("sendto");
            if (errno == ECONNREFUSED || errno == ENETDOWN || errno == ENOENT)
               continue;
-           raise(SIGTERM);
+           exit(EXIT_FAILURE);
         }
      }
 
@@ -157,7 +156,7 @@ void *iol_bridge_listener(void *data)
            perror("recv");
            if (errno == ECONNREFUSED || errno == ENETDOWN)
               continue;
-           raise(SIGTERM);
+           exit(EXIT_FAILURE);
        }
 
        if (debug_level > 0) {
@@ -211,7 +210,8 @@ void *iol_bridge_listener(void *data)
           /* EINVAL can be caused by sending to a blackhole route, this happens if a NIC link status changes */
           if (errno == ECONNREFUSED || errno == ENETDOWN || errno == EINVAL)
              continue;
-          raise(SIGTERM);
+
+          exit(EXIT_FAILURE);
        }
     }
 
