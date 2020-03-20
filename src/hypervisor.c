@@ -391,13 +391,13 @@ static void hypervisor_close_conn(hypervisor_conn_t *conn)
 {
    if (conn != NULL) {
       conn->active = FALSE;
-      shutdown(conn->client_fd,2);
-      pthread_join(conn->tid,NULL);
+      shutdown(conn->client_fd, 2);
+      pthread_join(conn->tid, NULL);
 
       fclose(conn->in);
       fclose(conn->out);
 
-      shutdown(conn->client_fd,2);
+      shutdown(conn->client_fd, 2);
       close(conn->client_fd);
 
       hypervisor_remove_conn(conn);
@@ -577,7 +577,7 @@ int run_hypervisor(char *ip_addr, int tcp_port)
    printf("Hypervisor: closing control sockets.\n");
    for (i=0; i < fd_count; i++) {
       if (fd_array[i] != -1) {
-         shutdown(fd_array[i],2);
+         shutdown(fd_array[i], 2);
          close(fd_array[i]);
       }
    }
