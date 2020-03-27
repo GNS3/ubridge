@@ -58,9 +58,9 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
     drop_packet = FALSE;
     bytes_received = nio_recv(rx_nio, &pkt, NIO_MAX_PKT_SIZE);
     if (bytes_received == -1) {
-        perror("recv");
         if (errno == ECONNREFUSED || errno == ENETDOWN)
            continue;
+        perror("recv");
         return -1;
     }
 
@@ -106,7 +106,6 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
     /* send what we received to the transmitting NIO */
     bytes_sent = nio_send(tx_nio, pkt, bytes_received);
     if (bytes_sent == -1) {
-        perror("send");
 
         /* EINVAL can be caused by sending to a blackhole route, this happens if a NIC link status changes */
         if (errno == ECONNREFUSED || errno == ENETDOWN || errno == EINVAL)
@@ -117,12 +116,14 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
         if (tx_nio->type == NIO_TYPE_TAP && errno == EIO)
             continue;
 
+        perror("send");
         return -1;
     }
 
     tx_nio->packets_out++;
     tx_nio->bytes_out += bytes_sent;
   }
+
   return 0;
 }
 
