@@ -50,6 +50,9 @@
 #define handle_error_en(en, msg) \
         do { errno = en; perror(msg); exit(EXIT_FAILURE); } while (0)
 
+#define perror(msg) \
+        do { int en = errno; perror(msg); errno = en; } while (0)
+
 typedef struct {
     pcap_t *fd;
     pcap_dumper_t *dumper;
