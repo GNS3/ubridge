@@ -73,9 +73,9 @@ void *iol_nio_listener(void *data)
         drop_packet = FALSE;
         bytes_received = nio_recv(nio, &pkt[IOL_HDR_SIZE], MAX_MTU);
         if (bytes_received == -1) {
+            perror("recv");
             if (errno == ECONNREFUSED || errno == ENETDOWN)
                continue;
-            perror("recv");
             exit(EXIT_FAILURE);
         }
 
@@ -126,9 +126,9 @@ void *iol_nio_listener(void *data)
         memcpy(pkt, &(iol_nio->header), sizeof(iol_nio->header));
         bytes_sent = sendto(iol_nio->iol_bridge_sock, pkt, bytes_received, 0, (struct sockaddr *)&iol_nio->iol_sockaddr, sizeof(iol_nio->iol_sockaddr));
         if (bytes_sent == -1) {
+           perror("sendto");
            if (errno == ECONNREFUSED || errno == ENETDOWN || errno == ENOENT)
               continue;
-           perror("sendto");
            exit(EXIT_FAILURE);
         }
      }
@@ -153,9 +153,9 @@ void *iol_bridge_listener(void *data)
        drop_packet = FALSE;
        bytes_received = read(bridge->iol_bridge_sock, pkt, IOL_HDR_SIZE + MAX_MTU);
        if (bytes_received == -1) {
+           perror("recv");
            if (errno == ECONNREFUSED || errno == ENETDOWN)
               continue;
-           perror("recv");
            exit(EXIT_FAILURE);
        }
 
@@ -205,12 +205,12 @@ void *iol_bridge_listener(void *data)
        nio->packets_out++;
        nio->bytes_out += bytes_sent;
        if (bytes_sent == -1) {
+          perror("send");
 
           /* EINVAL can be caused by sending to a blackhole route, this happens if a NIC link status changes */
           if (errno == ECONNREFUSED || errno == ENETDOWN || errno == EINVAL)
              continue;
 
-          perror("send");
           exit(EXIT_FAILURE);
        }
     }
