@@ -22,6 +22,7 @@ jobs:
       - run:
           name: Build ubridge
           command: |
+            gcc -v
             make
 
       - run:
