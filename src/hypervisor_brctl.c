@@ -40,7 +40,7 @@ static int cmd_addif(hypervisor_conn_t *conn, int argc, char *argv[])
     int ifindex = if_nametoindex(interface);
 
     if (ifindex == 0) {
-        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not found interface %s", interface);
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not find interface %s", interface);
         return -1;
     }
 
