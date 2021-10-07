@@ -303,7 +303,7 @@ Bridge module ("bridge")
     bridge set_pcap_filter br0
     100-filter reset on bridge 'br0'
 
-* "**bridge stats** *<bridge_name>*":
+* "**bridge get_stats** *<bridge_name>*":
   Show statistics about a bridge input/output.
 
 .. code:: bash
