@@ -60,7 +60,7 @@ Open the Cygwin terminal:
 
 .. code:: bash
 
-    git clone git://github.com/GNS3/ubridge.git
+    git clone https://github.com/GNS3/ubridge.git
     cd ubridge
     make
 
