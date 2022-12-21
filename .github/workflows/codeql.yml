@@ -57,7 +57,7 @@ jobs:
 
     - run: |
        echo "Install development library for libpcap"
-       sudo apt update && apt install -qq -y --no-install-recommends libpcap-dev
+       sudo apt update && sudo apt install -qq -y --no-install-recommends libpcap-dev
 
 
     # Autobuild attempts to build any compiled languages  (C/C++, C#, Go, or Java).
