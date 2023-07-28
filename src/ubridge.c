@@ -319,6 +319,7 @@ static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port)
          sigwait(&sigset, &sig);
 
          free_bridges(bridge_list);
+         bridge_list = NULL;
          if (sig == SIGTERM || sig == SIGINT)
             break;
          printf("Reloading configuration\n");
