@@ -12,11 +12,10 @@ environment:
 install:
     - 'appveyor DownloadFile http://cygwin.com/setup-%CYG_ARCH%.exe -FileName setup.exe'
     - 'setup.exe -qnNdO -R "%CYG_ROOT%" -s "%CYG_MIRROR%" -l "%CYG_CACHE%" -P make -P gcc-core >NUL'
-    - 'cinst 7zip.commandline'
     - 'cinst winpcap'
     - 'appveyor DownloadFile http://www.winpcap.org/install/bin/WpdPack_4_1_2.zip'
     - 'dir'
-    - '7za x .\WpdPack_4_1_2.zip -o.'
+    - '7z x .\WpdPack_4_1_2.zip -o.'
     - 'xcopy .\WpdPack\Lib\x64\*.* C:\cygwin64\lib\'
 
 build_script:
