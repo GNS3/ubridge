@@ -313,9 +313,14 @@ static int cmd_set_mac_addr(hypervisor_conn_t *conn, int argc, char *argv[])
 {
     int fd;
     struct ifreq ifr;
-	char *interface = argv[0];
-	char mac_char[18];
+    char *interface = argv[0];
+    char mac_char[18];
     regex_t regex;
+
+	if (strlen(interface) >= IFNAMSIZ) {
+	    hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "interface name is too long");
+	    return (-1);
+	}
 
     if (regcomp(&regex, "^([0-9A-Fa-f]{2}:){5}([0-9A-Fa-f]{2})$", REG_EXTENDED)) {
         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "could not compile regex");
@@ -346,7 +351,6 @@ static int cmd_set_mac_addr(hypervisor_conn_t *conn, int argc, char *argv[])
     }
 
     strncpy(ifr.ifr_name, interface, IFNAMSIZ);
-    ifr.ifr_name[IFNAMSIZ - 1] = '\0';
     ifr.ifr_hwaddr.sa_family = ARPHRD_ETHER;
 
     if (ioctl(fd, SIOCSIFHWADDR, &ifr) < 0) {
