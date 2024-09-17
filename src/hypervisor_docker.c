@@ -44,6 +44,7 @@
 #include <linux/if_bridge.h>
 #include <sched.h>
 #include <linux/ethtool.h>
+#include <regex.h>
 
 #include "ubridge.h"
 #include "hypervisor.h"
@@ -313,14 +314,23 @@ static int cmd_set_mac_addr(hypervisor_conn_t *conn, int argc, char *argv[])
     int fd;
     struct ifreq ifr;
 	char *interface = argv[0];
-	char mac_char[17];
+	char mac_char[18];
+    regex_t regex;
 
-    if (strlen(argv[1]) != 17) {
-        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "invalid MAC address format");
+    if (regcomp(&regex, "^([0-9A-Fa-f]{2}:){5}([0-9A-Fa-f]{2})$", REG_EXTENDED)) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "could not compile regex");
         return (-1);
     }
 
+    if (regexec(&regex, argv[1], 0, NULL, 0)) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "invalid MAC address format");
+        regfree(&regex);
+        return (-1);
+    }
+    regfree(&regex);
+
     strncpy(mac_char, argv[1], 17);
+    mac_char[17] = '\0';
     sscanf(mac_char, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
         &ifr.ifr_hwaddr.sa_data[0],
         &ifr.ifr_hwaddr.sa_data[1],
@@ -335,7 +345,8 @@ static int cmd_set_mac_addr(hypervisor_conn_t *conn, int argc, char *argv[])
       return (-1);
     }
 
-    strncpy(ifr.ifr_name, interface, strlen(interface));
+    strncpy(ifr.ifr_name, interface, IFNAMSIZ);
+    ifr.ifr_name[IFNAMSIZ - 1] = '\0';
     ifr.ifr_hwaddr.sa_family = ARPHRD_ETHER;
 
     if (ioctl(fd, SIOCSIFHWADDR, &ifr) < 0) {
