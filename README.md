@@ -76,7 +76,7 @@ The modules that are currently defined are given below:
 - hypervisor : General hypervisor management 
 - bridge : bridges management 
 - iol_bridge : IOL (IOS on Linux) bridges management 
-- docker : Docker veth management 
+- docker : Docker management 
 - brctl : Linux bridge management
 
 ### Hypervisor module ("hypervisor")
@@ -412,6 +412,14 @@ docker create_veth hostif guestif
 ``` {.bash}
 docker move_to_ns guestif 6367 eth0
 100-guestif moved to namespace 6367
+```
+
+- **docker set_mac_addr** *\<interface\>* *\<mac_addr\>*
+    *\<mac_addr\>*: Set a MAC address on an interface.
+
+``` {.bash}
+docker set_mac_addr tap-gns3-e0 12:34:56:78:12:42
+100-MAC address 12:34:56:78:12:42" has been successfully set on interface tap-gns3-e0
 ```
 
 - **docker delete_veth** *\<interface_name\>*: Delete virtual
