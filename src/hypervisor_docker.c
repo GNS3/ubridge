@@ -44,6 +44,7 @@
 #include <linux/if_bridge.h>
 #include <sched.h>
 #include <linux/ethtool.h>
+#include <regex.h>
 
 #include "ubridge.h"
 #include "hypervisor.h"
@@ -308,11 +309,67 @@ out:
 	return err;
 }
 
+static int cmd_set_mac_addr(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    int fd;
+    struct ifreq ifr;
+    char *interface = argv[0];
+    char mac_char[18];
+    regex_t regex;
+
+    if (strlen(interface) >= IFNAMSIZ) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "interface name is too long");
+        return (-1);
+    }
+
+    if (regcomp(&regex, "^([0-9A-Fa-f]{2}:){5}([0-9A-Fa-f]{2})$", REG_EXTENDED)) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "could not compile regex");
+        return (-1);
+    }
+
+    if (regexec(&regex, argv[1], 0, NULL, 0)) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "invalid MAC address format");
+        regfree(&regex);
+        return (-1);
+    }
+    regfree(&regex);
+
+    strncpy(mac_char, argv[1], 17);
+    mac_char[17] = '\0';
+    sscanf(mac_char, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+        &ifr.ifr_hwaddr.sa_data[0],
+        &ifr.ifr_hwaddr.sa_data[1],
+        &ifr.ifr_hwaddr.sa_data[2],
+        &ifr.ifr_hwaddr.sa_data[3],
+        &ifr.ifr_hwaddr.sa_data[4],
+        &ifr.ifr_hwaddr.sa_data[5]
+        );
+
+    if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "could not create socket: %s", strerror(errno));
+      return (-1);
+    }
+
+    strncpy(ifr.ifr_name, interface, IFNAMSIZ);
+    ifr.ifr_hwaddr.sa_family = ARPHRD_ETHER;
+
+    if (ioctl(fd, SIOCSIFHWADDR, &ifr) < 0) {
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "could not set a MAC address on interface %s", interface);
+      close(fd);
+      return (-1);
+    }
+
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "MAC address %s has been successfully set on interface %s", mac_char, interface);
+    close(fd);
+    return (0);
+}
+
 /* Docker commands */
 static hypervisor_cmd_t docker_cmd_array[] = {
    { "create_veth", 2, 2, cmd_create_veth_pair, NULL },
    { "delete_veth", 1, 1, cmd_delete_veth, NULL },
    { "move_to_ns", 3, 3, cmd_move_ns, NULL },
+   { "set_mac_addr", 2, 2, cmd_set_mac_addr, NULL },
    { NULL, -1, -1, NULL, NULL },
 };
 
