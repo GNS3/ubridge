@@ -23,7 +23,9 @@ In the source directory
 
 ``` {.bash}
 make
-sudo make install
+cd ubridge/
+#sudo make install
+sudo make
 ```
 
 ### FreeBSD
