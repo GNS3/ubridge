@@ -227,7 +227,7 @@ int parse_config(char *filename, bridge_t **bridges)
            destination_nio = open_tap_device(value);
 #ifdef LINUX_RAW
         else if (getstr(ubridge_config, bridge_name, "destination_linux_raw", &value))
-           source_nio = open_linux_raw(value);
+           destination_nio = open_linux_raw(value);
 #endif
 #ifdef __APPLE__
         else if (getstr(ubridge_config, bridge_name, "destination_fusion_vmnet", &value))
