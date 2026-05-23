@@ -362,9 +362,12 @@ static int bpf_handler(void *pkt, size_t len, void *opt)
 /* Free resources used by filter */
 static void bpf_free(void **opt)
 {
-   if (*opt)
+   if (*opt) {
+      struct bpf_data *data = *opt;
+      pcap_freecode(&data->fp);
       free(*opt);
-   *opt = NULL;
+      *opt = NULL;
+   }
 }
 
 static void create_bpf_filter(packet_filter_t *filter)
@@ -466,6 +469,8 @@ void free_packet_filters(packet_filter_t *filter)
   while (filter != NULL) {
     if (filter->name)
        free(filter->name);
+    if (filter->free)
+       filter->free(&filter->data);
     next = filter->next;
     free(filter);
     filter = next;
