@@ -1,0 +1,37 @@
+name: Compile uBridge
+
+on:
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpcap-dev
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install libpcap
+
+      - name: Compile
+        run: make
+
+      - name: Verify build
+        run: ./ubridge -v
