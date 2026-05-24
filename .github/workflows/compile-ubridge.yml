@@ -36,13 +36,19 @@ jobs:
       - name: Verify build
         run: ./ubridge -v
 
+      - name: Upload artifacts (Unix)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubridge-${{ runner.os }}
+          path: ./ubridge
+
   build-windows:
     runs-on: windows-latest
 
     env:
-      CYG_ROOT: C:/cygwin64
-      CYG_CACHE: C:/cygwin64/var/cache/setup
-      CYG_MIRROR: http://mirrors.kernel.org/sourceware/cygwin/
+      CYG_ROOT: ${{ runner.temp }}\cygwin64
+      CYG_CACHE: ${{ runner.temp }}\cygwin-cache
+      CYG_MIRROR: https://mirrors.kernel.org/sourceware/cygwin/
       CYG_ARCH: x86_64
 
     steps:
@@ -52,8 +58,14 @@ jobs:
       - name: Install Cygwin toolchain and WinPcap SDK
         shell: powershell
         run: |
+          if (Test-Path "$env:CYG_ROOT") {
+            Remove-Item -Recurse -Force "$env:CYG_ROOT"
+          }
+          New-Item -ItemType Directory -Force -Path "$env:CYG_ROOT" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$env:CYG_CACHE" | Out-Null
+
           Invoke-WebRequest -Uri "http://cygwin.com/setup-$env:CYG_ARCH.exe" -OutFile setup.exe
-          .\setup.exe -qnNdO -R "$env:CYG_ROOT" -s "$env:CYG_MIRROR" -l "$env:CYG_CACHE" -P make -P gcc-core -P unzip
+          .\setup.exe --quiet-mode --no-shortcuts --no-startmenu --root "$env:CYG_ROOT" --site "$env:CYG_MIRROR" --local-package-dir "$env:CYG_CACHE" --packages make,gcc-core,unzip,openssl
 
           choco install winpcap --no-progress -y
           Invoke-WebRequest -Uri "http://www.winpcap.org/install/bin/WpdPack_4_1_2.zip" -OutFile WpdPack_4_1_2.zip
@@ -69,4 +81,12 @@ jobs:
       - name: Verify build (Windows)
         shell: powershell
         run: .\ubridge.exe -v
+
+      - name: Upload artifacts (Windows)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubridge-windows
+          path: |
+            .\ubridge.exe
+            .\cygwin1.dll
 
