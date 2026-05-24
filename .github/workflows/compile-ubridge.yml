@@ -69,11 +69,11 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$env:CYG_CACHE" | Out-Null
 
           Invoke-WebRequest -Uri "http://cygwin.com/setup-$env:CYG_ARCH.exe" -OutFile setup.exe
-          .\setup.exe --quiet-mode --no-shortcuts --no-startmenu --root "$env:CYG_ROOT" --site "$env:CYG_MIRROR" --local-package-dir "$env:CYG_CACHE" --packages make,gcc-core,unzip,openssl
+          .\setup.exe --quiet-mode --no-shortcuts --no-startmenu --root "$env:CYG_ROOT" --site "$env:CYG_MIRROR" --local-package-dir "$env:CYG_CACHE" --packages make,gcc-core
 
           choco install winpcap --no-progress -y
           Invoke-WebRequest -Uri "http://www.winpcap.org/install/bin/WpdPack_4_1_2.zip" -OutFile WpdPack_4_1_2.zip
-          & "$env:CYG_ROOT\bin\unzip.exe" -q WpdPack_4_1_2.zip -d .
+          Expand-Archive -Path .\WpdPack_4_1_2.zip -DestinationPath . -Force
           Copy-Item .\WpdPack\Lib\x64\* "$env:CYG_ROOT\lib\" -Force
 
       - name: Compile (Cygwin)
@@ -93,4 +93,3 @@ jobs:
           path: |
             .\ubridge.exe
             .\cygwin1.dll
-
