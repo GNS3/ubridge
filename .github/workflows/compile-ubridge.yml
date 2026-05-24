@@ -46,14 +46,18 @@ jobs:
     runs-on: windows-latest
 
     env:
-      CYG_ROOT: ${{ runner.temp }}\cygwin64
-      CYG_CACHE: ${{ runner.temp }}\cygwin-cache
       CYG_MIRROR: https://mirrors.kernel.org/sourceware/cygwin/
       CYG_ARCH: x86_64
 
     steps:
       - name: Check out code
         uses: actions/checkout@v4
+
+      - name: Configure Cygwin paths
+        shell: powershell
+        run: |
+          "CYG_ROOT=$env:RUNNER_TEMP\cygwin64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CYG_CACHE=$env:RUNNER_TEMP\cygwin-cache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install Cygwin toolchain and WinPcap SDK
         shell: powershell
