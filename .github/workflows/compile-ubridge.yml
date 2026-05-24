@@ -6,7 +6,7 @@ on:
       - master
 
 jobs:
-  build:
+  build-unix:
     strategy:
       matrix:
         os:
@@ -35,3 +35,38 @@ jobs:
 
       - name: Verify build
         run: ./ubridge -v
+
+  build-windows:
+    runs-on: windows-latest
+
+    env:
+      CYG_ROOT: C:/cygwin64
+      CYG_CACHE: C:/cygwin64/var/cache/setup
+      CYG_MIRROR: http://mirrors.kernel.org/sourceware/cygwin/
+      CYG_ARCH: x86_64
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Install Cygwin toolchain and WinPcap SDK
+        shell: powershell
+        run: |
+          Invoke-WebRequest -Uri "http://cygwin.com/setup-$env:CYG_ARCH.exe" -OutFile setup.exe
+          .\setup.exe -qnNdO -R "$env:CYG_ROOT" -s "$env:CYG_MIRROR" -l "$env:CYG_CACHE" -P make -P gcc-core -P unzip
+
+          choco install winpcap --no-progress -y
+          Invoke-WebRequest -Uri "http://www.winpcap.org/install/bin/WpdPack_4_1_2.zip" -OutFile WpdPack_4_1_2.zip
+          & "$env:CYG_ROOT\bin\unzip.exe" -q WpdPack_4_1_2.zip -d .
+          Copy-Item .\WpdPack\Lib\x64\* "$env:CYG_ROOT\lib\" -Force
+
+      - name: Compile (Cygwin)
+        shell: powershell
+        run: |
+          & "$env:CYG_ROOT\bin\bash.exe" -lc "cd '$env:GITHUB_WORKSPACE' && make CFLAGS='-O3 -Wall -IWpdPack\\Include'"
+          Copy-Item "$env:CYG_ROOT\bin\cygwin1.dll" "$env:GITHUB_WORKSPACE\" -Force
+
+      - name: Verify build (Windows)
+        shell: powershell
+        run: .\ubridge.exe -v
+
