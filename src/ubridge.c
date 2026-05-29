@@ -165,10 +165,14 @@ static void free_bridges(bridge_t *bridge)
   while (bridge != NULL) {
     if (bridge->name)
        free(bridge->name);
-    pthread_cancel(bridge->source_tid);
-    pthread_join(bridge->source_tid, NULL);
-    pthread_cancel(bridge->destination_tid);
-    pthread_join(bridge->destination_tid, NULL);
+    if (bridge->running) {
+       pthread_cancel(bridge->source_tid);
+       pthread_join(bridge->source_tid, NULL);
+       bridge->source_tid = 0;
+       pthread_cancel(bridge->destination_tid);
+       pthread_join(bridge->destination_tid, NULL);
+       bridge->destination_tid = 0;
+    }
     free_nio(bridge->source_nio);
     free_nio(bridge->destination_nio);
     free_pcap_capture(bridge->capture);
@@ -194,18 +198,24 @@ static void free_iol_bridges(iol_bridge_t *bridge)
     if ((unlock_unix_socket(bridge->sock_lock, bridge->bridge_sockaddr.sun_path)) == -1)
        fprintf(stderr, "failed to unlock %s\n", bridge->bridge_sockaddr.sun_path);
 
-    pthread_cancel(bridge->bridge_tid);
-    pthread_join(bridge->bridge_tid, NULL);
-    for (i = 0; i < MAX_PORTS; i++) {
-        if (bridge->port_table[i].destination_nio != NULL) {
-           pthread_cancel(bridge->port_table[i].tid);
-           pthread_join(bridge->port_table[i].tid, NULL);
-           free_pcap_capture(bridge->port_table[i].capture);
-           free_packet_filters(bridge->port_table[i].packet_filters);
-           free_nio(bridge->port_table[i].destination_nio);
-        }
+    if (bridge->running) {
+       pthread_cancel(bridge->bridge_tid);
+       pthread_join(bridge->bridge_tid, NULL);
+       bridge->bridge_tid = 0;
+
+       for (i = 0; i < MAX_PORTS; i++) {
+           if (bridge->port_table[i].destination_nio != NULL) {
+              pthread_cancel(bridge->port_table[i].tid);
+              pthread_join(bridge->port_table[i].tid, NULL);
+              bridge->port_table[i].tid = 0;
+              free_pcap_capture(bridge->port_table[i].capture);
+              free_packet_filters(bridge->port_table[i].packet_filters);
+              free_nio(bridge->port_table[i].destination_nio);
+          }
+       }
+       free(bridge->port_table);
     }
-    free(bridge->port_table);
+
     next = bridge->next;
     free(bridge);
     bridge = next;

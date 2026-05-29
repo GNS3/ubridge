@@ -99,8 +99,10 @@ static int cmd_delete_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
           if (bridge->running) {
              pthread_cancel(bridge->source_tid);
              pthread_join(bridge->source_tid, NULL);
+             bridge->source_tid = 0;
              pthread_cancel(bridge->destination_tid);
              pthread_join(bridge->destination_tid, NULL);
+             bridge->destination_tid = 0;
           }
           if (bridge->name)
              free(bridge->name);
@@ -174,8 +176,10 @@ static int cmd_stop_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
 
    pthread_cancel(bridge->source_tid);
    pthread_join(bridge->source_tid, NULL);
+   bridge->source_tid = 0;
    pthread_cancel(bridge->destination_tid);
    pthread_join(bridge->destination_tid, NULL);
+   bridge->destination_tid = 0;
    bridge->running = FALSE;
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "bridge '%s' stopped", argv[0]);
    return (0);
