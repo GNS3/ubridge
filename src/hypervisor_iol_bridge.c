@@ -438,16 +438,16 @@ static int cmd_delete_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
           if ((unlock_unix_socket(bridge->sock_lock, bridge->bridge_sockaddr.sun_path)) == -1)
               fprintf(stderr, "failed to unlock %s\n", bridge->bridge_sockaddr.sun_path);
 
-          if (bridge->name)
-             free(bridge->name);
           if (bridge->running) {
              pthread_cancel(bridge->bridge_tid);
              pthread_join(bridge->bridge_tid, NULL);
+             bridge->bridge_tid = 0;
 
              for (i = 0; i < MAX_PORTS; i++) {
                 if (bridge->port_table[i].destination_nio != NULL) {
                     pthread_cancel(bridge->port_table[i].tid);
                     pthread_join(bridge->port_table[i].tid, NULL);
+                    bridge->port_table[i].tid = 0;
                     free_pcap_capture(bridge->port_table[i].capture);
                     free_packet_filters(bridge->port_table[i].packet_filters);
                     free_nio(bridge->port_table[i].destination_nio);
@@ -455,7 +455,8 @@ static int cmd_delete_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
              }
              free(bridge->port_table);
           }
-
+          if (bridge->name)
+             free(bridge->name);
           free(bridge);
           hypervisor_send_reply(conn, HSC_INFO_OK, 1, "IOL bridge '%s' deleted", argv[0]);
           return (0);
@@ -522,10 +523,12 @@ static int cmd_stop_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
 
    pthread_cancel(bridge->bridge_tid);
    pthread_join(bridge->bridge_tid, NULL);
+   bridge->bridge_tid = 0;
    for (i = 0; i < MAX_PORTS; i++) {
       if (bridge->port_table[i].destination_nio != NULL) {
           pthread_cancel(bridge->port_table[i].tid);
           pthread_join(bridge->port_table[i].tid, NULL);
+          bridge->port_table[i].tid = 0;
       }
    }
    bridge->running = FALSE;
@@ -682,6 +685,7 @@ static int create_iol_port_entry(hypervisor_conn_t *conn, iol_bridge_t *bridge, 
    if (iol_nio->destination_nio != NULL) {
       pthread_cancel(iol_nio->tid);
       pthread_join(iol_nio->tid, NULL);
+      iol_nio->tid = 0;
       free_pcap_capture(iol_nio->capture);
       free_packet_filters(iol_nio->packet_filters);
       free_nio(iol_nio->destination_nio);
@@ -760,6 +764,7 @@ static int cmd_delete_nio_udp(hypervisor_conn_t *conn, int argc, char *argv[])
    if (iol_nio->destination_nio != NULL) {
       pthread_cancel(iol_nio->tid);
       pthread_join(iol_nio->tid, NULL);
+      iol_nio->tid = 0;
       free_pcap_capture(iol_nio->capture);
       free_packet_filters(iol_nio->packet_filters);
       free_nio(iol_nio->destination_nio);
