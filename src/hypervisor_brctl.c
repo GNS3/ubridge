@@ -21,7 +21,10 @@
 #include <unistd.h>
 #include <string.h>
 #include <assert.h>
+#include <errno.h>
+#include <stdlib.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <sys/ioctl.h>
 #include <net/if.h>
 #include <linux/if_bridge.h>
@@ -90,9 +93,209 @@ out:
 }
 
 
+/*
+ * Create a Linux bridge device (SIOCBRADDBR).
+ * errno from the failing ioctl is preserved across the close().
+ */
+static int br_addbr(char *bridge)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    int err, saved_errno;
+
+    if (fd < 0)
+        return -1;
+
+    err = ioctl(fd, SIOCBRADDBR, bridge);
+    saved_errno = errno;
+    close(fd);
+    errno = saved_errno;
+    return err;
+}
+
+/*
+ * Delete a Linux bridge device (SIOCBRDELBR).
+ * errno from the failing ioctl is preserved across the close().
+ */
+static int br_delbr(char *bridge)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    int err, saved_errno;
+
+    if (fd < 0)
+        return -1;
+
+    err = ioctl(fd, SIOCBRDELBR, bridge);
+    saved_errno = errno;
+    close(fd);
+    errno = saved_errno;
+    return err;
+}
+
+/*
+ * Parse a "ip/prefixlen" string (e.g. "172.31.1.1/24") into an address and
+ * the corresponding netmask. The input string is left untouched.
+ * Returns 0 on success, -1 on error (with errno = EINVAL).
+ */
+static int parse_cidr(const char *cidr, struct in_addr *ip, struct in_addr *mask)
+{
+    char buf[64];
+    char *slash, *end;
+    long prefix;
+
+    strncpy(buf, cidr, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    slash = strchr(buf, '/');
+    if (slash == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    *slash = '\0';
+
+    prefix = strtol(slash + 1, &end, 10);
+    if (*end != '\0' || prefix < 0 || prefix > 32) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (inet_pton(AF_INET, buf, ip) != 1) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    /* Convert the prefix length into a network-order netmask */
+    mask->s_addr = prefix ? htonl(~((1U << (32 - prefix)) - 1)) : 0;
+    return 0;
+}
+
+/*
+ * Set an IPv4 address and netmask on an interface and bring it up.
+ * errno from the failing ioctl is preserved across the close().
+ */
+static int br_set_address(char *bridge, struct in_addr ip, struct in_addr mask)
+{
+    struct ifreq ifr;
+    struct sockaddr_in *sin = (struct sockaddr_in *)&ifr.ifr_addr;
+    int fd, saved_errno;
+
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0)
+        return -1;
+
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, bridge, IFNAMSIZ);
+
+    /* Set the address */
+    sin->sin_family = AF_INET;
+    sin->sin_addr = ip;
+    if (ioctl(fd, SIOCSIFADDR, &ifr) < 0)
+        goto err;
+
+    /* Set the netmask */
+    sin->sin_addr = mask;
+    if (ioctl(fd, SIOCSIFNETMASK, &ifr) < 0)
+        goto err;
+
+    /* Bring the interface up */
+    if (ioctl(fd, SIOCGIFFLAGS, &ifr) < 0)
+        goto err;
+    ifr.ifr_flags |= IFF_UP;
+    if (ioctl(fd, SIOCSIFFLAGS, &ifr) < 0)
+        goto err;
+
+    close(fd);
+    return 0;
+
+err:
+    saved_errno = errno;
+    close(fd);
+    errno = saved_errno;
+    return -1;
+}
+
+/* brctl create <bridge> */
+static int cmd_create(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *bridge = argv[0];
+
+    if (br_addbr(bridge) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not create bridge %s: %s", bridge, strerror(errno));
+        return -1;
+    }
+
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Bridge %s created", bridge);
+    return 0;
+}
+
+/* brctl delete <bridge> */
+static int cmd_delete(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *bridge = argv[0];
+
+    if (br_delbr(bridge) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_DELETE, 1, "Could not delete bridge %s: %s", bridge, strerror(errno));
+        return -1;
+    }
+
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Bridge %s deleted", bridge);
+    return 0;
+}
+
+/* brctl addip <bridge> <ip/prefixlen> */
+static int cmd_addip(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *bridge = argv[0];
+    char *cidr = argv[1];
+    struct in_addr ip, mask;
+
+    if (parse_cidr(cidr, &ip, &mask) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid IP address %s", cidr);
+        return -1;
+    }
+
+    if (br_set_address(bridge, ip, mask) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not add IP %s to bridge %s: %s", cidr, bridge, strerror(errno));
+        return -1;
+    }
+
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "IP %s added to bridge %s", cidr, bridge);
+    return 0;
+}
+
+/* brctl setup <bridge> <ip/prefixlen> (create + addip in one shot) */
+static int cmd_setup(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *bridge = argv[0];
+    char *cidr = argv[1];
+    struct in_addr ip, mask;
+
+    if (br_addbr(bridge) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not create bridge %s: %s", bridge, strerror(errno));
+        return -1;
+    }
+
+    if (parse_cidr(cidr, &ip, &mask) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid IP address %s", cidr);
+        return -1;
+    }
+
+    if (br_set_address(bridge, ip, mask) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not add IP %s to bridge %s: %s", cidr, bridge, strerror(errno));
+        return -1;
+    }
+
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Bridge %s created with IP %s", bridge, cidr);
+    return 0;
+}
+
+
 /* brctl commands */
 static hypervisor_cmd_t brctl_cmd_array[] = {
    { "addif", 2, 2, cmd_addif, NULL },
+   { "create", 1, 1, cmd_create, NULL },
+   { "delete", 1, 1, cmd_delete, NULL },
+   { "addip", 2, 2, cmd_addip, NULL },
+   { "setup", 2, 2, cmd_setup, NULL },
    { NULL, -1, -1, NULL, NULL },
 };
 
