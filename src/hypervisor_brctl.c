@@ -25,90 +25,24 @@
 #include <stdlib.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <sys/ioctl.h>
 #include <net/if.h>
-#include <linux/if_bridge.h>
-#include <linux/sockios.h>
-#include <dirent.h>
-#include <sys/stat.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
+#include <linux/if_link.h>
+#include <linux/if_addr.h>
 #include "netlink/nl.h"
 #include "ubridge.h"
 #include "hypervisor.h"
 #include "hypervisor_brctl.h"
 
 
-static int cmd_addif(hypervisor_conn_t *conn, int argc, char *argv[])
-{
-    int err = -1;
-    char *bridge = argv[0];
-    char *interface = argv[1];
-    struct ifreq ifr;
-
-    int ifindex = if_nametoindex(interface);
-
-    if (ifindex == 0) {
-        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not find interface %s", interface);
-        return -1;
-    }
-
-    int br_socket_fd = socket(AF_INET, SOCK_STREAM, 0);
-
-    strncpy(ifr.ifr_name, bridge, IFNAMSIZ);
-    #ifdef SIOCBRADDIF
-        ifr.ifr_ifindex = ifindex;
-        err = ioctl(br_socket_fd, SIOCBRADDIF, &ifr);
-        if (err < 0)
-    #endif
-    {
-        unsigned long args[4] = { BRCTL_ADD_IF, ifindex, 0, 0 };
-
-        ifr.ifr_data = (char *) args;
-        err = ioctl(br_socket_fd, SIOCDEVPRIVATE, &ifr);
-    }
-
-    // When interface is already added to the bridge EBUSY is raised
-    if (err < 0 && errno != EBUSY) {
-        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not add interface %s to %s: %s", interface, bridge, strerror(errno));
-        goto out;
-    }
-
-    // Change the status of the interface to up
-    // Get the original flags
-    strncpy(ifr.ifr_name, interface, IFNAMSIZ);
-    if (ioctl(br_socket_fd, SIOCGIFFLAGS, &ifr) < 0) {
-        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not up interface %s", interface);
-        err = -1;
-        goto out;
-    }
-    // Add the up flag
-    ifr.ifr_flags |= IFF_UP;
-    if (ioctl(br_socket_fd, SIOCSIFFLAGS, &ifr) < 0) {
-        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not up interface %s", interface);
-        err = -1;
-        goto out;
-    }
-
-    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "%s has been added to bridge %s", interface, bridge);
-    err = 0;
-
-out:
-    close(br_socket_fd);
-    return (err);
-}
-
-
 /*
- * Create a bridge device via netlink (RTM_NEWLINK + IFLA_INFO_KIND "bridge").
- * This is the standard interface on modern kernels; SIOCBRADDBR has been
- * deprecated in recent kernels and returns EOPNOTSUPP.
+ * Create a Linux bridge device (RTM_NEWLINK + IFLA_INFO_KIND "bridge").
  */
-static int br_addbr_netlink(const char *bridge)
+static int br_addbr(const char *bridge)
 {
     struct nl_handler nlh;
-    struct nlmsg *msg = NULL;
-    struct nlmsg *reply = NULL;
+    struct nlmsg *msg = NULL, *reply = NULL;
     struct ifinfomsg *ifi;
     struct rtattr *linkinfo;
     int ret;
@@ -136,90 +70,24 @@ static int br_addbr_netlink(const char *bridge)
     msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
 
     nla_put_string(msg, IFLA_IFNAME, bridge);
-
     linkinfo = nla_begin_nested(msg, IFLA_LINKINFO);
     nla_put_string(msg, IFLA_INFO_KIND, "bridge");
     nla_end_nested(msg, linkinfo);
 
     ret = netlink_transaction(&nlh, msg, reply);
-
     nlmsg_free(msg);
     nlmsg_free(reply);
     netlink_close(&nlh);
-
     return ret;
 }
 
 /*
- * Create a Linux bridge device.
- *
- * Tries three methods, in order of preference:
- *   1. SIOCBRADDBR ioctl  — works on kernels < 5.x or those with the old
- *      bridge ioctl interface compiled in.
- *   2. RTM_NEWLINK netlink — standard on modern kernels (≥ 5.x), where the
- *      ioctl path returns EOPNOTSUPP.
- *   3. BRCTL_ADD_BRIDGE via SIOCDEVPRIVATE — legacy fallback for very old
- *      kernels that lack both SIOCBRADDBR and the netlink bridge kind.
- *
- * errno from the failing call is preserved across close().
+ * Delete a Linux bridge device (RTM_DELLINK via if_nametoindex).
  */
-static int br_addbr(char *bridge)
-{
-#ifdef SIOCBRADDBR
-    /* Method 1 – modern ioctl (deprecated in newer kernels) */
-    {
-        int fd = socket(AF_INET, SOCK_STREAM, 0);
-        if (fd >= 0) {
-            int err = ioctl(fd, SIOCBRADDBR, bridge);
-            int saved_errno = errno;
-            close(fd);
-            if (err == 0)
-                return 0;
-            /* EOPNOTSUPP / ENOTTY means the ioctl path is not supported
-             * by the running kernel → fall through to netlink. */
-            if (saved_errno != EOPNOTSUPP && saved_errno != ENOTTY) {
-                errno = saved_errno;
-                return -1;
-            }
-        }
-    }
-#endif
-
-    /* Method 2 – netlink (RTM_NEWLINK), the modern interface */
-    if (br_addbr_netlink(bridge) == 0)
-        return 0;
-
-    /* Method 3 – legacy BRCTL_ADD_BRIDGE via SIOCDEVPRIVATE */
-    {
-        int fd = socket(AF_INET, SOCK_STREAM, 0);
-        if (fd < 0)
-            return -1;
-        struct ifreq ifr;
-        unsigned long args[4];
-        memset(&ifr, 0, sizeof(ifr));
-        strncpy(ifr.ifr_name, bridge, IFNAMSIZ);
-        args[0] = BRCTL_ADD_BRIDGE;
-        args[1] = (unsigned long)bridge;
-        args[2] = 0;
-        args[3] = 0;
-        ifr.ifr_data = (char *)args;
-        int err = ioctl(fd, SIOCDEVPRIVATE, &ifr);
-        int saved_errno = errno;
-        close(fd);
-        errno = saved_errno;
-        return err;
-    }
-}
-
-/*
- * Delete a bridge device via netlink (RTM_DELLINK).
- * The interface is identified by index (if_nametoindex).
- */
-static int br_delbr_netlink(const char *bridge)
+static int br_delbr(const char *bridge)
 {
     struct nl_handler nlh;
-    struct nlmsg *msg = NULL;
-    struct nlmsg *reply = NULL;
+    struct nlmsg *msg = NULL, *reply = NULL;
     struct ifinfomsg *ifi;
     int ret;
 
@@ -247,71 +115,107 @@ static int br_delbr_netlink(const char *bridge)
     msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
 
     ret = netlink_transaction(&nlh, msg, reply);
-
     nlmsg_free(msg);
     nlmsg_free(reply);
     netlink_close(&nlh);
-
     return ret;
 }
 
 /*
- * Delete a Linux bridge device.
- *
- * Tries three methods, in order of preference:
- *   1. SIOCBRDELBR ioctl
- *   2. RTM_DELLINK netlink  — modern kernels where the ioctl returns
- *      EOPNOTSUPP.
- *   3. BRCTL_DEL_BRIDGE via SIOCDEVPRIVATE — legacy fallback.
- *
- * errno from the failing call is preserved across close().
+ * Enslave a port interface to a bridge (RTM_SETLINK + IFLA_MASTER).
  */
-static int br_delbr(char *bridge)
+static int br_enslave_if(const char *bridge, const char *port)
 {
-#ifdef SIOCBRDELBR
-    /* Method 1 – modern ioctl (deprecated in newer kernels) */
-    {
-        int fd = socket(AF_INET, SOCK_STREAM, 0);
-        if (fd >= 0) {
-            int err = ioctl(fd, SIOCBRDELBR, bridge);
-            int saved_errno = errno;
-            close(fd);
-            if (err == 0)
-                return 0;
-            /* EOPNOTSUPP / ENOTTY means the ioctl path is not supported
-             * by the running kernel → fall through to netlink. */
-            if (saved_errno != EOPNOTSUPP && saved_errno != ENOTTY) {
-                errno = saved_errno;
-                return -1;
-            }
-        }
-    }
-#endif
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL, *reply = NULL;
+    struct ifinfomsg *ifi;
+    int ret, br_ifindex, port_ifindex;
 
-    /* Method 2 – netlink (RTM_DELLINK), the modern interface */
-    if (br_delbr_netlink(bridge) == 0)
-        return 0;
-
-    /* Method 3 – legacy BRCTL_DEL_BRIDGE via SIOCDEVPRIVATE */
-    {
-        int fd = socket(AF_INET, SOCK_STREAM, 0);
-        if (fd < 0)
-            return -1;
-        struct ifreq ifr;
-        unsigned long args[4];
-        memset(&ifr, 0, sizeof(ifr));
-        strncpy(ifr.ifr_name, bridge, IFNAMSIZ);
-        args[0] = BRCTL_DEL_BRIDGE;
-        args[1] = (unsigned long)bridge;
-        args[2] = 0;
-        args[3] = 0;
-        ifr.ifr_data = (char *)args;
-        int err = ioctl(fd, SIOCDEVPRIVATE, &ifr);
-        int saved_errno = errno;
-        close(fd);
-        errno = saved_errno;
-        return err;
+    br_ifindex = if_nametoindex(bridge);
+    port_ifindex = if_nametoindex(port);
+    if (br_ifindex == 0 || port_ifindex == 0) {
+        errno = ENODEV;
+        return -1;
     }
+
+    ret = netlink_open(&nlh, NETLINK_ROUTE);
+    if (ret < 0)
+        return -1;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        netlink_close(&nlh);
+        errno = ENOMEM;
+        return -1;
+    }
+
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_UNSPEC;
+    ifi->ifi_index = port_ifindex;
+
+    msg->nlmsghdr.nlmsg_type = RTM_SETLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+
+    nla_put_u32(msg, IFLA_MASTER, br_ifindex);
+
+    ret = netlink_transaction(&nlh, msg, reply);
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    netlink_close(&nlh);
+    return ret;
+}
+
+/*
+ * Release a port from its bridge (RTM_SETLINK + IFLA_MASTER = 0).
+ */
+static int br_release_if(const char *port)
+{
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL, *reply = NULL;
+    struct ifinfomsg *ifi;
+    int ret, port_ifindex;
+
+    port_ifindex = if_nametoindex(port);
+    if (port_ifindex == 0) {
+        errno = ENODEV;
+        return -1;
+    }
+
+    ret = netlink_open(&nlh, NETLINK_ROUTE);
+    if (ret < 0)
+        return -1;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        netlink_close(&nlh);
+        errno = ENOMEM;
+        return -1;
+    }
+
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_UNSPEC;
+    ifi->ifi_index = port_ifindex;
+
+    msg->nlmsghdr.nlmsg_type = RTM_SETLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+
+    nla_put_u32(msg, IFLA_MASTER, 0);
+
+    ret = netlink_transaction(&nlh, msg, reply);
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    netlink_close(&nlh);
+    return ret;
 }
 
 /*
@@ -352,48 +256,89 @@ static int parse_cidr(const char *cidr, struct in_addr *ip, struct in_addr *mask
 }
 
 /*
- * Set an IPv4 address and netmask on an interface and bring it up.
- * errno from the failing ioctl is preserved across the close().
+ * Set an IPv4 address on an interface and bring it up (RTM_NEWADDR +
+ * RTM_SETLINK IFF_UP).
  */
-static int br_set_address(char *bridge, struct in_addr ip, struct in_addr mask)
+static int br_set_address(const char *bridge, struct in_addr ip, struct in_addr mask)
 {
-    struct ifreq ifr;
-    struct sockaddr_in *sin = (struct sockaddr_in *)&ifr.ifr_addr;
-    int fd, saved_errno;
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL, *reply = NULL, *msg2 = NULL;
+    struct ifaddrmsg *ifa;
+    struct ifinfomsg *ifi;
+    int ret, ifindex;
 
-    fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0)
+    /* Convert netmask back to prefix length */
+    unsigned int m = ntohl(mask.s_addr);
+    int prefix = 0;
+    while (m & 0x80000000) { prefix++; m <<= 1; }
+
+    ifindex = if_nametoindex(bridge);
+    if (ifindex == 0)
         return -1;
 
-    memset(&ifr, 0, sizeof(ifr));
-    strncpy(ifr.ifr_name, bridge, IFNAMSIZ);
+    ret = netlink_open(&nlh, NETLINK_ROUTE);
+    if (ret < 0)
+        return -1;
 
-    /* Set the address */
-    sin->sin_family = AF_INET;
-    sin->sin_addr = ip;
-    if (ioctl(fd, SIOCSIFADDR, &ifr) < 0)
-        goto err;
+    /* Step 1 – add/replace IPv4 address (RTM_NEWADDR) */
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        netlink_close(&nlh);
+        errno = ENOMEM;
+        return -1;
+    }
 
-    /* Set the netmask */
-    sin->sin_addr = mask;
-    if (ioctl(fd, SIOCSIFNETMASK, &ifr) < 0)
-        goto err;
+    ifa = (struct ifaddrmsg *)nlmsg_data(msg);
+    memset(ifa, 0, sizeof(*ifa));
+    ifa->ifa_family = AF_INET;
+    ifa->ifa_prefixlen = prefix;
+    ifa->ifa_index = ifindex;
 
-    /* Bring the interface up */
-    if (ioctl(fd, SIOCGIFFLAGS, &ifr) < 0)
-        goto err;
-    ifr.ifr_flags |= IFF_UP;
-    if (ioctl(fd, SIOCSIFFLAGS, &ifr) < 0)
-        goto err;
+    msg->nlmsghdr.nlmsg_type = RTM_NEWADDR;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_CREATE | NLM_F_REPLACE | NLM_F_REQUEST | NLM_F_ACK;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifaddrmsg));
 
-    close(fd);
-    return 0;
+    nla_put_buffer(msg, IFA_LOCAL, &ip, sizeof(ip));
+    nla_put_buffer(msg, IFA_ADDRESS, &ip, sizeof(ip));
 
-err:
-    saved_errno = errno;
-    close(fd);
-    errno = saved_errno;
-    return -1;
+    ret = netlink_transaction(&nlh, msg, reply);
+    if (ret < 0) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        netlink_close(&nlh);
+        return -1;
+    }
+
+    /* Step 2 – bring the interface up (RTM_SETLINK IFF_UP) */
+    msg2 = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg2) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        netlink_close(&nlh);
+        errno = ENOMEM;
+        return -1;
+    }
+
+    ifi = (struct ifinfomsg *)nlmsg_data(msg2);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_UNSPEC;
+    ifi->ifi_index = ifindex;
+    ifi->ifi_change |= IFF_UP;
+    ifi->ifi_flags |= IFF_UP;
+
+    msg2->nlmsghdr.nlmsg_type = RTM_SETLINK;
+    msg2->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    msg2->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+
+    ret = netlink_transaction(&nlh, msg2, reply);
+    nlmsg_free(msg2);
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    netlink_close(&nlh);
+    return ret;
 }
 
 /* brctl create <bridge> */
@@ -421,6 +366,35 @@ static int cmd_delete(hypervisor_conn_t *conn, int argc, char *argv[])
     }
 
     hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Bridge %s deleted", bridge);
+    return 0;
+}
+
+/* brctl addif <bridge> <interface> — enslave a port to a bridge */
+static int cmd_addif(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *bridge = argv[0];
+    char *interface = argv[1];
+
+    if (br_enslave_if(bridge, interface) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not add %s to %s: %s", interface, bridge, strerror(errno));
+        return -1;
+    }
+
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "%s has been added to bridge %s", interface, bridge);
+    return 0;
+}
+
+/* brctl delif <bridge> <interface> — release a port from a bridge */
+static int cmd_delif(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *interface = argv[1];
+
+    if (br_release_if(interface) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_DELETE, 1, "Could not remove %s from bridge %s: %s", argv[1], argv[0], strerror(errno));
+        return -1;
+    }
+
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "%s removed from bridge %s", argv[1], argv[0]);
     return 0;
 }
 
@@ -471,164 +445,221 @@ static int cmd_setup(hypervisor_conn_t *conn, int argc, char *argv[])
     return 0;
 }
 
-/* brctl show <bridge> — return IP address and flags */
+/* brctl show <bridge> — query IP, prefix and flags via netlink */
 static int cmd_show(hypervisor_conn_t *conn, int argc, char *argv[])
 {
-    char *bridge = argv[0];
-    struct ifreq ifr;
-    struct sockaddr_in *sin = (struct sockaddr_in *)&ifr.ifr_addr;
-    int fd;
+    const char *bridge = argv[0];
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL, *reply = NULL;
+    struct ifinfomsg *ifi;
+    int ifindex, ret;
 
-    fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not open socket: %s", strerror(errno));
+    ifindex = if_nametoindex(bridge);
+    if (ifindex == 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Bridge %s does not exist", bridge);
         return -1;
     }
 
-    memset(&ifr, 0, sizeof(ifr));
-    strncpy(ifr.ifr_name, bridge, IFNAMSIZ);
-
-    /* Get IP address */
-    char ip_str[INET_ADDRSTRLEN] = "";
-    int prefix = 0;
-    int has_ip = 0;
-
-    if (ioctl(fd, SIOCGIFADDR, &ifr) == 0) {
-        inet_ntop(AF_INET, &sin->sin_addr, ip_str, sizeof(ip_str));
-        has_ip = 1;
-    } else if (errno != EADDRNOTAVAIL) {
-        /* Real error (not just "no IP assigned") */
-        close(fd);
-        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not show %s: %s", bridge, strerror(errno));
+    ret = netlink_open(&nlh, NETLINK_ROUTE);
+    if (ret < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not open netlink socket: %s", strerror(errno));
         return -1;
     }
 
-    /* Get netmask and convert to prefix length */
-    if (has_ip) {
-        memset(&ifr, 0, sizeof(ifr));
-        strncpy(ifr.ifr_name, bridge, IFNAMSIZ);
-        if (ioctl(fd, SIOCGIFNETMASK, &ifr) == 0) {
-            unsigned int mask = ntohl(sin->sin_addr.s_addr);
-            while (mask & 0x80000000) { prefix++; mask <<= 1; }
-        }
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        netlink_close(&nlh);
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Insufficient memory");
+        return -1;
     }
 
-    /* Get interface flags */
-    memset(&ifr, 0, sizeof(ifr));
-    strncpy(ifr.ifr_name, bridge, IFNAMSIZ);
+    /* Query interface flags via RTM_GETLINK */
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_UNSPEC;
+    ifi->ifi_index = ifindex;
+
+    msg->nlmsghdr.nlmsg_type = RTM_GETLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+
     char flags_str[64] = "";
-    if (ioctl(fd, SIOCGIFFLAGS, &ifr) == 0) {
-        if (ifr.ifr_flags & IFF_UP)      strcat(flags_str, "UP ");
-        if (ifr.ifr_flags & IFF_RUNNING) strcat(flags_str, "RUNNING ");
+    ret = netlink_transaction(&nlh, msg, reply);
+    if (ret == 0) {
+        struct ifinfomsg *ifi_r = (struct ifinfomsg *)nlmsg_data(reply);
+        if (ifi_r->ifi_flags & IFF_UP)      strcat(flags_str, "UP ");
+        if (ifi_r->ifi_flags & IFF_RUNNING) strcat(flags_str, "RUNNING ");
     }
-    close(fd);
-
-    /* Trim trailing space */
     size_t flen = strlen(flags_str);
     if (flen > 0) flags_str[flen - 1] = '\0';
 
-    if (has_ip && prefix > 0)
+    /* Query IPv4 address via RTM_GETADDR */
+    struct ifaddrmsg *ifa;
+    char ip_str[INET_ADDRSTRLEN] = "";
+    int prefix = 0;
+
+    ifa = (struct ifaddrmsg *)nlmsg_data(msg);
+    memset(ifa, 0, sizeof(*ifa));
+    ifa->ifa_family = AF_INET;
+    ifa->ifa_index = ifindex;
+
+    msg->nlmsghdr.nlmsg_type = RTM_GETADDR;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifaddrmsg));
+
+    ret = netlink_transaction(&nlh, msg, reply);
+    if (ret == 0) {
+        struct ifaddrmsg *ifa_r = (struct ifaddrmsg *)nlmsg_data(reply);
+        int attrlen = reply->nlmsghdr.nlmsg_len - NLMSG_LENGTH(sizeof(struct ifaddrmsg));
+        struct rtattr *rta = IFA_RTA(ifa_r);
+        prefix = ifa_r->ifa_prefixlen;
+        while (RTA_OK(rta, attrlen)) {
+            if (rta->rta_type == IFA_LOCAL) {
+                struct in_addr addr;
+                memcpy(&addr, RTA_DATA(rta), sizeof(addr));
+                inet_ntop(AF_INET, &addr, ip_str, sizeof(ip_str));
+                break;
+            }
+            rta = RTA_NEXT(rta, attrlen);
+        }
+    }
+
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    netlink_close(&nlh);
+
+    if (ip_str[0] && prefix > 0)
         hypervisor_send_reply(conn, HSC_INFO_OK, 1, "%s %s/%d %s", bridge, ip_str, prefix, flags_str);
-    else if (has_ip)
+    else if (ip_str[0])
         hypervisor_send_reply(conn, HSC_INFO_OK, 1, "%s %s %s", bridge, ip_str, flags_str);
     else
         hypervisor_send_reply(conn, HSC_INFO_OK, 1, "%s %s", bridge, flags_str);
     return 0;
 }
 
-/* brctl delif <bridge> <interface> — remove an interface from a bridge */
-static int cmd_delif(hypervisor_conn_t *conn, int argc, char *argv[])
-{
-    int err = -1;
-    char *bridge = argv[0];
-    char *interface = argv[1];
-    struct ifreq ifr;
-
-    int ifindex = if_nametoindex(interface);
-    if (ifindex == 0) {
-        hypervisor_send_reply(conn, HSC_ERR_DELETE, 1, "Could not find interface %s", interface);
-        return -1;
-    }
-
-    int br_socket_fd = socket(AF_INET, SOCK_STREAM, 0);
-
-    strncpy(ifr.ifr_name, bridge, IFNAMSIZ);
-    #ifdef SIOCBRDELIF
-        ifr.ifr_ifindex = ifindex;
-        err = ioctl(br_socket_fd, SIOCBRDELIF, &ifr);
-        if (err < 0)
-    #endif
-    {
-        unsigned long args[4] = { BRCTL_DEL_IF, ifindex, 0, 0 };
-        ifr.ifr_data = (char *) args;
-        err = ioctl(br_socket_fd, SIOCDEVPRIVATE, &ifr);
-    }
-
-    if (err < 0) {
-        hypervisor_send_reply(conn, HSC_ERR_DELETE, 1, "Could not remove interface %s from %s: %s", interface, bridge, strerror(errno));
-        goto out;
-    }
-
-    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "%s removed from bridge %s", interface, bridge);
-    err = 0;
-
-out:
-    close(br_socket_fd);
-    return (err);
-}
-
-/* brctl list — enumerate all Linux bridges */
+/* brctl list — enumerate all Linux bridges via RTM_GETLINK dump */
 static int cmd_list(hypervisor_conn_t *conn, int argc, char *argv[])
 {
-    DIR *dir = opendir("/sys/class/net/");
-    if (!dir) {
-        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not list network interfaces: %s", strerror(errno));
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL, *reply = NULL;
+    struct ifinfomsg *ifi;
+    int ret;
+
+    ret = netlink_open(&nlh, NETLINK_ROUTE);
+    if (ret < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not open netlink socket: %s", strerror(errno));
         return -1;
     }
 
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_name[0] == '.')
-            continue;
-
-        char bridge_path[512];
-        snprintf(bridge_path, sizeof(bridge_path), "/sys/class/net/%s/bridge", entry->d_name);
-
-        struct stat st;
-        if (stat(bridge_path, &st) != 0 || !S_ISDIR(st.st_mode))
-            continue;
-
-        /* It's a bridge — try to get IP */
-        int fd = socket(AF_INET, SOCK_STREAM, 0);
-        if (fd < 0)
-            continue;
-
-        struct ifreq ifr;
-        struct sockaddr_in *sin = (struct sockaddr_in *)&ifr.ifr_addr;
-        char ip_str[INET_ADDRSTRLEN] = "";
-        int prefix = 0;
-
-        memset(&ifr, 0, sizeof(ifr));
-        strncpy(ifr.ifr_name, entry->d_name, IFNAMSIZ);
-
-        if (ioctl(fd, SIOCGIFADDR, &ifr) == 0) {
-            inet_ntop(AF_INET, &sin->sin_addr, ip_str, sizeof(ip_str));
-
-            memset(&ifr, 0, sizeof(ifr));
-            strncpy(ifr.ifr_name, entry->d_name, IFNAMSIZ);
-            if (ioctl(fd, SIOCGIFNETMASK, &ifr) == 0) {
-                unsigned int mask = ntohl(sin->sin_addr.s_addr);
-                while (mask & 0x80000000) { prefix++; mask <<= 1; }
-            }
-        }
-        close(fd);
-
-        if (ip_str[0])
-            hypervisor_send_reply(conn, HSC_INFO_OK, 0, "%s %s/%d", entry->d_name, ip_str, prefix);
-        else
-            hypervisor_send_reply(conn, HSC_INFO_OK, 0, "%s", entry->d_name);
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        netlink_close(&nlh);
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Insufficient memory");
+        return -1;
     }
-    closedir(dir);
+
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_UNSPEC;
+
+    msg->nlmsghdr.nlmsg_type = RTM_GETLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+
+    ret = netlink_send(&nlh, msg);
+    if (ret < 0) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        netlink_close(&nlh);
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "netlink send failed: %s", strerror(-ret));
+        return -1;
+    }
+
+    while (1) {
+        reply->nlmsghdr.nlmsg_len = NLMSG_ALIGN(NLMSG_GOOD_SIZE);
+        ret = netlink_rcv(&nlh, reply);
+        if (ret <= 0)
+            break;
+
+        if (reply->nlmsghdr.nlmsg_type == NLMSG_DONE)
+            break;
+        if (reply->nlmsghdr.nlmsg_type == NLMSG_ERROR)
+            break;
+
+        struct ifinfomsg *ifi_r = (struct ifinfomsg *)nlmsg_data(reply);
+        int attrlen = reply->nlmsghdr.nlmsg_len - NLMSG_LENGTH(sizeof(struct ifinfomsg));
+        struct rtattr *rta = IFLA_RTA(ifi_r);
+
+        char ifname[IFNAMSIZ] = "";
+        int is_bridge = 0;
+        while (RTA_OK(rta, attrlen)) {
+            if (rta->rta_type == IFLA_IFNAME) {
+                strncpy(ifname, (const char *)RTA_DATA(rta), sizeof(ifname) - 1);
+                ifname[sizeof(ifname) - 1] = '\0';
+            } else if (rta->rta_type == IFLA_LINKINFO) {
+                struct rtattr *info = (struct rtattr *)RTA_DATA(rta);
+                int info_len = RTA_PAYLOAD(rta);
+                while (RTA_OK(info, info_len)) {
+                    if (info->rta_type == IFLA_INFO_KIND &&
+                        strcmp((const char *)RTA_DATA(info), "bridge") == 0) {
+                        is_bridge = 1;
+                        break;
+                    }
+                    info = RTA_NEXT(info, info_len);
+                }
+            }
+            rta = RTA_NEXT(rta, attrlen);
+        }
+
+        if (is_bridge && ifname[0]) {
+            /* Query IP for this bridge */
+            int br_ifindex = ifi_r->ifi_index;
+            struct in_addr addr;
+            char ip_str[INET_ADDRSTRLEN] = "";
+            int prefix = 0;
+
+            struct ifaddrmsg *addr_msg;
+            addr_msg = (struct ifaddrmsg *)nlmsg_data(msg);
+            memset(addr_msg, 0, sizeof(*addr_msg));
+            addr_msg->ifa_family = AF_INET;
+            addr_msg->ifa_index = br_ifindex;
+
+            msg->nlmsghdr.nlmsg_type = RTM_GETADDR;
+            msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST;
+            msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifaddrmsg));
+
+            reply->nlmsghdr.nlmsg_len = NLMSG_ALIGN(NLMSG_GOOD_SIZE);
+            if (netlink_transaction(&nlh, msg, reply) == 0) {
+                struct ifaddrmsg *ifa_r = (struct ifaddrmsg *)nlmsg_data(reply);
+                int alen = reply->nlmsghdr.nlmsg_len - NLMSG_LENGTH(sizeof(struct ifaddrmsg));
+                struct rtattr *ar = IFA_RTA(ifa_r);
+                prefix = ifa_r->ifa_prefixlen;
+                while (RTA_OK(ar, alen)) {
+                    if (ar->rta_type == IFA_LOCAL) {
+                        memcpy(&addr, RTA_DATA(ar), sizeof(addr));
+                        inet_ntop(AF_INET, &addr, ip_str, sizeof(ip_str));
+                        break;
+                    }
+                    ar = RTA_NEXT(ar, alen);
+                }
+            }
+
+            if (ip_str[0])
+                hypervisor_send_reply(conn, HSC_INFO_OK, 0, "%s %s/%d", ifname, ip_str, prefix);
+            else
+                hypervisor_send_reply(conn, HSC_INFO_OK, 0, "%s", ifname);
+        }
+    }
+
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    netlink_close(&nlh);
 
     hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
     return 0;
@@ -642,9 +673,9 @@ static hypervisor_cmd_t brctl_cmd_array[] = {
    { "delete", 1, 1, cmd_delete, NULL },
    { "addip", 2, 2, cmd_addip, NULL },
    { "setup", 2, 2, cmd_setup, NULL },
-   { "show", 1, 1, cmd_show, NULL },
+   { "show",  1, 1, cmd_show, NULL },
    { "delif", 2, 2, cmd_delif, NULL },
-   { "list", 0, 0, cmd_list, NULL },
+   { "list",  0, 0, cmd_list, NULL },
    { NULL, -1, -1, NULL, NULL },
 };
 
