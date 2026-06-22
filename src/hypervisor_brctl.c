@@ -445,13 +445,93 @@ static int cmd_setup(hypervisor_conn_t *conn, int argc, char *argv[])
     return 0;
 }
 
+/*
+ * Query the IPv4 address of an interface via RTM_GETADDR dump.
+ * NLM_F_REQUEST alone returns EOPNOTSUPP on modern kernels;
+ * NLM_F_DUMP is required.  We filter the response by ifindex.
+ */
+static int br_get_address(int ifindex, struct in_addr *addr, int *prefix)
+{
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL, *reply = NULL;
+    struct ifaddrmsg *ifa;
+    int ret;
+
+    if (netlink_open(&nlh, NETLINK_ROUTE) < 0)
+        return -1;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        netlink_close(&nlh);
+        return -1;
+    }
+
+    ifa = (struct ifaddrmsg *)nlmsg_data(msg);
+    memset(ifa, 0, sizeof(*ifa));
+    ifa->ifa_family = AF_UNSPEC;
+    ifa->ifa_index = ifindex;
+
+    msg->nlmsghdr.nlmsg_type = RTM_GETADDR;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifaddrmsg));
+
+    ret = netlink_send(&nlh, msg);
+    if (ret < 0) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        netlink_close(&nlh);
+        return -1;
+    }
+
+    /* Read dump responses; find the address matching ifindex */
+    ret = -1;
+    while (1) {
+        reply->nlmsghdr.nlmsg_len = NLMSG_ALIGN(NLMSG_GOOD_SIZE);
+        int r = netlink_rcv(&nlh, reply);
+        if (r <= 0)
+            break;
+
+        if (reply->nlmsghdr.nlmsg_type == NLMSG_DONE)
+            break;
+        if (reply->nlmsghdr.nlmsg_type == NLMSG_ERROR)
+            break;
+        if (reply->nlmsghdr.nlmsg_type != RTM_NEWADDR)
+            continue;
+
+        struct ifaddrmsg *ifa_r = (struct ifaddrmsg *)nlmsg_data(reply);
+        if (ifa_r->ifa_family != AF_INET || ifa_r->ifa_index != (unsigned int)ifindex)
+            continue;
+
+        /* Found the right interface */
+        int attrlen = reply->nlmsghdr.nlmsg_len - NLMSG_LENGTH(sizeof(struct ifaddrmsg));
+        struct rtattr *rta = IFA_RTA(ifa_r);
+        *prefix = ifa_r->ifa_prefixlen;
+        while (RTA_OK(rta, attrlen)) {
+            if (rta->rta_type == IFA_ADDRESS || rta->rta_type == IFA_LOCAL) {
+                memcpy(addr, RTA_DATA(rta), sizeof(*addr));
+                ret = 0;
+                break;
+            }
+            rta = RTA_NEXT(rta, attrlen);
+        }
+        break;
+    }
+
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    netlink_close(&nlh);
+    return ret;
+}
+
 /* brctl show <bridge> — query IP, prefix and flags via netlink */
 static int cmd_show(hypervisor_conn_t *conn, int argc, char *argv[])
 {
     const char *bridge = argv[0];
     struct nl_handler nlh;
     struct nlmsg *msg = NULL, *reply = NULL;
-    struct ifinfomsg *ifi;
     int ifindex, ret;
 
     ifindex = if_nametoindex(bridge);
@@ -477,14 +557,16 @@ static int cmd_show(hypervisor_conn_t *conn, int argc, char *argv[])
     }
 
     /* Query interface flags via RTM_GETLINK */
-    ifi = (struct ifinfomsg *)nlmsg_data(msg);
-    memset(ifi, 0, sizeof(*ifi));
-    ifi->ifi_family = AF_UNSPEC;
-    ifi->ifi_index = ifindex;
+    {
+        struct ifinfomsg *ifi = (struct ifinfomsg *)nlmsg_data(msg);
+        memset(ifi, 0, sizeof(*ifi));
+        ifi->ifi_family = AF_UNSPEC;
+        ifi->ifi_index = ifindex;
 
-    msg->nlmsghdr.nlmsg_type = RTM_GETLINK;
-    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST;
-    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+        msg->nlmsghdr.nlmsg_type = RTM_GETLINK;
+        msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST;
+        msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+    }
 
     char flags_str[64] = "";
     ret = netlink_transaction(&nlh, msg, reply);
@@ -493,43 +575,21 @@ static int cmd_show(hypervisor_conn_t *conn, int argc, char *argv[])
         if (ifi_r->ifi_flags & IFF_UP)      strcat(flags_str, "UP ");
         if (ifi_r->ifi_flags & IFF_RUNNING) strcat(flags_str, "RUNNING ");
     }
-    size_t flen = strlen(flags_str);
-    if (flen > 0) flags_str[flen - 1] = '\0';
-
-    /* Query IPv4 address via RTM_GETADDR */
-    struct ifaddrmsg *ifa;
-    char ip_str[INET_ADDRSTRLEN] = "";
-    int prefix = 0;
-
-    ifa = (struct ifaddrmsg *)nlmsg_data(msg);
-    memset(ifa, 0, sizeof(*ifa));
-    ifa->ifa_family = AF_INET;
-    ifa->ifa_index = ifindex;
-
-    msg->nlmsghdr.nlmsg_type = RTM_GETADDR;
-    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST;
-    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifaddrmsg));
-
-    ret = netlink_transaction(&nlh, msg, reply);
-    if (ret == 0) {
-        struct ifaddrmsg *ifa_r = (struct ifaddrmsg *)nlmsg_data(reply);
-        int attrlen = reply->nlmsghdr.nlmsg_len - NLMSG_LENGTH(sizeof(struct ifaddrmsg));
-        struct rtattr *rta = IFA_RTA(ifa_r);
-        prefix = ifa_r->ifa_prefixlen;
-        while (RTA_OK(rta, attrlen)) {
-            if (rta->rta_type == IFA_LOCAL) {
-                struct in_addr addr;
-                memcpy(&addr, RTA_DATA(rta), sizeof(addr));
-                inet_ntop(AF_INET, &addr, ip_str, sizeof(ip_str));
-                break;
-            }
-            rta = RTA_NEXT(rta, attrlen);
-        }
-    }
 
     nlmsg_free(msg);
     nlmsg_free(reply);
     netlink_close(&nlh);
+
+    size_t flen = strlen(flags_str);
+    if (flen > 0) flags_str[flen - 1] = '\0';
+
+    /* Query IPv4 address via a fresh handler (avoids reuse issues) */
+    struct in_addr ip;
+    char ip_str[INET_ADDRSTRLEN] = "";
+    int prefix = 0;
+
+    if (br_get_address(ifindex, &ip, &prefix) == 0)
+        inet_ntop(AF_INET, &ip, ip_str, sizeof(ip_str));
 
     if (ip_str[0] && prefix > 0)
         hypervisor_send_reply(conn, HSC_INFO_OK, 1, "%s %s/%d %s", bridge, ip_str, prefix, flags_str);
@@ -618,37 +678,13 @@ static int cmd_list(hypervisor_conn_t *conn, int argc, char *argv[])
         }
 
         if (is_bridge && ifname[0]) {
-            /* Query IP for this bridge */
-            int br_ifindex = ifi_r->ifi_index;
+            /* Query IP via dedicated helper */
             struct in_addr addr;
             char ip_str[INET_ADDRSTRLEN] = "";
             int prefix = 0;
 
-            struct ifaddrmsg *addr_msg;
-            addr_msg = (struct ifaddrmsg *)nlmsg_data(msg);
-            memset(addr_msg, 0, sizeof(*addr_msg));
-            addr_msg->ifa_family = AF_INET;
-            addr_msg->ifa_index = br_ifindex;
-
-            msg->nlmsghdr.nlmsg_type = RTM_GETADDR;
-            msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST;
-            msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifaddrmsg));
-
-            reply->nlmsghdr.nlmsg_len = NLMSG_ALIGN(NLMSG_GOOD_SIZE);
-            if (netlink_transaction(&nlh, msg, reply) == 0) {
-                struct ifaddrmsg *ifa_r = (struct ifaddrmsg *)nlmsg_data(reply);
-                int alen = reply->nlmsghdr.nlmsg_len - NLMSG_LENGTH(sizeof(struct ifaddrmsg));
-                struct rtattr *ar = IFA_RTA(ifa_r);
-                prefix = ifa_r->ifa_prefixlen;
-                while (RTA_OK(ar, alen)) {
-                    if (ar->rta_type == IFA_LOCAL) {
-                        memcpy(&addr, RTA_DATA(ar), sizeof(addr));
-                        inet_ntop(AF_INET, &addr, ip_str, sizeof(ip_str));
-                        break;
-                    }
-                    ar = RTA_NEXT(ar, alen);
-                }
-            }
+            if (br_get_address(ifi_r->ifi_index, &addr, &prefix) == 0)
+                inet_ntop(AF_INET, &addr, ip_str, sizeof(ip_str));
 
             if (ip_str[0])
                 hypervisor_send_reply(conn, HSC_INFO_OK, 0, "%s %s/%d", ifname, ip_str, prefix);
