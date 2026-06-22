@@ -28,6 +28,7 @@
 #include <sys/ioctl.h>
 #include <net/if.h>
 #include <linux/if_bridge.h>
+#include <linux/sockios.h>
 #include "ubridge.h"
 #include "hypervisor.h"
 #include "hypervisor_brctl.h"
@@ -105,7 +106,24 @@ static int br_addbr(char *bridge)
     if (fd < 0)
         return -1;
 
+#ifdef SIOCBRADDBR
     err = ioctl(fd, SIOCBRADDBR, bridge);
+    if (err < 0)
+#endif
+    {
+        struct ifreq ifr;
+        unsigned long args[4];
+
+        memset(&ifr, 0, sizeof(ifr));
+        strncpy(ifr.ifr_name, bridge, IFNAMSIZ);
+        args[0] = BRCTL_ADD_BRIDGE;
+        args[1] = (unsigned long)bridge;
+        args[2] = 0;
+        args[3] = 0;
+        ifr.ifr_data = (char *)args;
+        err = ioctl(fd, SIOCDEVPRIVATE, &ifr);
+    }
+
     saved_errno = errno;
     close(fd);
     errno = saved_errno;
@@ -124,7 +142,24 @@ static int br_delbr(char *bridge)
     if (fd < 0)
         return -1;
 
+#ifdef SIOCBRDELBR
     err = ioctl(fd, SIOCBRDELBR, bridge);
+    if (err < 0)
+#endif
+    {
+        struct ifreq ifr;
+        unsigned long args[4];
+
+        memset(&ifr, 0, sizeof(ifr));
+        strncpy(ifr.ifr_name, bridge, IFNAMSIZ);
+        args[0] = BRCTL_DEL_BRIDGE;
+        args[1] = (unsigned long)bridge;
+        args[2] = 0;
+        args[3] = 0;
+        ifr.ifr_data = (char *)args;
+        err = ioctl(fd, SIOCDEVPRIVATE, &ifr);
+    }
+
     saved_errno = errno;
     close(fd);
     errno = saved_errno;
