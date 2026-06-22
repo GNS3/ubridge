@@ -29,6 +29,9 @@
 #include <net/if.h>
 #include <linux/if_bridge.h>
 #include <linux/sockios.h>
+#include <linux/netlink.h>
+#include <linux/rtnetlink.h>
+#include "netlink/nl.h"
 #include "ubridge.h"
 #include "hypervisor.h"
 #include "hypervisor_brctl.h"
@@ -95,25 +98,102 @@ out:
 
 
 /*
- * Create a Linux bridge device (SIOCBRADDBR).
- * errno from the failing ioctl is preserved across the close().
+ * Create a bridge device via netlink (RTM_NEWLINK + IFLA_INFO_KIND "bridge").
+ * This is the standard interface on modern kernels; SIOCBRADDBR has been
+ * deprecated in recent kernels and returns EOPNOTSUPP.
+ */
+static int br_addbr_netlink(const char *bridge)
+{
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL;
+    struct nlmsg *reply = NULL;
+    struct ifinfomsg *ifi;
+    struct rtattr *linkinfo;
+    int ret;
+
+    ret = netlink_open(&nlh, NETLINK_ROUTE);
+    if (ret < 0)
+        return -1;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        netlink_close(&nlh);
+        errno = ENOMEM;
+        return -1;
+    }
+
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_UNSPEC;
+
+    msg->nlmsghdr.nlmsg_type = RTM_NEWLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL | NLM_F_ACK;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+
+    nla_put_string(msg, IFLA_IFNAME, bridge);
+
+    linkinfo = nla_begin_nested(msg, IFLA_LINKINFO);
+    nla_put_string(msg, IFLA_INFO_KIND, "bridge");
+    nla_end_nested(msg, linkinfo);
+
+    ret = netlink_transaction(&nlh, msg, reply);
+
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    netlink_close(&nlh);
+
+    return ret;
+}
+
+/*
+ * Create a Linux bridge device.
+ *
+ * Tries three methods, in order of preference:
+ *   1. SIOCBRADDBR ioctl  — works on kernels < 5.x or those with the old
+ *      bridge ioctl interface compiled in.
+ *   2. RTM_NEWLINK netlink — standard on modern kernels (≥ 5.x), where the
+ *      ioctl path returns EOPNOTSUPP.
+ *   3. BRCTL_ADD_BRIDGE via SIOCDEVPRIVATE — legacy fallback for very old
+ *      kernels that lack both SIOCBRADDBR and the netlink bridge kind.
+ *
+ * errno from the failing call is preserved across close().
  */
 static int br_addbr(char *bridge)
 {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    int err, saved_errno;
-
-    if (fd < 0)
-        return -1;
-
 #ifdef SIOCBRADDBR
-    err = ioctl(fd, SIOCBRADDBR, bridge);
-    if (err < 0)
-#endif
+    /* Method 1 – modern ioctl (deprecated in newer kernels) */
     {
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd >= 0) {
+            int err = ioctl(fd, SIOCBRADDBR, bridge);
+            int saved_errno = errno;
+            close(fd);
+            if (err == 0)
+                return 0;
+            /* EOPNOTSUPP / ENOTTY means the ioctl path is not supported
+             * by the running kernel → fall through to netlink. */
+            if (saved_errno != EOPNOTSUPP && saved_errno != ENOTTY) {
+                errno = saved_errno;
+                return -1;
+            }
+        }
+    }
+#endif
+
+    /* Method 2 – netlink (RTM_NEWLINK), the modern interface */
+    if (br_addbr_netlink(bridge) == 0)
+        return 0;
+
+    /* Method 3 – legacy BRCTL_ADD_BRIDGE via SIOCDEVPRIVATE */
+    {
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0)
+            return -1;
         struct ifreq ifr;
         unsigned long args[4];
-
         memset(&ifr, 0, sizeof(ifr));
         strncpy(ifr.ifr_name, bridge, IFNAMSIZ);
         args[0] = BRCTL_ADD_BRIDGE;
@@ -121,13 +201,12 @@ static int br_addbr(char *bridge)
         args[2] = 0;
         args[3] = 0;
         ifr.ifr_data = (char *)args;
-        err = ioctl(fd, SIOCDEVPRIVATE, &ifr);
+        int err = ioctl(fd, SIOCDEVPRIVATE, &ifr);
+        int saved_errno = errno;
+        close(fd);
+        errno = saved_errno;
+        return err;
     }
-
-    saved_errno = errno;
-    close(fd);
-    errno = saved_errno;
-    return err;
 }
 
 /*
