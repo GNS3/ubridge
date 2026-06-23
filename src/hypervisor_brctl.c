@@ -38,6 +38,7 @@
 
 /*
  * Create a Linux bridge device (RTM_NEWLINK + IFLA_INFO_KIND "bridge").
+ * Returns 0 on success or a negative errno on failure (NOT -1).
  */
 static int br_addbr(const char *bridge)
 {
@@ -49,7 +50,7 @@ static int br_addbr(const char *bridge)
 
     ret = netlink_open(&nlh, NETLINK_ROUTE);
     if (ret < 0)
-        return -1;
+        return ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
     reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
@@ -57,8 +58,7 @@ static int br_addbr(const char *bridge)
         nlmsg_free(msg);
         nlmsg_free(reply);
         netlink_close(&nlh);
-        errno = ENOMEM;
-        return -1;
+        return -ENOMEM;
     }
 
     ifi = (struct ifinfomsg *)nlmsg_data(msg);
@@ -83,6 +83,7 @@ static int br_addbr(const char *bridge)
 
 /*
  * Delete a Linux bridge device (RTM_DELLINK via if_nametoindex).
+ * Returns 0 on success or a negative errno on failure (NOT -1).
  */
 static int br_delbr(const char *bridge)
 {
@@ -92,14 +93,12 @@ static int br_delbr(const char *bridge)
     int ret, ifindex;
 
     ifindex = if_nametoindex(bridge);
-    if (ifindex == 0) {
-        errno = ENODEV;
-        return -1;
-    }
+    if (ifindex == 0)
+        return -ENODEV;
 
     ret = netlink_open(&nlh, NETLINK_ROUTE);
     if (ret < 0)
-        return -1;
+        return ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
     reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
@@ -107,8 +106,7 @@ static int br_delbr(const char *bridge)
         nlmsg_free(msg);
         nlmsg_free(reply);
         netlink_close(&nlh);
-        errno = ENOMEM;
-        return -1;
+        return -ENOMEM;
     }
 
     ifi = (struct ifinfomsg *)nlmsg_data(msg);
@@ -131,6 +129,7 @@ static int br_delbr(const char *bridge)
  * Enslave a port interface to a bridge (RTM_SETLINK + IFLA_MASTER) and
  * bring the port up (RTM_SETLINK + IFF_UP), matching the legacy ioctl
  * implementation which set SIOCSIFFLAGS|IFF_UP after adding the port.
+ * Returns 0 on success or a negative errno on failure (NOT -1).
  */
 static int br_enslave_if(const char *bridge, const char *port)
 {
@@ -141,14 +140,12 @@ static int br_enslave_if(const char *bridge, const char *port)
 
     br_ifindex = if_nametoindex(bridge);
     port_ifindex = if_nametoindex(port);
-    if (br_ifindex == 0 || port_ifindex == 0) {
-        errno = ENODEV;
-        return -1;
-    }
+    if (br_ifindex == 0 || port_ifindex == 0)
+        return -ENODEV;
 
     ret = netlink_open(&nlh, NETLINK_ROUTE);
     if (ret < 0)
-        return -1;
+        return ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
     reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
@@ -156,8 +153,7 @@ static int br_enslave_if(const char *bridge, const char *port)
         nlmsg_free(msg);
         nlmsg_free(reply);
         netlink_close(&nlh);
-        errno = ENOMEM;
-        return -1;
+        return -ENOMEM;
     }
 
     /* Step 1 – enslave the port to the bridge */
@@ -201,6 +197,7 @@ static int br_enslave_if(const char *bridge, const char *port)
 
 /*
  * Release a port from its bridge (RTM_SETLINK + IFLA_MASTER = 0).
+ * Returns 0 on success or a negative errno on failure (NOT -1).
  */
 static int br_release_if(const char *port)
 {
@@ -210,14 +207,12 @@ static int br_release_if(const char *port)
     int ret, port_ifindex;
 
     port_ifindex = if_nametoindex(port);
-    if (port_ifindex == 0) {
-        errno = ENODEV;
-        return -1;
-    }
+    if (port_ifindex == 0)
+        return -ENODEV;
 
     ret = netlink_open(&nlh, NETLINK_ROUTE);
     if (ret < 0)
-        return -1;
+        return ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
     reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
@@ -225,8 +220,7 @@ static int br_release_if(const char *port)
         nlmsg_free(msg);
         nlmsg_free(reply);
         netlink_close(&nlh);
-        errno = ENOMEM;
-        return -1;
+        return -ENOMEM;
     }
 
     ifi = (struct ifinfomsg *)nlmsg_data(msg);
@@ -287,6 +281,7 @@ static int parse_cidr(const char *cidr, struct in_addr *ip, struct in_addr *mask
 /*
  * Set an IPv4 address on an interface and bring it up (RTM_NEWADDR +
  * RTM_SETLINK IFF_UP).
+ * Returns 0 on success or a negative errno on failure (NOT -1).
  */
 static int br_set_address(const char *bridge, struct in_addr ip, struct in_addr mask)
 {
@@ -303,11 +298,11 @@ static int br_set_address(const char *bridge, struct in_addr ip, struct in_addr 
 
     ifindex = if_nametoindex(bridge);
     if (ifindex == 0)
-        return -1;
+        return -ENODEV;
 
     ret = netlink_open(&nlh, NETLINK_ROUTE);
     if (ret < 0)
-        return -1;
+        return ret;
 
     /* Step 1 – add/replace IPv4 address (RTM_NEWADDR) */
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
@@ -316,8 +311,7 @@ static int br_set_address(const char *bridge, struct in_addr ip, struct in_addr 
         nlmsg_free(msg);
         nlmsg_free(reply);
         netlink_close(&nlh);
-        errno = ENOMEM;
-        return -1;
+        return -ENOMEM;
     }
 
     ifa = (struct ifaddrmsg *)nlmsg_data(msg);
@@ -338,7 +332,7 @@ static int br_set_address(const char *bridge, struct in_addr ip, struct in_addr 
         nlmsg_free(msg);
         nlmsg_free(reply);
         netlink_close(&nlh);
-        return -1;
+        return ret;
     }
 
     /* Step 2 – bring the interface up (RTM_SETLINK IFF_UP) */
@@ -347,8 +341,7 @@ static int br_set_address(const char *bridge, struct in_addr ip, struct in_addr 
         nlmsg_free(msg);
         nlmsg_free(reply);
         netlink_close(&nlh);
-        errno = ENOMEM;
-        return -1;
+        return -ENOMEM;
     }
 
     ifi = (struct ifinfomsg *)nlmsg_data(msg2);
@@ -374,9 +367,10 @@ static int br_set_address(const char *bridge, struct in_addr ip, struct in_addr 
 static int cmd_create(hypervisor_conn_t *conn, int argc, char *argv[])
 {
     char *bridge = argv[0];
+    int err = br_addbr(bridge);
 
-    if (br_addbr(bridge) < 0) {
-        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not create bridge %s: %s", bridge, strerror(errno));
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not create bridge %s: %s", bridge, strerror(-err));
         return -1;
     }
 
@@ -388,9 +382,10 @@ static int cmd_create(hypervisor_conn_t *conn, int argc, char *argv[])
 static int cmd_delete(hypervisor_conn_t *conn, int argc, char *argv[])
 {
     char *bridge = argv[0];
+    int err = br_delbr(bridge);
 
-    if (br_delbr(bridge) < 0) {
-        hypervisor_send_reply(conn, HSC_ERR_DELETE, 1, "Could not delete bridge %s: %s", bridge, strerror(errno));
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_DELETE, 1, "Could not delete bridge %s: %s", bridge, strerror(-err));
         return -1;
     }
 
@@ -403,9 +398,10 @@ static int cmd_addif(hypervisor_conn_t *conn, int argc, char *argv[])
 {
     char *bridge = argv[0];
     char *interface = argv[1];
+    int err = br_enslave_if(bridge, interface);
 
-    if (br_enslave_if(bridge, interface) < 0) {
-        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not add %s to %s: %s", interface, bridge, strerror(errno));
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not add %s to %s: %s", interface, bridge, strerror(-err));
         return -1;
     }
 
@@ -417,9 +413,10 @@ static int cmd_addif(hypervisor_conn_t *conn, int argc, char *argv[])
 static int cmd_delif(hypervisor_conn_t *conn, int argc, char *argv[])
 {
     char *interface = argv[1];
+    int err = br_release_if(interface);
 
-    if (br_release_if(interface) < 0) {
-        hypervisor_send_reply(conn, HSC_ERR_DELETE, 1, "Could not remove %s from bridge %s: %s", argv[1], argv[0], strerror(errno));
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_DELETE, 1, "Could not remove %s from bridge %s: %s", argv[1], argv[0], strerror(-err));
         return -1;
     }
 
@@ -439,8 +436,9 @@ static int cmd_addip(hypervisor_conn_t *conn, int argc, char *argv[])
         return -1;
     }
 
-    if (br_set_address(bridge, ip, mask) < 0) {
-        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not add IP %s to bridge %s: %s", cidr, bridge, strerror(errno));
+    int err = br_set_address(bridge, ip, mask);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not add IP %s to bridge %s: %s", cidr, bridge, strerror(-err));
         return -1;
     }
 
@@ -455,8 +453,9 @@ static int cmd_setup(hypervisor_conn_t *conn, int argc, char *argv[])
     char *cidr = argv[1];
     struct in_addr ip, mask;
 
-    if (br_addbr(bridge) < 0) {
-        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not create bridge %s: %s", bridge, strerror(errno));
+    int err = br_addbr(bridge);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not create bridge %s: %s", bridge, strerror(-err));
         return -1;
     }
 
@@ -465,8 +464,9 @@ static int cmd_setup(hypervisor_conn_t *conn, int argc, char *argv[])
         return -1;
     }
 
-    if (br_set_address(bridge, ip, mask) < 0) {
-        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not add IP %s to bridge %s: %s", cidr, bridge, strerror(errno));
+    err = br_set_address(bridge, ip, mask);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not add IP %s to bridge %s: %s", cidr, bridge, strerror(-err));
         return -1;
     }
 
@@ -630,7 +630,7 @@ static int cmd_show(hypervisor_conn_t *conn, int argc, char *argv[])
 
     ret = netlink_open(&nlh, NETLINK_ROUTE);
     if (ret < 0) {
-        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not open netlink socket: %s", strerror(errno));
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not open netlink socket: %s", strerror(-ret));
         return -1;
     }
 
@@ -700,7 +700,7 @@ static int cmd_list(hypervisor_conn_t *conn, int argc, char *argv[])
 
     ret = netlink_open(&nlh, NETLINK_ROUTE);
     if (ret < 0) {
-        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not open netlink socket: %s", strerror(errno));
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not open netlink socket: %s", strerror(-ret));
         return -1;
     }
 

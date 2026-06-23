@@ -210,10 +210,13 @@ extern int netlink_transaction(struct nl_handler *handler,
 
 	if (answer->nlmsghdr.nlmsg_type == NLMSG_ERROR) {
 		struct nlmsgerr *err = (struct nlmsgerr*)NLMSG_DATA(answer);
-		errno = -err->error;
-		if (errno)
+		int e = -err->error;
+		/* log before touching errno; perror()/stdio can clobber errno on
+		 * some glibc paths, so never read errno back after it. */
+		errno = e;
+		if (e)
 			perror("Error configuring kernel");
-		return -errno;
+		return -e;
 	}
 	
 	return 0;
