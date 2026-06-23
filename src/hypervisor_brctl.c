@@ -89,7 +89,13 @@ static int br_delbr(const char *bridge)
     struct nl_handler nlh;
     struct nlmsg *msg = NULL, *reply = NULL;
     struct ifinfomsg *ifi;
-    int ret;
+    int ret, ifindex;
+
+    ifindex = if_nametoindex(bridge);
+    if (ifindex == 0) {
+        errno = ENODEV;
+        return -1;
+    }
 
     ret = netlink_open(&nlh, NETLINK_ROUTE);
     if (ret < 0)
@@ -108,7 +114,7 @@ static int br_delbr(const char *bridge)
     ifi = (struct ifinfomsg *)nlmsg_data(msg);
     memset(ifi, 0, sizeof(*ifi));
     ifi->ifi_family = AF_UNSPEC;
-    ifi->ifi_index = if_nametoindex(bridge);
+    ifi->ifi_index = ifindex;
 
     msg->nlmsghdr.nlmsg_type = RTM_DELLINK;
     msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
@@ -445,85 +451,144 @@ static int cmd_setup(hypervisor_conn_t *conn, int argc, char *argv[])
     return 0;
 }
 
+/* One IPv4 address entry collected from an RTM_GETADDR dump. */
+struct br_addr_entry {
+    int ifindex;
+    struct in_addr addr;
+    int prefix;
+};
+
 /*
- * Query the IPv4 address of an interface via RTM_GETADDR dump.
+ * Dump every IPv4 address in a single RTM_GETADDR request.
  * NLM_F_REQUEST alone returns EOPNOTSUPP on modern kernels;
- * NLM_F_DUMP is required.  We filter the response by ifindex.
+ * NLM_F_DUMP is required.  A single recvmsg() datagram may carry
+ * several concatenated nlmsg records, so we walk them with
+ * NLMSG_OK/NLMSG_NEXT rather than only inspecting the first one.
+ *
+ * On success returns 0 and stores a malloc'd array in *out (caller
+ * frees); *count holds the entry count.  Returns -1 on error.
  */
-static int br_get_address(int ifindex, struct in_addr *addr, int *prefix)
+static int br_dump_addresses(struct br_addr_entry **out, int *count)
 {
     struct nl_handler nlh;
     struct nlmsg *msg = NULL, *reply = NULL;
     struct ifaddrmsg *ifa;
-    int ret;
+    struct br_addr_entry *entries = NULL;
+    int n = 0, cap = 0;
+    int ret = -1;
+
+    *out = NULL;
+    *count = 0;
 
     if (netlink_open(&nlh, NETLINK_ROUTE) < 0)
         return -1;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
     reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    if (!msg || !reply) {
-        nlmsg_free(msg);
-        nlmsg_free(reply);
-        netlink_close(&nlh);
-        return -1;
-    }
+    if (!msg || !reply)
+        goto out;
 
     ifa = (struct ifaddrmsg *)nlmsg_data(msg);
     memset(ifa, 0, sizeof(*ifa));
     ifa->ifa_family = AF_UNSPEC;
-    ifa->ifa_index = ifindex;
 
     msg->nlmsghdr.nlmsg_type = RTM_GETADDR;
     msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
     msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifaddrmsg));
 
-    ret = netlink_send(&nlh, msg);
-    if (ret < 0) {
-        nlmsg_free(msg);
-        nlmsg_free(reply);
-        netlink_close(&nlh);
-        return -1;
-    }
+    if (netlink_send(&nlh, msg) < 0)
+        goto out;
 
-    /* Read dump responses; find the address matching ifindex */
-    ret = -1;
     while (1) {
         reply->nlmsghdr.nlmsg_len = NLMSG_ALIGN(NLMSG_GOOD_SIZE);
         int r = netlink_rcv(&nlh, reply);
         if (r <= 0)
             break;
 
-        if (reply->nlmsghdr.nlmsg_type == NLMSG_DONE)
-            break;
-        if (reply->nlmsghdr.nlmsg_type == NLMSG_ERROR)
-            break;
-        if (reply->nlmsghdr.nlmsg_type != RTM_NEWADDR)
-            continue;
+        /* Walk every nlmsg packed into this datagram */
+        struct nlmsghdr *nh;
+        int len = r;
+        for (nh = (struct nlmsghdr *)reply; NLMSG_OK(nh, len); nh = NLMSG_NEXT(nh, len)) {
+            if (nh->nlmsg_type == NLMSG_DONE)
+                goto done;
+            if (nh->nlmsg_type == NLMSG_ERROR)
+                goto done;
+            if (nh->nlmsg_type != RTM_NEWADDR)
+                continue;
 
-        struct ifaddrmsg *ifa_r = (struct ifaddrmsg *)nlmsg_data(reply);
-        if (ifa_r->ifa_family != AF_INET || ifa_r->ifa_index != (unsigned int)ifindex)
-            continue;
+            struct ifaddrmsg *ifa_r = (struct ifaddrmsg *)NLMSG_DATA(nh);
+            if (ifa_r->ifa_family != AF_INET)
+                continue;
 
-        /* Found the right interface */
-        int attrlen = reply->nlmsghdr.nlmsg_len - NLMSG_LENGTH(sizeof(struct ifaddrmsg));
-        struct rtattr *rta = IFA_RTA(ifa_r);
-        *prefix = ifa_r->ifa_prefixlen;
-        while (RTA_OK(rta, attrlen)) {
-            if (rta->rta_type == IFA_ADDRESS || rta->rta_type == IFA_LOCAL) {
-                memcpy(addr, RTA_DATA(rta), sizeof(*addr));
-                ret = 0;
-                break;
+            /* Pick the first IFA_LOCAL/IFA_ADDRESS attribute */
+            int attrlen = nh->nlmsg_len - NLMSG_LENGTH(sizeof(struct ifaddrmsg));
+            struct rtattr *rta = IFA_RTA(ifa_r);
+            struct in_addr a;
+            int found = 0;
+            while (RTA_OK(rta, attrlen)) {
+                if (rta->rta_type == IFA_LOCAL || rta->rta_type == IFA_ADDRESS) {
+                    memcpy(&a, RTA_DATA(rta), sizeof(a));
+                    found = 1;
+                    break;
+                }
+                rta = RTA_NEXT(rta, attrlen);
             }
-            rta = RTA_NEXT(rta, attrlen);
+            if (!found)
+                continue;
+
+            if (n == cap) {
+                int newcap = cap ? cap * 2 : 8;
+                struct br_addr_entry *tmp = realloc(entries, newcap * sizeof(*tmp));
+                if (!tmp)
+                    goto done;   /* keep whatever was collected so far */
+                entries = tmp;
+                cap = newcap;
+            }
+            entries[n].ifindex = ifa_r->ifa_index;
+            entries[n].addr = a;
+            entries[n].prefix = ifa_r->ifa_prefixlen;
+            n++;
         }
-        break;
     }
 
+done:
+    ret = 0;
+out:
     nlmsg_free(msg);
     nlmsg_free(reply);
     netlink_close(&nlh);
+    if (ret == 0) {
+        *out = entries;
+        *count = n;
+    } else {
+        free(entries);
+    }
     return ret;
+}
+
+/*
+ * Look up the IPv4 address of a single interface from a full address dump.
+ * Returns 0 on success, -1 if the interface has no IPv4 address (or on error).
+ */
+static int br_get_address(int ifindex, struct in_addr *addr, int *prefix)
+{
+    struct br_addr_entry *entries;
+    int count, i;
+
+    if (br_dump_addresses(&entries, &count) < 0)
+        return -1;
+
+    for (i = 0; i < count; i++) {
+        if (entries[i].ifindex == ifindex) {
+            *addr = entries[i].addr;
+            *prefix = entries[i].prefix;
+            free(entries);
+            return 0;
+        }
+    }
+
+    free(entries);
+    return -1;
 }
 
 /* brctl show <bridge> — query IP, prefix and flags via netlink */
@@ -606,6 +671,8 @@ static int cmd_list(hypervisor_conn_t *conn, int argc, char *argv[])
     struct nl_handler nlh;
     struct nlmsg *msg = NULL, *reply = NULL;
     struct ifinfomsg *ifi;
+    struct br_addr_entry *addrs = NULL;
+    int addr_count = 0;
     int ret;
 
     ret = netlink_open(&nlh, NETLINK_ROUTE);
@@ -641,58 +708,73 @@ static int cmd_list(hypervisor_conn_t *conn, int argc, char *argv[])
         return -1;
     }
 
+    /* One full address dump, reused for every bridge below */
+    br_dump_addresses(&addrs, &addr_count);
+
     while (1) {
         reply->nlmsghdr.nlmsg_len = NLMSG_ALIGN(NLMSG_GOOD_SIZE);
         ret = netlink_rcv(&nlh, reply);
         if (ret <= 0)
             break;
 
-        if (reply->nlmsghdr.nlmsg_type == NLMSG_DONE)
-            break;
-        if (reply->nlmsghdr.nlmsg_type == NLMSG_ERROR)
-            break;
+        /* Walk every nlmsg packed into this datagram */
+        struct nlmsghdr *nh;
+        int len = ret;
+        for (nh = (struct nlmsghdr *)reply; NLMSG_OK(nh, len); nh = NLMSG_NEXT(nh, len)) {
+            if (nh->nlmsg_type == NLMSG_DONE)
+                goto done;
+            if (nh->nlmsg_type == NLMSG_ERROR)
+                goto done;
+            if (nh->nlmsg_type != RTM_NEWLINK)
+                continue;
 
-        struct ifinfomsg *ifi_r = (struct ifinfomsg *)nlmsg_data(reply);
-        int attrlen = reply->nlmsghdr.nlmsg_len - NLMSG_LENGTH(sizeof(struct ifinfomsg));
-        struct rtattr *rta = IFLA_RTA(ifi_r);
+            struct ifinfomsg *ifi_r = (struct ifinfomsg *)NLMSG_DATA(nh);
+            int attrlen = nh->nlmsg_len - NLMSG_LENGTH(sizeof(struct ifinfomsg));
+            struct rtattr *rta = IFLA_RTA(ifi_r);
 
-        char ifname[IFNAMSIZ] = "";
-        int is_bridge = 0;
-        while (RTA_OK(rta, attrlen)) {
-            if (rta->rta_type == IFLA_IFNAME) {
-                strncpy(ifname, (const char *)RTA_DATA(rta), sizeof(ifname) - 1);
-                ifname[sizeof(ifname) - 1] = '\0';
-            } else if (rta->rta_type == IFLA_LINKINFO) {
-                struct rtattr *info = (struct rtattr *)RTA_DATA(rta);
-                int info_len = RTA_PAYLOAD(rta);
-                while (RTA_OK(info, info_len)) {
-                    if (info->rta_type == IFLA_INFO_KIND &&
-                        strcmp((const char *)RTA_DATA(info), "bridge") == 0) {
-                        is_bridge = 1;
+            char ifname[IFNAMSIZ] = "";
+            int is_bridge = 0;
+            while (RTA_OK(rta, attrlen)) {
+                if (rta->rta_type == IFLA_IFNAME) {
+                    strncpy(ifname, (const char *)RTA_DATA(rta), sizeof(ifname) - 1);
+                    ifname[sizeof(ifname) - 1] = '\0';
+                } else if (rta->rta_type == IFLA_LINKINFO) {
+                    struct rtattr *info = (struct rtattr *)RTA_DATA(rta);
+                    int info_len = RTA_PAYLOAD(rta);
+                    while (RTA_OK(info, info_len)) {
+                        if (info->rta_type == IFLA_INFO_KIND &&
+                            strcmp((const char *)RTA_DATA(info), "bridge") == 0) {
+                            is_bridge = 1;
+                            break;
+                        }
+                        info = RTA_NEXT(info, info_len);
+                    }
+                }
+                rta = RTA_NEXT(rta, attrlen);
+            }
+
+            if (is_bridge && ifname[0]) {
+                char ip_str[INET_ADDRSTRLEN] = "";
+                int prefix = 0, i;
+
+                for (i = 0; i < addr_count; i++) {
+                    if (addrs[i].ifindex == (int)ifi_r->ifi_index) {
+                        inet_ntop(AF_INET, &addrs[i].addr, ip_str, sizeof(ip_str));
+                        prefix = addrs[i].prefix;
                         break;
                     }
-                    info = RTA_NEXT(info, info_len);
                 }
+
+                if (ip_str[0])
+                    hypervisor_send_reply(conn, HSC_INFO_OK, 0, "%s %s/%d", ifname, ip_str, prefix);
+                else
+                    hypervisor_send_reply(conn, HSC_INFO_OK, 0, "%s", ifname);
             }
-            rta = RTA_NEXT(rta, attrlen);
-        }
-
-        if (is_bridge && ifname[0]) {
-            /* Query IP via dedicated helper */
-            struct in_addr addr;
-            char ip_str[INET_ADDRSTRLEN] = "";
-            int prefix = 0;
-
-            if (br_get_address(ifi_r->ifi_index, &addr, &prefix) == 0)
-                inet_ntop(AF_INET, &addr, ip_str, sizeof(ip_str));
-
-            if (ip_str[0])
-                hypervisor_send_reply(conn, HSC_INFO_OK, 0, "%s %s/%d", ifname, ip_str, prefix);
-            else
-                hypervisor_send_reply(conn, HSC_INFO_OK, 0, "%s", ifname);
         }
     }
 
+done:
+    free(addrs);
     nlmsg_free(msg);
     nlmsg_free(reply);
     netlink_close(&nlh);
