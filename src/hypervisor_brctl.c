@@ -363,6 +363,197 @@ static int br_set_address(const char *bridge, struct in_addr ip, struct in_addr 
     return ret;
 }
 
+/*
+ * Generic runtime setter for a u32 bridge attribute (RTM_SETLINK +
+ * IFLA_LINKINFO{IFLA_INFO_KIND="bridge", IFLA_INFO_DATA{attr}}).
+ * Returns 0 on success or a negative errno on failure (NOT -1).
+ */
+static int br_set_bridge_attr(const char *bridge, int attr, unsigned int val)
+{
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL, *reply = NULL;
+    struct ifinfomsg *ifi;
+    struct rtattr *linkinfo, *infodata;
+    int ret, ifindex;
+
+    ifindex = if_nametoindex(bridge);
+    if (ifindex == 0)
+        return -ENODEV;
+
+    ret = netlink_open(&nlh, NETLINK_ROUTE);
+    if (ret < 0)
+        return ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        netlink_close(&nlh);
+        return -ENOMEM;
+    }
+
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_UNSPEC;
+    ifi->ifi_index = ifindex;
+
+    msg->nlmsghdr.nlmsg_type = RTM_NEWLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+
+    linkinfo = nla_begin_nested(msg, IFLA_LINKINFO);
+    nla_put_string(msg, IFLA_INFO_KIND, "bridge");
+    infodata = nla_begin_nested(msg, IFLA_INFO_DATA);
+    nla_put_u32(msg, attr, val);
+    nla_end_nested(msg, infodata);
+    nla_end_nested(msg, linkinfo);
+
+    ret = netlink_transaction(&nlh, msg, reply);
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    netlink_close(&nlh);
+    return ret;
+}
+
+/*
+ * Generic runtime setter for a u16 bridge attribute (same as above but u16).
+ * Returns 0 on success or a negative errno on failure (NOT -1).
+ */
+static int br_set_bridge_attr_u16(const char *bridge, int attr, unsigned short val)
+{
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL, *reply = NULL;
+    struct ifinfomsg *ifi;
+    struct rtattr *linkinfo, *infodata;
+    int ret, ifindex;
+
+    ifindex = if_nametoindex(bridge);
+    if (ifindex == 0)
+        return -ENODEV;
+
+    ret = netlink_open(&nlh, NETLINK_ROUTE);
+    if (ret < 0)
+        return ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        netlink_close(&nlh);
+        return -ENOMEM;
+    }
+
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_UNSPEC;
+    ifi->ifi_index = ifindex;
+
+    msg->nlmsghdr.nlmsg_type = RTM_NEWLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+
+    linkinfo = nla_begin_nested(msg, IFLA_LINKINFO);
+    nla_put_string(msg, IFLA_INFO_KIND, "bridge");
+    infodata = nla_begin_nested(msg, IFLA_INFO_DATA);
+    nla_put_u16(msg, attr, val);
+    nla_end_nested(msg, infodata);
+    nla_end_nested(msg, linkinfo);
+
+    ret = netlink_transaction(&nlh, msg, reply);
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    netlink_close(&nlh);
+    return ret;
+}
+
+/*
+ * Set a time-valued bridge attribute. The kernel stores these in clock_t
+ * (USER_HZ units, i.e. centiseconds on x86); the caller passes seconds.
+ * Returns 0 on success or a negative errno on failure (NOT -1).
+ */
+static int br_set_bridge_attr_secs(const char *bridge, int attr, long secs)
+{
+    long hz = sysconf(_SC_CLK_TCK);
+    if (hz <= 0)
+        hz = 100;
+    return br_set_bridge_attr(bridge, attr, (unsigned int)(secs * hz));
+}
+
+/*
+ * Generic runtime setter for a u32 bridge PORT attribute (RTM_SETLINK +
+ * IFLA_PROTINFO{attr}). Returns 0 on success or a negative errno (NOT -1).
+ */
+static int br_set_port_attr(const char *port, int attr, unsigned int val)
+{
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL, *reply = NULL;
+    struct ifinfomsg *ifi;
+    struct rtattr *protinfo;
+    int ret, ifindex;
+
+    ifindex = if_nametoindex(port);
+    if (ifindex == 0)
+        return -ENODEV;
+
+    ret = netlink_open(&nlh, NETLINK_ROUTE);
+    if (ret < 0)
+        return ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        netlink_close(&nlh);
+        return -ENOMEM;
+    }
+
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_BRIDGE;
+    ifi->ifi_index = ifindex;
+
+    msg->nlmsghdr.nlmsg_type = RTM_SETLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+
+    protinfo = nla_begin_nested(msg, IFLA_PROTINFO);
+    protinfo->rta_type |= NLA_F_NESTED;
+    nla_put_u32(msg, attr, val);
+    nla_end_nested(msg, protinfo);
+
+    ret = netlink_transaction(&nlh, msg, reply);
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    netlink_close(&nlh);
+    return ret;
+}
+
+/* Parse a long integer in [min,max]; returns 0 on success, -1 with errno=EINVAL. */
+static int parse_long(const char *s, long min, long max, long *out)
+{
+    char *end;
+    long v = strtol(s, &end, 0);
+    if (*end != '\0' || v < min || v > max) {
+        errno = EINVAL;
+        return -1;
+    }
+    *out = v;
+    return 0;
+}
+
+/* Parse an on/off token: 1/0, on/off, yes/no, true/false. Returns 1, 0, or -1. */
+static int parse_onoff(const char *s)
+{
+    if (!strcasecmp(s, "on") || !strcasecmp(s, "yes") || !strcasecmp(s, "true") || !strcmp(s, "1"))
+        return 1;
+    if (!strcasecmp(s, "off") || !strcasecmp(s, "no") || !strcasecmp(s, "false") || !strcmp(s, "0"))
+        return 0;
+    return -1;
+}
+
 /* brctl create <bridge> */
 static int cmd_create(hypervisor_conn_t *conn, int argc, char *argv[])
 {
@@ -471,6 +662,259 @@ static int cmd_setup(hypervisor_conn_t *conn, int argc, char *argv[])
     }
 
     hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Bridge %s created with IP %s", bridge, cidr);
+    return 0;
+}
+
+/* brctl stp <bridge> on|off */
+static int cmd_stp(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *bridge = argv[0];
+    int on = parse_onoff(argv[1]);
+    if (on < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid STP value %s (expected on/off)", argv[1]);
+        return -1;
+    }
+    int err = br_set_bridge_attr(bridge, IFLA_BR_STP_STATE, (unsigned int)on);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set STP on %s: %s", bridge, strerror(-err));
+        return -1;
+    }
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "STP %s on bridge %s", on ? "enabled" : "disabled", bridge);
+    return 0;
+}
+
+/* brctl setbridgeprio <bridge> <0-65535> */
+static int cmd_setbridgeprio(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *bridge = argv[0];
+    long prio;
+    if (parse_long(argv[1], 0, 65535, &prio) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid priority %s (expected 0-65535)", argv[1]);
+        return -1;
+    }
+    int err = br_set_bridge_attr(bridge, IFLA_BR_PRIORITY, (unsigned int)prio);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set bridge priority on %s: %s", bridge, strerror(-err));
+        return -1;
+    }
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Bridge priority %ld set on %s", prio, bridge);
+    return 0;
+}
+
+/* brctl setfd <bridge> <secs> — forward delay (2-30s) */
+static int cmd_setfd(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *bridge = argv[0];
+    long secs;
+    if (parse_long(argv[1], 2, 30, &secs) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid forward delay %s (expected 2-30s)", argv[1]);
+        return -1;
+    }
+    int err = br_set_bridge_attr_secs(bridge, IFLA_BR_FORWARD_DELAY, secs);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set forward delay on %s: %s", bridge, strerror(-err));
+        return -1;
+    }
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Forward delay %lds set on %s", secs, bridge);
+    return 0;
+}
+
+/* brctl sethello <bridge> <secs> — hello time (1-10s) */
+static int cmd_sethello(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *bridge = argv[0];
+    long secs;
+    if (parse_long(argv[1], 1, 10, &secs) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid hello time %s (expected 1-10s)", argv[1]);
+        return -1;
+    }
+    int err = br_set_bridge_attr_secs(bridge, IFLA_BR_HELLO_TIME, secs);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set hello time on %s: %s", bridge, strerror(-err));
+        return -1;
+    }
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Hello time %lds set on %s", secs, bridge);
+    return 0;
+}
+
+/* brctl setmaxage <bridge> <secs> — max age (6-40s) */
+static int cmd_setmaxage(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *bridge = argv[0];
+    long secs;
+    if (parse_long(argv[1], 6, 40, &secs) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid max age %s (expected 6-40s)", argv[1]);
+        return -1;
+    }
+    int err = br_set_bridge_attr_secs(bridge, IFLA_BR_MAX_AGE, secs);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set max age on %s: %s", bridge, strerror(-err));
+        return -1;
+    }
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Max age %lds set on %s", secs, bridge);
+    return 0;
+}
+
+/* brctl setageing <bridge> <secs> — MAC ageing time (0 or >=1s; 0 = never age) */
+static int cmd_setageing(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *bridge = argv[0];
+    long secs;
+    if (parse_long(argv[1], 0, 1000000, &secs) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid ageing time %s", argv[1]);
+        return -1;
+    }
+    int err = br_set_bridge_attr_secs(bridge, IFLA_BR_AGEING_TIME, secs);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set ageing time on %s: %s", bridge, strerror(-err));
+        return -1;
+    }
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Ageing time %lds set on %s", secs, bridge);
+    return 0;
+}
+
+/* brctl vlanfiltering <bridge> on|off */
+static int cmd_vlanfiltering(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *bridge = argv[0];
+    int on = parse_onoff(argv[1]);
+    if (on < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid value %s (expected on/off)", argv[1]);
+        return -1;
+    }
+    int err = br_set_bridge_attr(bridge, IFLA_BR_VLAN_FILTERING, (unsigned int)on);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set vlan_filtering on %s: %s", bridge, strerror(-err));
+        return -1;
+    }
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "VLAN filtering %s on bridge %s", on ? "enabled" : "disabled", bridge);
+    return 0;
+}
+
+/* brctl setvlanproto <bridge> <0x8100|0x88a8> */
+static int cmd_setvlanproto(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *bridge = argv[0];
+    long proto;
+    if (parse_long(argv[1], 0, 0xffff, &proto) < 0 ||
+        (proto != 0x8100 && proto != 0x88a8)) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid VLAN protocol %s (expected 0x8100 or 0x88a8)", argv[1]);
+        return -1;
+    }
+    int err = br_set_bridge_attr_u16(bridge, IFLA_BR_VLAN_PROTOCOL, (unsigned short)proto);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set VLAN protocol on %s: %s", bridge, strerror(-err));
+        return -1;
+    }
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "VLAN protocol 0x%04lx set on %s", proto, bridge);
+    return 0;
+}
+
+/* brctl mcastsnoop <bridge> on|off */
+static int cmd_mcastsnoop(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *bridge = argv[0];
+    int on = parse_onoff(argv[1]);
+    if (on < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid value %s (expected on/off)", argv[1]);
+        return -1;
+    }
+    int err = br_set_bridge_attr(bridge, IFLA_BR_MCAST_SNOOPING, (unsigned int)on);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set multicast snooping on %s: %s", bridge, strerror(-err));
+        return -1;
+    }
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Multicast snooping %s on bridge %s", on ? "enabled" : "disabled", bridge);
+    return 0;
+}
+
+/* brctl setgroupfwd <bridge> <mask> — link-local group forwarding mask (0-65535) */
+static int cmd_setgroupfwd(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *bridge = argv[0];
+    long mask;
+    if (parse_long(argv[1], 0, 65535, &mask) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid group_fwd_mask %s", argv[1]);
+        return -1;
+    }
+    int err = br_set_bridge_attr(bridge, IFLA_BR_GROUP_FWD_MASK, (unsigned int)mask);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set group_fwd_mask on %s: %s", bridge, strerror(-err));
+        return -1;
+    }
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "group_fwd_mask 0x%lx set on %s", mask, bridge);
+    return 0;
+}
+
+/* brctl setportprio <bridge> <port> <0-255> */
+static int cmd_setportprio(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *port = argv[1];
+    long prio;
+    if (parse_long(argv[2], 0, 255, &prio) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid port priority %s (expected 0-255)", argv[2]);
+        return -1;
+    }
+    int err = br_set_port_attr(port, IFLA_BRPORT_PRIORITY, (unsigned int)prio);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set port priority on %s: %s", port, strerror(-err));
+        return -1;
+    }
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Port priority %ld set on %s", prio, port);
+    return 0;
+}
+
+/* brctl setpathcost <bridge> <port> <1-65535> */
+static int cmd_setpathcost(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *port = argv[1];
+    long cost;
+    if (parse_long(argv[2], 1, 65535, &cost) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid path cost %s (expected 1-65535)", argv[2]);
+        return -1;
+    }
+    int err = br_set_port_attr(port, IFLA_BRPORT_COST, (unsigned int)cost);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set path cost on %s: %s", port, strerror(-err));
+        return -1;
+    }
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Path cost %ld set on %s", cost, port);
+    return 0;
+}
+
+/* brctl setportstate <bridge> <port> <0-3> (0=disabled,1=listening,2=learning,3=forwarding) */
+static int cmd_setportstate(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *port = argv[1];
+    long state;
+    if (parse_long(argv[2], 0, 3, &state) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid port state %s (expected 0-3)", argv[2]);
+        return -1;
+    }
+    int err = br_set_port_attr(port, IFLA_BRPORT_STATE, (unsigned int)state);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set port state on %s: %s", port, strerror(-err));
+        return -1;
+    }
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Port state %ld set on %s", state, port);
+    return 0;
+}
+
+/* brctl hairpin <bridge> <port> on|off */
+static int cmd_hairpin(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *port = argv[1];
+    int on = parse_onoff(argv[2]);
+    if (on < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid value %s (expected on/off)", argv[2]);
+        return -1;
+    }
+    int err = br_set_port_attr(port, IFLA_BRPORT_MODE, (unsigned int)(on ? BRIDGE_MODE_HAIRPIN : 0));
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set hairpin mode on %s: %s", port, strerror(-err));
+        return -1;
+    }
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Hairpin mode %s on %s", on ? "enabled" : "disabled", port);
     return 0;
 }
 
@@ -817,6 +1261,22 @@ static hypervisor_cmd_t brctl_cmd_array[] = {
    { "show",  1, 1, cmd_show, NULL },
    { "delif", 2, 2, cmd_delif, NULL },
    { "list",  0, 0, cmd_list, NULL },
+   /* bridge-level parameters */
+   { "stp", 2, 2, cmd_stp, NULL },
+   { "setbridgeprio", 2, 2, cmd_setbridgeprio, NULL },
+   { "setfd", 2, 2, cmd_setfd, NULL },
+   { "sethello", 2, 2, cmd_sethello, NULL },
+   { "setmaxage", 2, 2, cmd_setmaxage, NULL },
+   { "setageing", 2, 2, cmd_setageing, NULL },
+   { "vlanfiltering", 2, 2, cmd_vlanfiltering, NULL },
+   { "setvlanproto", 2, 2, cmd_setvlanproto, NULL },
+   { "mcastsnoop", 2, 2, cmd_mcastsnoop, NULL },
+   { "setgroupfwd", 2, 2, cmd_setgroupfwd, NULL },
+   /* port-level parameters */
+   { "setportprio", 3, 3, cmd_setportprio, NULL },
+   { "setpathcost", 3, 3, cmd_setpathcost, NULL },
+   { "setportstate", 3, 3, cmd_setportstate, NULL },
+   { "hairpin", 3, 3, cmd_hairpin, NULL },
    { NULL, -1, -1, NULL, NULL },
 };
 
