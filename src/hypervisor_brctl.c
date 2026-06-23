@@ -128,7 +128,9 @@ static int br_delbr(const char *bridge)
 }
 
 /*
- * Enslave a port interface to a bridge (RTM_SETLINK + IFLA_MASTER).
+ * Enslave a port interface to a bridge (RTM_SETLINK + IFLA_MASTER) and
+ * bring the port up (RTM_SETLINK + IFF_UP), matching the legacy ioctl
+ * implementation which set SIOCSIFFLAGS|IFF_UP after adding the port.
  */
 static int br_enslave_if(const char *bridge, const char *port)
 {
@@ -158,6 +160,7 @@ static int br_enslave_if(const char *bridge, const char *port)
         return -1;
     }
 
+    /* Step 1 – enslave the port to the bridge */
     ifi = (struct ifinfomsg *)nlmsg_data(msg);
     memset(ifi, 0, sizeof(*ifi));
     ifi->ifi_family = AF_UNSPEC;
@@ -168,6 +171,26 @@ static int br_enslave_if(const char *bridge, const char *port)
     msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
 
     nla_put_u32(msg, IFLA_MASTER, br_ifindex);
+
+    ret = netlink_transaction(&nlh, msg, reply);
+    if (ret < 0) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        netlink_close(&nlh);
+        return ret;
+    }
+
+    /* Step 2 – bring the port up (backward compat with the ioctl path) */
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_UNSPEC;
+    ifi->ifi_index = port_ifindex;
+    ifi->ifi_change |= IFF_UP;
+    ifi->ifi_flags |= IFF_UP;
+
+    msg->nlmsghdr.nlmsg_type = RTM_SETLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
 
     ret = netlink_transaction(&nlh, msg, reply);
     nlmsg_free(msg);
