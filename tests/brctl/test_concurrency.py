@@ -62,7 +62,7 @@ def main():
             try:
                 cl = ub.connect()
                 while _time.time() - _start < 6 and _err[0] is None:
-                    cl.send("brctl show docker0")  # keep connection warm; no crash is enough
+                    cl.send("hypervisor version")  # keep connection warm; no crash is enough
                 cl.close()
             except Exception as e:
                 _err[0] = str(e)

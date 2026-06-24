@@ -35,7 +35,7 @@ def main():
                 fd_after >= 0 and fd_after <= fd_before + 2,
                 "fds %d -> %d" % (fd_before, fd_after))
 
-        r.check("still responsive after stress", c.code("brctl show docker0").startswith("100"))
+        r.check("still responsive after stress", c.code("hypervisor version").startswith("100"))
         c.close()
 
     r.check("no residual bridges", no_residual(prefix="fdleak"))
