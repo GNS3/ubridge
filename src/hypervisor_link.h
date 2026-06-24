@@ -18,15 +18,9 @@
  *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef HYPERVISOR_BRCTL_H_
-#define HYPERVISOR_BRCTL_H_
+#ifndef HYPERVISOR_LINK_H_
+#define HYPERVISOR_LINK_H_
 
-#include <netinet/in.h>
+int hypervisor_link_init(void);
 
-int hypervisor_brctl_init(void);
-
-/* Shared helpers (also used by the link module) */
-int parse_cidr(const char *cidr, struct in_addr *ip, struct in_addr *mask);
-int br_set_address(const char *iface, struct in_addr ip, struct in_addr mask);
-
-#endif /* !HYPERVISOR_BRCTL_H_ */
+#endif /* !HYPERVISOR_LINK_H_ */
