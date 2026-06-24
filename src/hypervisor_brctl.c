@@ -197,24 +197,20 @@ static int br_enslave_if(const char *bridge, const char *port)
 }
 
 /*
- * Release a port from a specific bridge (RTM_SETLINK + IFLA_MASTER = 0).
- * The port's current master is verified to match the given bridge first,
- * so a port enslaved to a different bridge (or none) is rejected with
- * -EINVAL — matching legacy BRCTL_DEL_IF semantics.
- * Returns 0 on success or a negative errno on failure (NOT -1).
+ * Query a port's current master ifindex via RTM_GETLINK.
+ * Returns the master ifindex (0 if the port has no master) or a
+ * negative errno on failure.
  */
-static int br_release_if(const char *bridge, const char *port)
+static int br_get_master(const char *port)
 {
     struct nl_handler nlh;
     struct nlmsg *msg = NULL, *reply = NULL;
     struct ifinfomsg *ifi;
     struct rtattr *rta;
-    int ret, bridge_ifindex, port_ifindex, attrlen;
-    int master = 0;
+    int ret, port_ifindex, attrlen, master = 0;
 
-    bridge_ifindex = if_nametoindex(bridge);
     port_ifindex = if_nametoindex(port);
-    if (bridge_ifindex == 0 || port_ifindex == 0)
+    if (port_ifindex == 0)
         return -ENODEV;
 
     ret = netlink_open(&nlh, NETLINK_ROUTE);
@@ -230,12 +226,11 @@ static int br_release_if(const char *bridge, const char *port)
         return -ENOMEM;
     }
 
-    /* Step 1 – query the port's current master to verify it is enslaved
-     * to the bridge the caller asked about. */
     ifi = (struct ifinfomsg *)nlmsg_data(msg);
     memset(ifi, 0, sizeof(*ifi));
     ifi->ifi_family = AF_UNSPEC;
     ifi->ifi_index = port_ifindex;
+
     msg->nlmsghdr.nlmsg_type = RTM_GETLINK;
     msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST;
     msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
@@ -259,14 +254,66 @@ static int br_release_if(const char *bridge, const char *port)
         rta = RTA_NEXT(rta, attrlen);
     }
 
-    if (master != bridge_ifindex) {
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    netlink_close(&nlh);
+    return master;
+}
+
+/*
+ * Verify that a port is currently enslaved to the given bridge.
+ * Returns 0 on match, -EINVAL if the port belongs to a different bridge
+ * (or none), or a negative errno from the master query.
+ */
+static int br_check_master(const char *bridge, const char *port)
+{
+    int bridge_ifindex = if_nametoindex(bridge);
+    int master;
+
+    if (bridge_ifindex == 0)
+        return -ENODEV;
+    master = br_get_master(port);
+    if (master < 0)
+        return master;
+    return (master == bridge_ifindex) ? 0 : -EINVAL;
+}
+
+/*
+ * Release a port from a specific bridge (RTM_SETLINK + IFLA_MASTER = 0).
+ * The port's current master is verified to match the given bridge first,
+ * so a port enslaved to a different bridge (or none) is rejected with
+ * -EINVAL — matching legacy BRCTL_DEL_IF semantics.
+ * Returns 0 on success or a negative errno on failure (NOT -1).
+ */
+static int br_release_if(const char *bridge, const char *port)
+{
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL, *reply = NULL;
+    struct ifinfomsg *ifi;
+    int ret, port_ifindex;
+
+    /* Verify the port is enslaved to the specified bridge first. */
+    ret = br_check_master(bridge, port);
+    if (ret < 0)
+        return ret;
+
+    port_ifindex = if_nametoindex(port);
+    if (port_ifindex == 0)
+        return -ENODEV;
+
+    ret = netlink_open(&nlh, NETLINK_ROUTE);
+    if (ret < 0)
+        return ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
         nlmsg_free(msg);
         nlmsg_free(reply);
         netlink_close(&nlh);
-        return -EINVAL;
+        return -ENOMEM;
     }
 
-    /* Step 2 – release the port from the bridge */
     ifi = (struct ifinfomsg *)nlmsg_data(msg);
     memset(ifi, 0, sizeof(*ifi));
     ifi->ifi_family = AF_UNSPEC;
@@ -531,15 +578,22 @@ static int br_set_bridge_attr_secs(const char *bridge, int attr, long secs)
 
 /*
  * Generic runtime setter for a u32 bridge PORT attribute (RTM_SETLINK +
- * IFLA_PROTINFO{attr}). Returns 0 on success or a negative errno (NOT -1).
+ * IFLA_PROTINFO{attr}). The port must be enslaved to the given bridge,
+ * matching classic brctl <bridge> <port> scoping; otherwise -EINVAL.
+ * Returns 0 on success or a negative errno (NOT -1).
  */
-static int br_set_port_attr(const char *port, int attr, unsigned int val)
+static int br_set_port_attr(const char *bridge, const char *port, int attr, unsigned int val)
 {
     struct nl_handler nlh;
     struct nlmsg *msg = NULL, *reply = NULL;
     struct ifinfomsg *ifi;
     struct rtattr *protinfo;
     int ret, ifindex;
+
+    /* Verify the port belongs to the specified bridge. */
+    ret = br_check_master(bridge, port);
+    if (ret < 0)
+        return ret;
 
     ifindex = if_nametoindex(port);
     if (ifindex == 0)
@@ -908,7 +962,7 @@ static int cmd_setportprio(hypervisor_conn_t *conn, int argc, char *argv[])
         hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid port priority %s (expected 0-255)", argv[2]);
         return -1;
     }
-    int err = br_set_port_attr(port, IFLA_BRPORT_PRIORITY, (unsigned int)prio);
+    int err = br_set_port_attr(argv[0], port, IFLA_BRPORT_PRIORITY, (unsigned int)prio);
     if (err < 0) {
         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set port priority on %s: %s", port, strerror(-err));
         return -1;
@@ -926,7 +980,7 @@ static int cmd_setpathcost(hypervisor_conn_t *conn, int argc, char *argv[])
         hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid path cost %s (expected 1-65535)", argv[2]);
         return -1;
     }
-    int err = br_set_port_attr(port, IFLA_BRPORT_COST, (unsigned int)cost);
+    int err = br_set_port_attr(argv[0], port, IFLA_BRPORT_COST, (unsigned int)cost);
     if (err < 0) {
         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set path cost on %s: %s", port, strerror(-err));
         return -1;
@@ -944,7 +998,7 @@ static int cmd_setportstate(hypervisor_conn_t *conn, int argc, char *argv[])
         hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid port state %s (expected 0-3)", argv[2]);
         return -1;
     }
-    int err = br_set_port_attr(port, IFLA_BRPORT_STATE, (unsigned int)state);
+    int err = br_set_port_attr(argv[0], port, IFLA_BRPORT_STATE, (unsigned int)state);
     if (err < 0) {
         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set port state on %s: %s", port, strerror(-err));
         return -1;
@@ -962,7 +1016,7 @@ static int cmd_hairpin(hypervisor_conn_t *conn, int argc, char *argv[])
         hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid value %s (expected on/off)", argv[2]);
         return -1;
     }
-    int err = br_set_port_attr(port, IFLA_BRPORT_MODE, (unsigned int)(on ? BRIDGE_MODE_HAIRPIN : 0));
+    int err = br_set_port_attr(argv[0], port, IFLA_BRPORT_MODE, (unsigned int)(on ? BRIDGE_MODE_HAIRPIN : 0));
     if (err < 0) {
         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set hairpin mode on %s: %s", port, strerror(-err));
         return -1;
