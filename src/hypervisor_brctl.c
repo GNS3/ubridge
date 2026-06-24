@@ -649,14 +649,16 @@ static int cmd_setup(hypervisor_conn_t *conn, int argc, char *argv[])
     char *cidr = argv[1];
     struct in_addr ip, mask;
 
-    int err = br_addbr(bridge);
-    if (err < 0) {
-        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not create bridge %s: %s", bridge, strerror(-err));
+    /* Validate the CIDR first so a bad address doesn't leave a
+     * half-created bridge behind. */
+    if (parse_cidr(cidr, &ip, &mask) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid IP address %s", cidr);
         return -1;
     }
 
-    if (parse_cidr(cidr, &ip, &mask) < 0) {
-        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid IP address %s", cidr);
+    int err = br_addbr(bridge);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not create bridge %s: %s", bridge, strerror(-err));
         return -1;
     }
 
