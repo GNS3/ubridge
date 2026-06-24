@@ -8,7 +8,7 @@ This test deliberately uses the in-repo `./ubridge` binary, which is built
 without capabilities (the installed `/usr/local/bin/ubridge` has them via
 `make install`). Run it from the repo root.
 """
-import os
+import os.path
 
 from common import Client, Results, Ubridge
 
@@ -16,8 +16,10 @@ from common import Client, Results, Ubridge
 def main():
     r = Results()
 
-    # Force the no-cap in-repo build. Skip gracefully if it doesn't exist.
-    local = "./ubridge"
+    # Force the no-cap in-repo build, resolved relative to this test file
+    # (run_all.py runs from tests/brctl/, so the binary is two levels up).
+    _repo = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    local = os.path.join(_repo, "ubridge")
     if not os.path.exists(local):
         print("SKIP: ./ubridge not built (run `make` in the repo root).")
         return 0

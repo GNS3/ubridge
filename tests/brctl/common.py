@@ -13,11 +13,18 @@ def ubridge_binary():
     """Return the path to a usable ubridge binary.
 
     Prefers the installed binary (which has cap_net_admin via `make install`);
-    falls back to the in-repo build (no caps — used by test_no_privs).
+    falls back to the in-repo build (no caps — used by test_no_privs). Works
+    whether run from the repo root or from tests/brctl/.
     """
-    for path in ("/usr/local/bin/ubridge", "./ubridge"):
-        if os.path.exists(path):
-            return path
+    _here = os.path.dirname(os.path.abspath(__file__))
+    for path in (
+        "/usr/local/bin/ubridge",
+        os.path.join(_here, "..", "..", "ubridge"),  # from tests/brctl/.
+        "./ubridge",
+    ):
+        p = os.path.normpath(path)
+        if os.path.exists(p):
+            return p
     raise RuntimeError("ubridge binary not found (run `make` or `make install`)")
 
 
