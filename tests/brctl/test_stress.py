@@ -11,8 +11,12 @@ import time
 
 from common import Ubridge, Results, no_residual
 
-CYCLES = 400      # create/delete iterations
-MANY = 60         # bridges created simultaneously for list-count check
+CYCLES = 40000    # create/delete iterations (~2-3 min)
+FD_CYCLES = 10000 # fd-leak check iterations
+MANY = 7000       # bridges created simultaneously for list-count check
+# Note: 7000 bridges is within the default kernel max_net_devices (8192)
+# and consumes ~14 MB of slab memory.  Creating 7000 bridges + one list +
+# deleting 7000 bridges takes about 15 seconds.
 
 
 def count_fds(pid):
@@ -42,7 +46,7 @@ def main():
         # --- fd usage stable before/after churn ---
         # (do another batch and confirm fds don't climb)
         fds_before = count_fds(ub.proc.pid)
-        for i in range(100):
+        for i in range(FD_CYCLES):
             c.send("brctl create fdleak")
             c.send("brctl delete fdleak")
         fds_after = count_fds(ub.proc.pid)
