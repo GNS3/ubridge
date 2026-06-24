@@ -25,7 +25,10 @@ def main():
         return 0
 
     import subprocess
-    caps = subprocess.run(["getcap", local], capture_output=True, text=True).stdout
+    try:
+        caps = subprocess.run(["getcap", local], capture_output=True, text=True).stdout
+    except FileNotFoundError:
+        caps = ""  # getcap not installed, assume no caps
     if "cap_net_admin" in caps:
         print("NOTE: ./ubridge has cap_net_admin — this test won't be meaningful.")
         print("      Build a clean copy: `cp ubridge /tmp/ubridge-nocap` and edit this file.")
