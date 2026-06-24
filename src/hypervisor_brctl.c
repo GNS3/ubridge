@@ -988,8 +988,13 @@ static int br_dump_addresses(struct br_addr_entry **out, int *count)
         for (nh = (struct nlmsghdr *)reply; NLMSG_OK(nh, len); nh = NLMSG_NEXT(nh, len)) {
             if (nh->nlmsg_type == NLMSG_DONE)
                 goto done;
-            if (nh->nlmsg_type == NLMSG_ERROR)
-                goto done;
+            if (nh->nlmsg_type == NLMSG_ERROR) {
+                /* A dump never contains NLMSG_ERROR on success; treat it
+                 * as a real failure rather than end-of-dump so kernel
+                 * errors (permissions, malformed request) aren't hidden. */
+                ret = -1;
+                goto out;
+            }
             if (nh->nlmsg_type != RTM_NEWADDR)
                 continue;
 
@@ -1200,8 +1205,16 @@ static int cmd_list(hypervisor_conn_t *conn, int argc, char *argv[])
         for (nh = (struct nlmsghdr *)reply; NLMSG_OK(nh, len); nh = NLMSG_NEXT(nh, len)) {
             if (nh->nlmsg_type == NLMSG_DONE)
                 goto done;
-            if (nh->nlmsg_type == NLMSG_ERROR)
-                goto done;
+            if (nh->nlmsg_type == NLMSG_ERROR) {
+                /* A dump never contains NLMSG_ERROR on success; report it
+                 * rather than masking it as a successful empty result. */
+                free(addrs);
+                nlmsg_free(msg);
+                nlmsg_free(reply);
+                netlink_close(&nlh);
+                hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "netlink dump error");
+                return -1;
+            }
             if (nh->nlmsg_type != RTM_NEWLINK)
                 continue;
 
