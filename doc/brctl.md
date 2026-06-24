@@ -183,7 +183,7 @@ test('brctl delete nope', '207')            # missing
 test('brctl addip regtest0 1.2.3.4', '204') # no slash
 test('brctl addip regtest0 9.9.9.9/33', '204')
 test('brctl setup nonexistent 1.2.3.4', '204')
-test('brctl delete nonexistent', '100')
+test('brctl delete nonexistent', '207')      # never created -> ENODEV
 
 # === BRIDGE PARAMETERS ===
 t('brctl stp regtest1 on')
