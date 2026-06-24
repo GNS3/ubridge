@@ -1171,7 +1171,7 @@ static int br_get_address(int ifindex, struct in_addr *addr, int *prefix)
 }
 
 /*
-/* brctl show <bridge> — query IP, prefix and flags via netlink */
+ * brctl show <bridge> — query IP, prefix and flags via netlink */
 static int cmd_show(hypervisor_conn_t *conn, int argc, char *argv[])
 {
     const char *bridge = argv[0];
