@@ -358,7 +358,7 @@ static int parse_cidr(const char *cidr, struct in_addr *ip, struct in_addr *mask
     *slash = '\0';
 
     prefix = strtol(slash + 1, &end, 10);
-    if (*end != '\0' || prefix < 0 || prefix > 32) {
+    if (*end != '\0' || end == slash + 1 || prefix < 0 || prefix > 32) {
         errno = EINVAL;
         return -1;
     }
