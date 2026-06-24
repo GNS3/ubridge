@@ -197,18 +197,24 @@ static int br_enslave_if(const char *bridge, const char *port)
 }
 
 /*
- * Release a port from its bridge (RTM_SETLINK + IFLA_MASTER = 0).
+ * Release a port from a specific bridge (RTM_SETLINK + IFLA_MASTER = 0).
+ * The port's current master is verified to match the given bridge first,
+ * so a port enslaved to a different bridge (or none) is rejected with
+ * -EINVAL — matching legacy BRCTL_DEL_IF semantics.
  * Returns 0 on success or a negative errno on failure (NOT -1).
  */
-static int br_release_if(const char *port)
+static int br_release_if(const char *bridge, const char *port)
 {
     struct nl_handler nlh;
     struct nlmsg *msg = NULL, *reply = NULL;
     struct ifinfomsg *ifi;
-    int ret, port_ifindex;
+    struct rtattr *rta;
+    int ret, bridge_ifindex, port_ifindex, attrlen;
+    int master = 0;
 
+    bridge_ifindex = if_nametoindex(bridge);
     port_ifindex = if_nametoindex(port);
-    if (port_ifindex == 0)
+    if (bridge_ifindex == 0 || port_ifindex == 0)
         return -ENODEV;
 
     ret = netlink_open(&nlh, NETLINK_ROUTE);
@@ -224,6 +230,43 @@ static int br_release_if(const char *port)
         return -ENOMEM;
     }
 
+    /* Step 1 – query the port's current master to verify it is enslaved
+     * to the bridge the caller asked about. */
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_UNSPEC;
+    ifi->ifi_index = port_ifindex;
+    msg->nlmsghdr.nlmsg_type = RTM_GETLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+
+    ret = netlink_transaction(&nlh, msg, reply);
+    if (ret < 0) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        netlink_close(&nlh);
+        return ret;
+    }
+
+    ifi = (struct ifinfomsg *)nlmsg_data(reply);
+    attrlen = reply->nlmsghdr.nlmsg_len - NLMSG_LENGTH(sizeof(struct ifinfomsg));
+    rta = IFLA_RTA(ifi);
+    while (RTA_OK(rta, attrlen)) {
+        if (rta->rta_type == IFLA_MASTER) {
+            memcpy(&master, RTA_DATA(rta), sizeof(master));
+            break;
+        }
+        rta = RTA_NEXT(rta, attrlen);
+    }
+
+    if (master != bridge_ifindex) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        netlink_close(&nlh);
+        return -EINVAL;
+    }
+
+    /* Step 2 – release the port from the bridge */
     ifi = (struct ifinfomsg *)nlmsg_data(msg);
     memset(ifi, 0, sizeof(*ifi));
     ifi->ifi_family = AF_UNSPEC;
@@ -609,7 +652,7 @@ static int cmd_addif(hypervisor_conn_t *conn, int argc, char *argv[])
 static int cmd_delif(hypervisor_conn_t *conn, int argc, char *argv[])
 {
     char *interface = argv[1];
-    int err = br_release_if(interface);
+    int err = br_release_if(argv[0], interface);
 
     if (err < 0) {
         hypervisor_send_reply(conn, HSC_ERR_DELETE, 1, "Could not remove %s from bridge %s: %s", argv[1], argv[0], strerror(-err));
