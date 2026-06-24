@@ -664,6 +664,9 @@ static int cmd_setup(hypervisor_conn_t *conn, int argc, char *argv[])
 
     err = br_set_address(bridge, ip, mask);
     if (err < 0) {
+        /* setup is create+addip in one shot; roll back the bridge on
+         * failure so we don't leave a half-configured bridge behind. */
+        br_delbr(bridge);
         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not add IP %s to bridge %s: %s", cidr, bridge, strerror(-err));
         return -1;
     }
