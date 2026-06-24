@@ -29,23 +29,22 @@ def main():
         list_reply = c.code("brctl list")
         r.check("list works without caps (read-only)", list_reply.startswith("100"), list_reply)
 
-        # Probe: if create succeeds the binary has effective privilege
-        # (e.g. file caps or ambient caps) — skip mutation tests.
+        # Probe: if create succeeds the binary has effective privilege;
+        # skip mutation tests (cannot test no-cap path on this binary).
         code_probe = c.code("brctl create privprobe")
         if code_probe == "100":
-            # Clean up and bail (cannot test no-cap path on this binary).
             c.send("brctl delete privprobe")
             c.close()
-            msg = "binary has effective caps — mutation rejection not testable"
-            r.check(msg, True, "skipping")
-        else:
-            # Binary is unprivileged: all mutations must be rejected.
-            r.check("create -> 206/EPERM",
-                    code_probe in ("206", "207"), "got %s" % code_probe)
-            r.check("delete missing -> 206/EPERM",
-                    c.code("brctl delete noprivtest") in ("206", "207"))
+            print("SKIP: binary has effective caps — mutation rejection not testable")
+            return 0
 
-        r.check("process alive after test", c.code("brctl list").startswith("100"))
+        # Binary is unprivileged: all mutations must be rejected.
+        r.check("create -> 206/EPERM",
+                code_probe in ("206", "207"), "got %s" % code_probe)
+        r.check("delete missing -> 206/EPERM",
+                c.code("brctl delete noprivtest") in ("206", "207"))
+        r.check("process alive after test",
+                c.code("brctl list").startswith("100"))
 
         c.close()
 
