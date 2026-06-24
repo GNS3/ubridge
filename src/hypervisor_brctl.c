@@ -1117,7 +1117,15 @@ static int cmd_show(hypervisor_conn_t *conn, int argc, char *argv[])
 
     char flags_str[64] = "";
     ret = netlink_transaction(&nlh, msg, reply);
-    if (ret == 0) {
+    if (ret < 0) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        netlink_close(&nlh);
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not query bridge %s flags: %s", bridge, strerror(-ret));
+        return -1;
+    }
+
+    {
         struct ifinfomsg *ifi_r = (struct ifinfomsg *)nlmsg_data(reply);
         if (ifi_r->ifi_flags & IFF_UP)      strcat(flags_str, "UP ");
         if (ifi_r->ifi_flags & IFF_RUNNING) strcat(flags_str, "RUNNING ");
