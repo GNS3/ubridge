@@ -253,6 +253,10 @@ static int parse_cidr(const char *cidr, struct in_addr *ip, struct in_addr *mask
     char *slash, *end;
     long prefix;
 
+    if (strlen(cidr) >= sizeof(buf)) {
+        errno = EINVAL;
+        return -1;
+    }
     strncpy(buf, cidr, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
 
