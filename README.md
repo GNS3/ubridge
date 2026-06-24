@@ -492,15 +492,6 @@ brctl show br0
 100-br0 192.168.1.1/24 UP
 ```
 
-- **brctl list**: List all Linux bridges with their IP addresses.
-
-``` {.bash}
-brctl list
-100 br0 192.168.1.1/24
-100 br1 10.0.0.1/16
-100-OK
-```
-
 #### Bridge-level parameters
 
 - **brctl stp** *\<bridge_name\>* **on**|**off**:

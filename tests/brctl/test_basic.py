@@ -20,10 +20,6 @@ def main():
                 "10.0.1.1/24" in c.send("brctl show regtest1") and "UP" in c.send("brctl show regtest1"))
         r.check("show regtest0 bare", c.send("brctl show regtest0")[:3] == "100")
 
-        list_out = c.send("brctl list")
-        r.check("list mentions regtest0/1",
-                "regtest0" in list_out and "regtest1" in list_out)
-
         import subprocess as _sp
         _has_ubtest = _sp.run(["ip","-o","link","show","ubtest"]).returncode == 0
         if _has_ubtest:

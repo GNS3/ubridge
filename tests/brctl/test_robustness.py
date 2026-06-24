@@ -62,7 +62,7 @@ def main():
         c.send("brctl delete robtest")
 
         # --- the connection itself is still alive after all that abuse ---
-        r.check("connection still alive", c.code("brctl list").startswith("100"))
+        r.check("connection still alive", c.code("brctl show docker0").startswith("100"))
 
         c.close()
 

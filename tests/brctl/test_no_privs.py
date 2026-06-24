@@ -25,9 +25,9 @@ def main():
     with Ubridge(port=13007, binary=local) as ub:
         c = ub.connect()
 
-        # read-only list should always work
-        list_reply = c.code("brctl list")
-        r.check("list works without caps (read-only)", list_reply.startswith("100"), list_reply)
+        # read-only show should always work
+        list_reply = c.code("brctl show docker0")
+        r.check("show works without caps (read-only)", list_reply.startswith("100"), list_reply)
 
         # Probe: if create succeeds the binary has effective privilege;
         # skip mutation tests (cannot test no-cap path on this binary).
@@ -44,7 +44,7 @@ def main():
         r.check("delete missing -> 206/EPERM",
                 c.code("brctl delete noprivtest") in ("206", "207"))
         r.check("process alive after test",
-                c.code("brctl list").startswith("100"))
+                c.code("brctl show docker0").startswith("100"))
 
         c.close()
 

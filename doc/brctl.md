@@ -18,8 +18,7 @@ second is the command, the rest are arguments. Argument counts are enforced by
 Replies are one line per result, formatted `NNN<sep>message`:
 
 - `NNN` — 3-digit status code (see below)
-- `<sep>` — `-` for the final reply of a command, space (` `) when more lines
-  follow (e.g. each bridge in a `list` dump)
+- `<sep>` — `-` for the final reply of a command
 
 ### Status codes
 
@@ -34,7 +33,7 @@ Replies are one line per result, formatted `NNN<sep>message`:
 ## Privileges
 
 All commands require `CAP_NET_ADMIN` (bridge create/delete, address
-assignment, parameter changes). `brctl list`/`show` are read-only but still go
+assignment, parameter changes). `brctl show` is read-only but still go
 through netlink. In practice the ubridge binary is granted capabilities:
 
 ```bash
@@ -55,7 +54,6 @@ getcap $(which ubridge) # verify
 | `addip <bridge> <ip/prefix>` | 2 | Assign an IPv4 address (`RTM_NEWADDR`) and bring the bridge UP. CIDR must include a `/` and prefix ≤ 32. |
 | `setup <bridge> <ip/prefix>` | 2 | `create` + `addip` in one step. Validates the CIDR **before** creating; rolls back the bridge if `addip` fails. |
 | `show <bridge>` | 1 | Query the bridge's IPv4 address/prefix and operational flags (`UP`/`RUNNING`). |
-| `list` | 0 | Enumerate all Linux bridges with their IPv4 addresses. |
 
 ### Bridge-level parameters (10)
 
@@ -104,7 +102,7 @@ already be enslaved to the bridge; otherwise `-EINVAL`.
 - **Bridge vs port attribute transport** — bridge attributes go through
   `RTM_NEWLINK`; port attributes through `RTM_SETLINK` with `AF_BRIDGE`.
   Mixing them up makes the kernel silently ignore the change.
-- **dump parsing** — `cmd_list` and `br_dump_addresses` walk every `nlmsg`
+- **dump parsing** — `br_dump_addresses` walks every `nlmsg`
   packed into a `recvmsg()` datagram via `NLMSG_OK`/`NLMSG_NEXT` (a datagram
   may carry several coalesced records). `NLMSG_ERROR` is treated as a real
   failure, never as end-of-dump.
@@ -118,7 +116,7 @@ already be enslaved to the bridge; otherwise `-EINVAL`.
 | Pitfall | Effect | Fix |
 |---------|--------|-----|
 | `perror()` in `netlink_transaction` clobbers `errno` → `return -errno` returns `EINVAL(22)` instead of the real kernel error (e.g. `EEXIST`) | Duplicate `create` reported "Invalid argument" | Return `-err->error` directly from the ACK, never read `errno` back after `perror()` |
-| Dump loop only inspected the first `nlmsg` per datagram | `list`/`show` silently dropped interfaces/addresses when the kernel coalesced messages | Inner `NLMSG_OK`/`NLMSG_NEXT` loop |
+| Dump loop only inspected the first `nlmsg` per datagram | `br_get_address` silently dropped addresses when the kernel coalesced messages | Inner `NLMSG_OK`/`NLMSG_NEXT` loop |
 | Bridge params sent via `RTM_SETLINK` | Kernel silently ignored them (all params stayed at defaults) | Use `RTM_NEWLINK` for bridge attributes |
 | Port params missing `ifi_family=AF_BRIDGE` and `NLA_F_NESTED` on `IFLA_PROTINFO` | Kernel silently ignored port attribute changes | Set `AF_BRIDGE`; set `NLA_F_NESTED` on the nested `IFLA_PROTINFO` header |
 | `parse_cidr` truncated overlong input with `strncpy` | Invalid overlong CIDR could look valid after truncation | Reject `strlen(cidr) >= sizeof(buf)` up front |
@@ -163,7 +161,7 @@ Seven suites (127 tests in total):
 |-------|-------|-------|
 | `test_basic` | 22 | Lifecycle, common errors, bridge scoping |
 | `test_boundary` | 58 | Boundary values for all ranged parameters, kernel-side verification |
-| `test_concurrency` | 6 | Multi-client create races, list under churn |
+| `test_concurrency` | 6 | Multi-client create races, show under churn |
 | `test_robustness` | 20 | Malformed input, overlong names, IPv6, crash-freedom |
 | `test_state` | 12 | addif/addip idempotency, UP/DOWN transitions, ports on delete |
 | `test_stress` | 5 | 400 create/delete cycles, fd stability, dump at scale (60 bridges) |
