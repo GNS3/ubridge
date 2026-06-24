@@ -142,97 +142,34 @@ sudo ip link set ubtest down
 sudo make install
 ```
 
-### Test harness
+### Test suites
 
-Save as `regression_test.py` and run with `python3 regression_test.py`
-(adjust `PORT` if 12174 is taken):
+A comprehensive test suite lives in `tests/brctl/` (stdlib only, no third-party
+dependencies). Install prerequisites, then run:
 
-```python
-import socket, subprocess, time
+```bash
+cd tests/brctl
 
-HOST, PORT = '127.0.0.1', 12174
+# single suite
+python3 test_basic.py
 
-s = socket.create_connection((HOST, PORT), timeout=5)
-
-def t(cmd):
-    s.sendall((cmd + '\n').encode())
-    r = b''
-    while b'-' not in r:
-        r += s.recv(256)
-    return r.decode().strip()
-
-results = []
-def test(cmd, exp='100'):
-    resp = t(cmd)
-    code = resp[:3]
-    ok = 'PASS' if code == exp else 'FAIL'
-    results.append((ok, cmd, resp[:50]))
-    return resp
-
-# === BASIC LIFECYCLE ===
-test('brctl create regtest0')
-test('brctl setup regtest1 10.0.1.1/24')
-test('brctl show regtest1')
-test('brctl show regtest0')
-test('brctl addif regtest0 ubtest')
-test('brctl delif regtest0 ubtest')
-
-# === ERROR PATHS ===
-test('brctl create regtest0', '206')        # duplicate
-test('brctl delete nope', '207')            # missing
-test('brctl addip regtest0 1.2.3.4', '204') # no slash
-test('brctl addip regtest0 9.9.9.9/33', '204')
-test('brctl setup nonexistent 1.2.3.4', '204')
-test('brctl delete nonexistent', '207')      # never created -> ENODEV
-
-# === BRIDGE PARAMETERS ===
-t('brctl stp regtest1 on')
-t('brctl setbridgeprio regtest1 4096')
-t('brctl setfd regtest1 7')
-t('brctl sethello regtest1 3')
-t('brctl setmaxage regtest1 25')
-t('brctl setageing regtest1 600')
-time.sleep(0.3)
-# verify via: ip -d link show regtest1  -> bridge {forward_delay 700,
-#   hello_time 300, max_age 2500, ageing_time 60000, stp_state 1, priority 4096}
-
-# === PORT PARAMETERS ===
-t('brctl addif regtest1 ubtest')
-t('brctl setportprio regtest1 ubtest 8')
-t('brctl setpathcost regtest1 ubtest 500')
-t('brctl hairpin regtest1 ubtest on')
-time.sleep(0.3)
-# verify via: ip -d link show ubtest  -> bridge_slave ... priority 8
-#   cost 500 hairpin on ...
-
-# === BRIDGE SCOPING (port must be on the named bridge) ===
-t('brctl create regtest2')
-test('brctl setportprio regtest2 ubtest 8', '206')  # ubtest on regtest1, not regtest2
-test('brctl delif regtest2 ubtest', '207')          # same
-
-t('brctl delif regtest1 ubtest')
-
-# === CLEANUP ===
-test('brctl delete regtest0')
-test('brctl delete regtest1')
-test('brctl delete regtest2')
-s.close()
-
-for ok, cmd, resp in results:
-    print(f'[{ok}] {cmd:40s} {resp}')
+# or all suites
+python3 run_all.py
 ```
 
-### What is verified
+Seven suites (127 tests in total):
 
-- Every command's success reply code.
-- Error paths: duplicate create (`206`/EEXIST), missing bridge (`207`/ENODEV),
-  invalid IP/prefix (`204`), overlong CIDR (`204`).
-- Bridge parameters actually take effect in the kernel (cross-checked with
-  `ip -d link show`, including the centisecond conversion for time values).
-- Port parameters actually take effect (`bridge_slave` attributes on the port).
-- Bridge scoping: a port not on the named bridge is rejected for `delif` and
-  all port-parameter commands.
-- No residual bridges after cleanup; no fd/memory leaks across restarts.
+| Suite | Tests | Scope |
+|-------|-------|-------|
+| `test_basic` | 22 | Lifecycle, common errors, bridge scoping |
+| `test_boundary` | 58 | Boundary values for all ranged parameters, kernel-side verification |
+| `test_concurrency` | 6 | Multi-client create races, list under churn |
+| `test_robustness` | 20 | Malformed input, overlong names, IPv6, crash-freedom |
+| `test_state` | 12 | addif/addip idempotency, UP/DOWN transitions, ports on delete |
+| `test_stress` | 5 | 400 create/delete cycles, fd stability, dump at scale (60 bridges) |
+| `test_no_privs` | 4 | No-cap binary rejects mutations, survives gracefully |
+
+All 127 tests pass on the reference kernel (6.19.11-1-default).
 
 ### Kernel verification reference
 
