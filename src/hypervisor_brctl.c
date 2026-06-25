@@ -1025,6 +1025,26 @@ static int cmd_hairpin(hypervisor_conn_t *conn, int argc, char *argv[])
     return 0;
 }
 
+/* brctl isolated <bridge> <port> on|off
+ * An isolated port can only talk to the bridge CPU port, not to other
+ * bridge ports — used to L2-isolate peers sharing one bridge. */
+static int cmd_isolated(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *port = argv[1];
+    int on = parse_onoff(argv[2]);
+    if (on < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid value %s (expected on/off)", argv[2]);
+        return -1;
+    }
+    int err = br_set_port_attr(argv[0], port, IFLA_BRPORT_ISOLATED, (unsigned int)on);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set isolated mode on %s: %s", port, strerror(-err));
+        return -1;
+    }
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Port isolation %s on %s", on ? "enabled" : "disabled", port);
+    return 0;
+}
+
 /* One IPv4 address entry collected from an RTM_GETADDR dump. */
 struct br_addr_entry {
     int ifindex;
@@ -1284,6 +1304,7 @@ static hypervisor_cmd_t brctl_cmd_array[] = {
    { "setpathcost", 3, 3, cmd_setpathcost, NULL },
    { "setportstate", 3, 3, cmd_setportstate, NULL },
    { "hairpin", 3, 3, cmd_hairpin, NULL },
+   { "isolated", 3, 3, cmd_isolated, NULL },
    { NULL, -1, -1, NULL, NULL },
 };
 

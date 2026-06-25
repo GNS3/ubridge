@@ -78,6 +78,7 @@ The modules that are currently defined are given below:
 - iol_bridge : IOL (IOS on Linux) bridges management 
 - docker : Docker management 
 - brctl : Linux bridge management
+- link : generic interface management
 
 ### Hypervisor module ("hypervisor")
 
@@ -613,7 +614,56 @@ brctl hairpin br0 tap0 on
 100-Hairpin mode enabled on tap0
 ```
 
+- **brctl isolated** *\<bridge_name\>* *\<port\>* **on**|**off**:
+    Enable or disable port isolation. An isolated port can only communicate
+    with the bridge's CPU port, not with other bridge ports — used to
+    L2-isolate peers that share one bridge.
 
+``` {.bash}
+brctl isolated br0 tap0 on
+100-Port isolation enabled on tap0
+```
+
+
+
+### Generic interface management ("link")
+
+Manage generic network interfaces (veth pairs, IP assignment, link state)
+via netlink — no `ip` command needed, all done with ubridge's capabilities.
+
+- **link veth** *\<name\>* *\<peer\>*: Create a veth pair. Both ends
+    start DOWN; use `brctl addif` to attach one end to a bridge and
+    `link set ... up` to bring it up.
+
+``` {.bash}
+link veth v-host v-ns
+100-Veth pair v-host/v-ns created
+```
+
+- **link addr** *\<interface\>* *\<ip/prefixlen\>*: Assign an IPv4 address
+    to an interface and bring it UP. Works on any interface (veth, bridge,
+    dummy, tap), not just bridges.
+
+``` {.bash}
+link addr v-host 172.20.0.10/24
+100-IP 172.20.0.10/24 set on v-host
+```
+
+- **link set** *\<interface\>* **up**|**down**: Bring an interface up or
+    down (administrative state).
+
+``` {.bash}
+link set v-host up
+100-Interface v-host up
+```
+
+- **link delete** *\<interface\>*: Delete an interface. For a veth pair,
+    deleting one end removes the other automatically.
+
+``` {.bash}
+link delete v-host
+100-Interface v-host deleted
+```
 
 ### IOL Bridge module ("iol_bridge")
 

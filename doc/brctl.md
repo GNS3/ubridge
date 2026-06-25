@@ -92,6 +92,7 @@ already be enslaved to the bridge; otherwise `-EINVAL`.
 | `setpathcost <bridge> <port> <n>` | `IFLA_BRPORT_COST` | 1–65535 |
 | `setportstate <bridge> <port> <n>` | `IFLA_BRPORT_STATE` | 0–3 (0=disabled, 1=listening, 2=learning, 3=forwarding) |
 | `hairpin <bridge> <port> on\|off` | `IFLA_BRPORT_MODE` | `on`/`off` (on = `BRIDGE_MODE_HAIRPIN`) |
+| `isolated <bridge> <port> on\|off` | `IFLA_BRPORT_ISOLATED` | `on`/`off` (on = port can only reach the CPU, not other ports) |
 
 ## Implementation notes
 

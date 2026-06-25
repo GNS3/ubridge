@@ -111,6 +111,19 @@ def main():
                     c.code("brctl hairpin %s ubtest on" % BR) == "100")
             r.check("hairpin off -> 100",
                     c.code("brctl hairpin %s ubtest off" % BR) == "100")
+            # isolated: both on/off accepted
+            r.check("isolated on -> 100",
+                    c.code("brctl isolated %s ubtest on" % BR) == "100")
+            import subprocess as _sp
+            _link = _sp.run(["ip", "-d", "link", "show", "ubtest"],
+                            capture_output=True, text=True).stdout
+            r.check("kernel shows isolated on", "isolated on" in _link, _link[:60])
+            r.check("isolated off -> 100",
+                    c.code("brctl isolated %s ubtest off" % BR) == "100")
+            r.check("isolated bad value -> 204",
+                    c.code("brctl isolated %s ubtest maybe" % BR) == "204")
+            r.check("isolated wrong bridge -> 206",
+                    c.code("brctl isolated otherbr ubtest on") == "206")
             c.send("brctl delif %s ubtest" % BR)
 
         # --- verify kernel side for a few representative values ---
