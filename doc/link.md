@@ -69,6 +69,20 @@ link addr v-host 172.20.0.10/24
 
 Bad CIDR → `204/EINVAL`. Missing interface → `206/ENODEV`.
 
+### `link delete <iface>`
+
+Delete an interface. For a **veth pair**, deleting one end removes the
+other automatically (kernel behaviour).
+
+Implementation: `RTM_DELLINK`.
+
+```
+link delete v-host
+100-Interface v-host deleted
+```
+
+Missing interface → `207/ENODEV`. Missing arg → `203`.
+
 ### `link set <iface> up|down`
 
 Bring an interface UP or DOWN (administrative state).

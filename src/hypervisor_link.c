@@ -148,9 +148,70 @@ static int link_set_state(const char *iface, int up)
 }
 
 /* --------------------------------------------------------------------------
+ * Delete an interface (RTM_DELLINK).
+ * Deleting one end of a veth pair removes the other automatically.
+ * --------------------------------------------------------------------------
+ */
+
+static int link_delete(const char *iface)
+{
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL, *reply = NULL;
+    struct ifinfomsg *ifi;
+    int ret, ifindex;
+
+    ifindex = if_nametoindex(iface);
+    if (ifindex == 0) return -ENODEV;
+
+    ret = netlink_open(&nlh, NETLINK_ROUTE);
+    if (ret < 0) return ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        netlink_close(&nlh);
+        return -ENOMEM;
+    }
+
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_UNSPEC;
+    ifi->ifi_index = ifindex;
+
+    msg->nlmsghdr.nlmsg_type = RTM_DELLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+
+    ret = netlink_transaction(&nlh, msg, reply);
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    netlink_close(&nlh);
+    return ret;
+}
+
+/* --------------------------------------------------------------------------
  * Command handlers
  * --------------------------------------------------------------------------
  */
+
+/* link delete <iface> — delete an interface (RTM_DELLINK).
+ * For a veth pair, deleting one end removes the other automatically. */
+static int cmd_delete(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *iface = argv[0];
+    int err = link_delete(iface);
+
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_DELETE, 1,
+                              "Could not delete %s: %s", iface, strerror(-err));
+        return -1;
+    }
+
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Interface %s deleted", iface);
+    return 0;
+}
 
 /* link veth <name> <peer> */
 static int cmd_veth(hypervisor_conn_t *conn, int argc, char *argv[])
@@ -241,6 +302,7 @@ static hypervisor_cmd_t link_cmd_array[] = {
    { "veth", 2, 2, cmd_veth, NULL },
    { "addr", 2, 2, cmd_addr,  NULL },
    { "set",  2, 2, cmd_set,   NULL },
+   { "delete", 1, 1, cmd_delete, NULL },
    { NULL, -1, -1, NULL, NULL },
 };
 
