@@ -8,6 +8,10 @@ It supports the full bridge lifecycle (create/delete, port enslave/release,
 IP assignment), runtime bridge-level parameters (STP, ageing, VLAN, multicast)
 and per-port parameters (priority, path cost, state, hairpin).
 
+> **Note:** veth pair creation, IP assignment on arbitrary interfaces, and
+> link state control live in the separate [`link`](link.md) module
+> (`link veth`, `link addr`, `link set`). `brctl` is bridge-specific.
+
 ## Transport
 
 Commands are sent over the hypervisor TCP control port as newline-terminated
