@@ -75,6 +75,11 @@ extern int nla_put_string(struct nlmsg *nlmsg, int attr, const char *string)
     return nla_put(nlmsg, attr, string, strlen(string) + 1);
 }
 
+extern int nla_put_u8(struct nlmsg *nlmsg, int attr, unsigned char value)
+{
+	return nla_put(nlmsg, attr, &value, 1);
+}
+
 extern int nla_put_u32(struct nlmsg *nlmsg, int attr, int value)
 {
 	return nla_put(nlmsg, attr, &value, sizeof(value));

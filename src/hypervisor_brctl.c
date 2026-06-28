@@ -582,7 +582,7 @@ static int br_set_bridge_attr_secs(const char *bridge, int attr, long secs)
  * matching classic brctl <bridge> <port> scoping; otherwise -EINVAL.
  * Returns 0 on success or a negative errno (NOT -1).
  */
-static int br_set_port_attr(const char *bridge, const char *port, int attr, unsigned int val)
+static int br_set_port_attr(const char *bridge, const char *port, int attr, unsigned char val)
 {
     struct nl_handler nlh;
     struct nlmsg *msg = NULL, *reply = NULL;
@@ -623,13 +623,57 @@ static int br_set_port_attr(const char *bridge, const char *port, int attr, unsi
 
     protinfo = nla_begin_nested(msg, IFLA_PROTINFO);
     protinfo->rta_type |= NLA_F_NESTED;
-    nla_put_u32(msg, attr, val);
+    nla_put_u8(msg, attr, val);
     nla_end_nested(msg, protinfo);
 
     ret = netlink_transaction(&nlh, msg, reply);
     nlmsg_free(msg);
     nlmsg_free(reply);
     netlink_close(&nlh);
+    return ret;
+}
+
+/* Same as above but for u32-valued attributes (e.g. IFLA_BRPORT_COST). */
+static int br_set_port_attr_u32(const char *bridge, const char *port, int attr, unsigned int val)
+{
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL, *reply = NULL;
+    struct ifinfomsg *ifi;
+    struct rtattr *protinfo;
+    int ret, ifindex;
+
+    ret = br_check_master(bridge, port);
+    if (ret < 0) return ret;
+
+    ifindex = if_nametoindex(port);
+    if (ifindex == 0) return -ENODEV;
+
+    ret = netlink_open(&nlh, NETLINK_ROUTE);
+    if (ret < 0) return ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg); nlmsg_free(reply); netlink_close(&nlh);
+        return -ENOMEM;
+    }
+
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_BRIDGE;
+    ifi->ifi_index = ifindex;
+
+    msg->nlmsghdr.nlmsg_type = RTM_SETLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+
+    protinfo = nla_begin_nested(msg, IFLA_PROTINFO);
+    protinfo->rta_type |= NLA_F_NESTED;
+    nla_put_u32(msg, attr, val);
+    nla_end_nested(msg, protinfo);
+
+    ret = netlink_transaction(&nlh, msg, reply);
+    nlmsg_free(msg); nlmsg_free(reply); netlink_close(&nlh);
     return ret;
 }
 
@@ -736,6 +780,77 @@ static int cmd_addip(hypervisor_conn_t *conn, int argc, char *argv[])
     }
 
     hypervisor_send_reply(conn, HSC_INFO_OK, 1, "IP %s added to bridge %s", cidr, bridge);
+    return 0;
+}
+
+/*
+ * Delete an IPv4 address from an interface (RTM_DELADDR).
+ * The prefix must match the one used in addip.
+ * Returns 0 on success or a negative errno on failure (NOT -1).
+ */
+static int br_del_address(const char *iface, struct in_addr ip, int prefix)
+{
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL, *reply = NULL;
+    struct ifaddrmsg *ifa;
+    int ret, ifindex;
+
+    ifindex = if_nametoindex(iface);
+    if (ifindex == 0)
+        return -ENODEV;
+
+    ret = netlink_open(&nlh, NETLINK_ROUTE);
+    if (ret < 0) return ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg); nlmsg_free(reply); netlink_close(&nlh);
+        return -ENOMEM;
+    }
+
+    ifa = (struct ifaddrmsg *)nlmsg_data(msg);
+    memset(ifa, 0, sizeof(*ifa));
+    ifa->ifa_family = AF_INET;
+    ifa->ifa_prefixlen = prefix;
+    ifa->ifa_index = ifindex;
+
+    msg->nlmsghdr.nlmsg_type = RTM_DELADDR;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifaddrmsg));
+
+    nla_put_buffer(msg, IFA_LOCAL, &ip, sizeof(ip));
+
+    ret = netlink_transaction(&nlh, msg, reply);
+    nlmsg_free(msg); nlmsg_free(reply); netlink_close(&nlh);
+    return ret;
+}
+
+/* brctl delip <bridge> <ip/prefixlen> */
+static int cmd_delip(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *bridge = argv[0];
+    char *cidr = argv[1];
+    struct in_addr ip, mask;
+    int prefix;
+
+    if (parse_cidr(cidr, &ip, &mask) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid IP address %s", cidr);
+        return -1;
+    }
+
+    /* Convert mask back to prefix length */
+    unsigned int m = ntohl(mask.s_addr);
+    prefix = 0;
+    while (m & 0x80000000) { prefix++; m <<= 1; }
+
+    int err = br_del_address(bridge, ip, prefix);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_DELETE, 1, "Could not delete IP %s from %s: %s", cidr, bridge, strerror(-err));
+        return -1;
+    }
+
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "IP %s deleted from %s", cidr, bridge);
     return 0;
 }
 
@@ -980,7 +1095,7 @@ static int cmd_setpathcost(hypervisor_conn_t *conn, int argc, char *argv[])
         hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid path cost %s (expected 1-65535)", argv[2]);
         return -1;
     }
-    int err = br_set_port_attr(argv[0], port, IFLA_BRPORT_COST, (unsigned int)cost);
+    int err = br_set_port_attr_u32(argv[0], port, IFLA_BRPORT_COST, (unsigned int)cost);
     if (err < 0) {
         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set path cost on %s: %s", port, strerror(-err));
         return -1;
@@ -1285,6 +1400,7 @@ static hypervisor_cmd_t brctl_cmd_array[] = {
    { "create", 1, 1, cmd_create, NULL },
    { "delete", 1, 1, cmd_delete, NULL },
    { "addip", 2, 2, cmd_addip, NULL },
+   { "delip", 2, 2, cmd_delip, NULL },
    { "setup", 2, 2, cmd_setup, NULL },
    { "show",  1, 1, cmd_show, NULL },
    { "delif", 2, 2, cmd_delif, NULL },
