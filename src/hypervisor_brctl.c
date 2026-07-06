@@ -182,7 +182,7 @@ static int br_enslave_if(const char *bridge, const char *port)
     memset(ifi, 0, sizeof(*ifi));
     ifi->ifi_family = AF_UNSPEC;
     ifi->ifi_index = port_ifindex;
-    ifi->ifi_change |= IFF_UP;
+    ifi->ifi_change = IFF_UP;
     ifi->ifi_flags |= IFF_UP;
 
     msg->nlmsghdr.nlmsg_type = RTM_SETLINK;
@@ -333,6 +333,19 @@ static int br_release_if(const char *bridge, const char *port)
 }
 
 /*
+ * Convert a network-order IPv4 netmask into a prefix length by counting
+ * its leading 1-bits. Recovers the prefixlen from the mask parse_cidr
+ * produces; the mask is always contiguous in the current call paths.
+ */
+static int netmask_to_prefix(struct in_addr mask)
+{
+    unsigned int m = ntohl(mask.s_addr);
+    int prefix = 0;
+    while (m & 0x80000000) { prefix++; m <<= 1; }
+    return prefix;
+}
+
+/*
  * Parse a "ip/prefixlen" string (e.g. "172.31.1.1/24") into an address and
  * the corresponding netmask. The input string is left untouched.
  * Returns 0 on success, -1 on error (with errno = EINVAL).
@@ -387,9 +400,7 @@ int br_set_address(const char *bridge, struct in_addr ip, struct in_addr mask)
     int ret, ifindex;
 
     /* Convert netmask back to prefix length */
-    unsigned int m = ntohl(mask.s_addr);
-    int prefix = 0;
-    while (m & 0x80000000) { prefix++; m <<= 1; }
+    int prefix = netmask_to_prefix(mask);
 
     ifindex = if_nametoindex(bridge);
     if (ifindex == 0)
@@ -443,7 +454,7 @@ int br_set_address(const char *bridge, struct in_addr ip, struct in_addr mask)
     memset(ifi, 0, sizeof(*ifi));
     ifi->ifi_family = AF_UNSPEC;
     ifi->ifi_index = ifindex;
-    ifi->ifi_change |= IFF_UP;
+    ifi->ifi_change = IFF_UP;
     ifi->ifi_flags |= IFF_UP;
 
     msg2->nlmsghdr.nlmsg_type = RTM_SETLINK;
@@ -840,9 +851,7 @@ static int cmd_delip(hypervisor_conn_t *conn, int argc, char *argv[])
     }
 
     /* Convert mask back to prefix length */
-    unsigned int m = ntohl(mask.s_addr);
-    prefix = 0;
-    while (m & 0x80000000) { prefix++; m <<= 1; }
+    prefix = netmask_to_prefix(mask);
 
     int err = br_del_address(bridge, ip, prefix);
     if (err < 0) {
@@ -1211,7 +1220,15 @@ static int br_dump_addresses(struct br_addr_entry **out, int *count)
     while (1) {
         reply->nlmsghdr.nlmsg_len = NLMSG_ALIGN(NLMSG_GOOD_SIZE);
         int r = netlink_rcv(&nlh, reply);
-        if (r <= 0)
+        if (r < 0) {
+            /* A receive error (e.g. -EMSGSIZE when a dump datagram
+             * overflows our buffer) means the dump is incomplete, not
+             * finished — report failure rather than silently returning
+             * a truncated address list as if it were complete. */
+            ret = -1;
+            goto out;
+        }
+        if (r == 0)
             break;
 
         /* Walk every nlmsg packed into this datagram */
@@ -1253,8 +1270,12 @@ static int br_dump_addresses(struct br_addr_entry **out, int *count)
             if (n == cap) {
                 int newcap = cap ? cap * 2 : 8;
                 struct br_addr_entry *tmp = realloc(entries, newcap * sizeof(*tmp));
-                if (!tmp)
-                    goto done;   /* keep whatever was collected so far */
+                if (!tmp) {
+                    /* allocation failed: report the error rather than
+                     * returning a partial dump as if it were complete. */
+                    ret = -1;
+                    goto out;
+                }
                 entries = tmp;
                 cap = newcap;
             }
@@ -1387,11 +1408,6 @@ static int cmd_show(hypervisor_conn_t *conn, int argc, char *argv[])
         hypervisor_send_reply(conn, HSC_INFO_OK, 1, "%s %s", bridge, flags_str);
     return 0;
 }
-
-
-/* brctl addr <iface> <ip/prefix> — assign IPv4 to any interface and bring it UP */
-
-/* brctl link <iface> up|down — bring an interface up or down */
 
 
 /* brctl commands */
