@@ -691,6 +691,8 @@ static int create_iol_port_entry(hypervisor_conn_t *conn, iol_bridge_t *bridge, 
       free_nio(iol_nio->destination_nio);
    }
 
+   iol_nio->capture = NULL;
+   iol_nio->packet_filters = NULL;
    iol_nio->destination_nio = nio;
    /* start the NIO thread if the bridge is already running */
    if (bridge->running) {
@@ -770,6 +772,8 @@ static int cmd_delete_nio_udp(hypervisor_conn_t *conn, int argc, char *argv[])
       free_nio(iol_nio->destination_nio);
    }
 
+   iol_nio->capture = NULL;
+   iol_nio->packet_filters = NULL;
    iol_nio->destination_nio = NULL;
    hypervisor_send_reply(conn, HSC_INFO_OK,1, "NIO UDP deleted from IOL bridge '%s'", argv[0]);
    return (0);
