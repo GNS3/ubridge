@@ -133,7 +133,7 @@ static int link_set_state(const char *iface, int up)
     memset(ifi, 0, sizeof(*ifi));
     ifi->ifi_family = AF_UNSPEC;
     ifi->ifi_index = ifindex;
-    ifi->ifi_change |= IFF_UP;
+    ifi->ifi_change = IFF_UP;
     if (up) ifi->ifi_flags |= IFF_UP;
 
     msg->nlmsghdr.nlmsg_type = RTM_SETLINK;

@@ -232,6 +232,7 @@ extern int netlink_open(struct nl_handler *handler, int protocol)
 	socklen_t socklen;
         int sndbuf = 32768;
         int rcvbuf = 32768;
+        int saved_errno;
 
         memset(handler, 0, sizeof(*handler));
 
@@ -239,36 +240,48 @@ extern int netlink_open(struct nl_handler *handler, int protocol)
         if (handler->fd < 0)
                 return -errno;
 
-        if (setsockopt(handler->fd, SOL_SOCKET, SO_SNDBUF, 
+        if (setsockopt(handler->fd, SOL_SOCKET, SO_SNDBUF,
 		       &sndbuf, sizeof(sndbuf)) < 0)
-                return -errno;
+                goto err;
 
-        if (setsockopt(handler->fd, SOL_SOCKET, SO_RCVBUF, 
+        if (setsockopt(handler->fd, SOL_SOCKET, SO_RCVBUF,
 		       &rcvbuf,sizeof(rcvbuf)) < 0)
-                return -errno;
+                goto err;
 
         memset(&handler->local, 0, sizeof(handler->local));
         handler->local.nl_family = AF_NETLINK;
         handler->local.nl_groups = 0;
 
-        if (bind(handler->fd, (struct sockaddr*)&handler->local, 
+        if (bind(handler->fd, (struct sockaddr*)&handler->local,
 		 sizeof(handler->local)) < 0)
-                return -errno;
+                goto err;
 
         socklen = sizeof(handler->local);
-        if (getsockname(handler->fd, (struct sockaddr*)&handler->local, 
+        if (getsockname(handler->fd, (struct sockaddr*)&handler->local,
 			&socklen) < 0)
-                return -errno;
+                goto err;
 
-        if (socklen != sizeof(handler->local))
-                return -EINVAL;
+        if (socklen != sizeof(handler->local)) {
+                errno = EINVAL;
+                goto err;
+        }
 
-        if (handler->local.nl_family != AF_NETLINK)
-                return -EINVAL;
+        if (handler->local.nl_family != AF_NETLINK) {
+                errno = EINVAL;
+                goto err;
+        }
 
 	handler->seq = time(NULL);
 
         return 0;
+
+err:
+        /* socket() succeeded, so close the fd before returning the error. */
+        saved_errno = errno;
+        close(handler->fd);
+        handler->fd = -1;
+        errno = saved_errno;
+        return -errno;
 }
 
 extern int netlink_close(struct nl_handler *handler)

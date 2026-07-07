@@ -109,8 +109,9 @@ already be enslaved to the bridge; otherwise `-EINVAL`.
   Mixing them up makes the kernel silently ignore the change.
 - **dump parsing** — `br_dump_addresses` walks every `nlmsg`
   packed into a `recvmsg()` datagram via `NLMSG_OK`/`NLMSG_NEXT` (a datagram
-  may carry several coalesced records). `NLMSG_ERROR` is treated as a real
-  failure, never as end-of-dump.
+  may carry several coalesced records). `NLMSG_ERROR` and any `recv` error
+  (e.g. `-EMSGSIZE` when a datagram overflows the receive buffer) are treated
+  as a real failure, never as end-of-dump.
 - **`<bridge>` scoping** — `delif` and the port-parameter commands query the
   port's current master (`IFLA_MASTER` via `RTM_GETLINK`) and reject (`-EINVAL`)
   operations on a port not enslaved to the specified bridge, matching classic
@@ -126,6 +127,9 @@ already be enslaved to the bridge; otherwise `-EINVAL`.
 | Port params missing `ifi_family=AF_BRIDGE` and `NLA_F_NESTED` on `IFLA_PROTINFO` | Kernel silently ignored port attribute changes | Set `AF_BRIDGE`; set `NLA_F_NESTED` on the nested `IFLA_PROTINFO` header |
 | `parse_cidr` truncated overlong input with `strncpy` | Invalid overlong CIDR could look valid after truncation | Reject `strlen(cidr) >= sizeof(buf)` up front |
 | `setup` created the bridge before validating the CIDR | Invalid CIDR left a half-created bridge | Validate CIDR first; also roll back the bridge if `addip` fails |
+| Dump `recv` error (e.g. `-EMSGSIZE` when a datagram overflows the buffer) treated as end-of-dump | `br_get_address` silently returned a truncated address list as complete → `show` printed a wrong/missing IP | Treat `netlink_rcv < 0` as failure (`ret = -1`); only `r == 0` / `NLMSG_DONE` ends the dump |
+| `realloc` failure in `br_dump_addresses` jumped to the success path | Partial address list returned as a complete dump under memory pressure | `ret = -1; goto out` on realloc failure |
+| `netlink_open` returned `-errno` without closing the socket after `setsockopt` / `bind` / `getsockname` failed | fd leak on (rare) open-time failure paths | `goto err` closes the fd and preserves the original errno |
 
 ## Testing
 
