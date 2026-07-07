@@ -40,6 +40,7 @@
 #include "hypervisor_docker.h"
 #include "hypervisor_iol_bridge.h"
 #include "hypervisor_brctl.h"
+#include "hypervisor_link.h"
 #endif
 #include "ubridge.h"
 
@@ -502,6 +503,7 @@ int run_hypervisor(char *ip_addr, int tcp_port)
    hypervisor_docker_init();
    hypervisor_iol_bridge_init();
    hypervisor_brctl_init();
+   hypervisor_link_init();
 #endif
 
    signal(SIGPIPE, SIG_IGN);

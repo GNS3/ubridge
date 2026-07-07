@@ -150,6 +150,17 @@ int nla_put_buffer(struct nlmsg *nlmsg, int attr,
 		   const void *data, size_t size);
 
 /*
+ * nla_put_u8: copy an 8-bit value to a netlink message attribute
+ *
+ * @nlmsg: the netlink message to be filled
+ * @attr: the attribute name
+ * @value: 8-bit value to be copied
+ *
+ * Returns 0 on success, < 0 otherwise
+ */
+int nla_put_u8(struct nlmsg *nlmsg, int attr, unsigned char value);
+
+/*
  * nla_put_u32: copy an integer to a netlink message attribute
  *
  * @nlmsg: the netlink message to be filled

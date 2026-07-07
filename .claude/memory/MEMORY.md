@@ -1,0 +1,1 @@
+- [strace-netlink-debug](strace-netlink-debug.md) — Use strace ip addr show to discover correct netlink parameters for any operation

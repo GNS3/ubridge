@@ -75,6 +75,11 @@ extern int nla_put_string(struct nlmsg *nlmsg, int attr, const char *string)
     return nla_put(nlmsg, attr, string, strlen(string) + 1);
 }
 
+extern int nla_put_u8(struct nlmsg *nlmsg, int attr, unsigned char value)
+{
+	return nla_put(nlmsg, attr, &value, 1);
+}
+
 extern int nla_put_u32(struct nlmsg *nlmsg, int attr, int value)
 {
 	return nla_put(nlmsg, attr, &value, sizeof(value));
@@ -210,10 +215,13 @@ extern int netlink_transaction(struct nl_handler *handler,
 
 	if (answer->nlmsghdr.nlmsg_type == NLMSG_ERROR) {
 		struct nlmsgerr *err = (struct nlmsgerr*)NLMSG_DATA(answer);
-		errno = -err->error;
-		if (errno)
+		int e = -err->error;
+		/* log before touching errno; perror()/stdio can clobber errno on
+		 * some glibc paths, so never read errno back after it. */
+		errno = e;
+		if (e)
 			perror("Error configuring kernel");
-		return -errno;
+		return -e;
 	}
 	
 	return 0;

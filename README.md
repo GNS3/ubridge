@@ -78,6 +78,7 @@ The modules that are currently defined are given below:
 - iol_bridge : IOL (IOS on Linux) bridges management 
 - docker : Docker management 
 - brctl : Linux bridge management
+- link : generic interface management
 
 ### Hypervisor module ("hypervisor")
 
@@ -432,9 +433,236 @@ docker delete_veth hostif
 
 ### Linux bridge ("brctl")
 
-``` {.bash
-brctl addif virbr0 nat2
-100-nat2 has been added to bridge virbr0}
+Manage Linux kernel bridges via netlink. The module replaces the
+old ioctl-based bridge management with full netlink support and
+runtime parameter configuration.
+
+#### Basic commands
+
+- **brctl create** *\<bridge_name\>*: Create a Linux bridge.
+
+``` {.bash}
+brctl create br0
+100-Bridge br0 created
+```
+
+- **brctl delete** *\<bridge_name\>*: Delete a Linux bridge.
+
+``` {.bash}
+brctl delete br0
+100-Bridge br0 deleted
+```
+
+- **brctl addif** *\<bridge_name\>* *\<port_interface\>*:
+    Enslave an interface to a bridge and automatically bring it UP.
+
+``` {.bash}
+brctl addif br0 tap0
+100-tap0 has been added to bridge br0
+```
+
+- **brctl delif** *\<bridge_name\>* *\<port_interface\>*:
+    Release a port interface from its bridge.
+
+``` {.bash}
+brctl delif br0 tap0
+100-tap0 removed from bridge br0
+```
+
+- **brctl addip** *\<bridge_name\>* *\<ip/prefixlen\>*:
+    Assign an IPv4 address to the bridge and bring it UP.
+
+``` {.bash}
+brctl addip br0 192.168.1.1/24
+100-IP 192.168.1.1/24 added to bridge br0
+```
+
+- **brctl setup** *\<bridge_name\>* *\<ip/prefixlen\>*:
+    Create a bridge and assign an IPv4 address in one step.
+
+``` {.bash}
+brctl setup br0 192.168.1.1/24
+100-Bridge br0 created with IP 192.168.1.1/24
+```
+
+- **brctl show** *\<bridge_name\>*:
+    Show the IP address, prefix and operational flags of a bridge.
+
+``` {.bash}
+brctl show br0
+100-br0 192.168.1.1/24 UP
+```
+
+#### Bridge-level parameters
+
+- **brctl stp** *\<bridge_name\>* **on**|**off**:
+    Enable or disable Spanning Tree Protocol.
+
+``` {.bash}
+brctl stp br0 on
+100-STP enabled on bridge br0
+```
+
+- **brctl setbridgeprio** *\<bridge_name\>* *\<0-65535\>*:
+    Set the bridge priority (used by STP).
+
+``` {.bash}
+brctl setbridgeprio br0 4096
+100-Bridge priority 4096 set on br0
+```
+
+- **brctl setfd** *\<bridge_name\>* *\<2-30\>*:
+    Set forward delay in seconds (STP).
+
+``` {.bash}
+brctl setfd br0 15
+100-Forward delay 15s set on br0
+```
+
+- **brctl sethello** *\<bridge_name\>* *\<1-10\>*:
+    Set hello time in seconds (STP).
+
+``` {.bash}
+brctl sethello br0 2
+100-Hello time 2s set on br0
+```
+
+- **brctl setmaxage** *\<bridge_name\>* *\<6-40\>*:
+    Set max age in seconds (STP).
+
+``` {.bash}
+brctl setmaxage br0 20
+100-Max age 20s set on br0
+```
+
+- **brctl setageing** *\<bridge_name\>* *\<secs\>*:
+    Set MAC address ageing time in seconds.
+
+``` {.bash}
+brctl setageing br0 300
+100-Ageing time 300s set on br0
+```
+
+- **brctl vlanfiltering** *\<bridge_name\>* **on**|**off**:
+    Enable or disable VLAN filtering on the bridge.
+
+``` {.bash}
+brctl vlanfiltering br0 on
+100-VLAN filtering enabled on bridge br0
+```
+
+- **brctl setvlanproto** *\<bridge_name\>* **0x8100**|**0x88a8**:
+    Set the VLAN protocol (802.1Q or 802.1ad).
+
+``` {.bash}
+brctl setvlanproto br0 0x88a8
+100-VLAN protocol 0x88a8 set on br0
+```
+
+- **brctl mcastsnoop** *\<bridge_name\>* **on**|**off**:
+    Enable or disable multicast snooping.
+
+``` {.bash}
+brctl mcastsnoop br0 off
+100-Multicast snooping disabled on bridge br0
+```
+
+- **brctl setgroupfwd** *\<bridge_name\>* *\<0-65535\>*:
+    Set the group forwarding mask for link-local frames.
+
+``` {.bash}
+brctl setgroupfwd br0 0
+100-group_fwd_mask 0x0 set on br0
+```
+
+#### Port-level parameters
+
+These commands modify bridge port attributes via the kernel's
+IFLA_PROTINFO interface. The port interface must already be
+enslaved to the bridge.
+
+- **brctl setportprio** *\<bridge_name\>* *\<port\>* *\<0-255\>*:
+    Set the STP port priority.
+
+``` {.bash}
+brctl setportprio br0 tap0 128
+100-Port priority 128 set on tap0
+```
+
+- **brctl setpathcost** *\<bridge_name\>* *\<port\>* *\<1-65535\>*:
+    Set the STP path cost for a port.
+
+``` {.bash}
+brctl setpathcost br0 tap0 100
+100-Path cost 100 set on tap0
+```
+
+- **brctl setportstate** *\<bridge_name\>* *\<port\>* *\<0-3\>*:
+    Set the STP port state (0=disabled, 1=listening,
+    2=learning, 3=forwarding).
+
+``` {.bash}
+brctl setportstate br0 tap0 3
+100-Port state 3 set on tap0
+```
+
+- **brctl hairpin** *\<bridge_name\>* *\<port\>* **on**|**off**:
+    Enable or disable hairpin mode (reflect frames back).
+
+``` {.bash}
+brctl hairpin br0 tap0 on
+100-Hairpin mode enabled on tap0
+```
+
+- **brctl isolated** *\<bridge_name\>* *\<port\>* **on**|**off**:
+    Enable or disable port isolation. An isolated port can only communicate
+    with the bridge's CPU port, not with other bridge ports — used to
+    L2-isolate peers that share one bridge.
+
+``` {.bash}
+brctl isolated br0 tap0 on
+100-Port isolation enabled on tap0
+```
+
+
+
+### Generic interface management ("link")
+
+Manage generic network interfaces (veth pairs, IP assignment, link state)
+via netlink — no `ip` command needed, all done with ubridge's capabilities.
+
+- **link veth** *\<name\>* *\<peer\>*: Create a veth pair. Both ends
+    start DOWN; use `brctl addif` to attach one end to a bridge and
+    `link set ... up` to bring it up.
+
+``` {.bash}
+link veth v-host v-ns
+100-Veth pair v-host/v-ns created
+```
+
+- **link addr** *\<interface\>* *\<ip/prefixlen\>*: Assign an IPv4 address
+    to an interface and bring it UP. Works on any interface (veth, bridge,
+    dummy, tap), not just bridges.
+
+``` {.bash}
+link addr v-host 172.20.0.10/24
+100-IP 172.20.0.10/24 set on v-host
+```
+
+- **link set** *\<interface\>* **up**|**down**: Bring an interface up or
+    down (administrative state).
+
+``` {.bash}
+link set v-host up
+100-Interface v-host up
+```
+
+- **link delete** *\<interface\>*: Delete an interface. For a veth pair,
+    deleting one end removes the other automatically.
+
+``` {.bash}
+link delete v-host
+100-Interface v-host deleted
 ```
 
 ### IOL Bridge module ("iol_bridge")

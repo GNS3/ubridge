@@ -35,3 +35,7 @@ ubridge.ini
 
 # IDE files
 .idea/
+
+# Python
+__pycache__/
+*.pyc
