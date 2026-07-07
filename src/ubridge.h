@@ -36,7 +36,7 @@
 #include "packet_filter.h"
 
 #define NAME          "ubridge"
-#define VERSION       "1.1.0"
+#define VERSION       "1.1.1"
 #define CONFIG_FILE   "ubridge.ini"
 
 #ifndef FALSE
