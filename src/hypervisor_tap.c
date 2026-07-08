@@ -50,6 +50,17 @@
 #define IFF_TUN_EXCL 0x8000
 #endif
 
+/*
+ * Return 0 if <name> is an existing network device, -ENODEV otherwise.
+ * set_owner and delete must refuse a non-existent name: TUNSETIFF would
+ * otherwise silently CREATE a transient TAP instead of failing. Mirrors the
+ * if_nametoindex existence check used by the brctl module (e.g. br_enslave_if).
+ */
+static int tap_require_existing(const char *name)
+{
+    return if_nametoindex(name) ? 0 : -ENODEV;
+}
+
 /* --------------------------------------------------------------------------
  * Low-level helpers — each returns 0 on success or a negative errno.
  * -------------------------------------------------------------------------- */
@@ -107,6 +118,10 @@ static int tap_set_owner(const char *name, uid_t uid)
 {
     int fd, ret;
 
+    ret = tap_require_existing(name);
+    if (ret < 0)
+        return ret;
+
     fd = tap_attach(name, 0);
     if (fd < 0)
         return fd;
@@ -125,6 +140,10 @@ static int tap_set_owner(const char *name, uid_t uid)
 static int tap_delete(const char *name)
 {
     int fd, ret;
+
+    ret = tap_require_existing(name);
+    if (ret < 0)
+        return ret;
 
     fd = tap_attach(name, 0);
     if (fd < 0)
