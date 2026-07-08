@@ -63,6 +63,7 @@ ifeq ($(shell uname), Linux)
            src/hypervisor_iol_bridge.c     \
            src/hypervisor_brctl.c   \
            src/hypervisor_link.c   \
+           src/hypervisor_tap.c   \
            src/netlink/nl.c
 endif
 
