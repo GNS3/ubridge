@@ -74,7 +74,8 @@ static int tc_netem_replace(const char *ifname,
                             int has_delay, double delay_ms,
                             int has_jitter, double jitter_ms,
                             int has_loss, unsigned int loss_pct,
-                            int has_dup, unsigned int dup_pct)
+                            int has_dup, unsigned int dup_pct,
+                            int has_corrupt, unsigned int corrupt_pct)
 {
     struct nl_handler nlh;
     struct nlmsg *msg = NULL, *reply = NULL;
@@ -130,6 +131,14 @@ static int tc_netem_replace(const char *ifname,
     if (has_jitter) {
         v64 = (long long)(jitter_ms * 1000000.0);  /* ms -> ns */
         nla_put_buffer(msg, TCA_NETEM_JITTER64, &v64, sizeof(v64));
+    }
+    if (has_corrupt) {
+        /* TCA_NETEM_CORRUPT: fixed-size struct {probability, correlation},
+         * probability encoded like loss/dup (p * 2^32); correlation 0. */
+        struct tc_netem_corrupt c;
+        memset(&c, 0, sizeof(c));
+        c.probability = netem_percent(corrupt_pct);
+        nla_put_buffer(msg, TCA_NETEM_CORRUPT, &c, sizeof(c));
     }
     nla_end_nested(msg, opts);
 
@@ -188,13 +197,13 @@ out:
  * Command handlers
  * -------------------------------------------------------------------------- */
 
-/* tc netem set <if> [delay <ms>] [jitter <ms>] [loss <%>] [dup <%>] */
+/* tc netem set <if> [delay <ms>] [jitter <ms>] [loss <%>] [dup <%>] [corrupt <%>] */
 static int cmd_netem(hypervisor_conn_t *conn, int argc, char *argv[])
 {
     const char *ifname;
-    int has_delay = 0, has_jitter = 0, has_loss = 0, has_dup = 0, any = 0;
+    int has_delay = 0, has_jitter = 0, has_loss = 0, has_dup = 0, has_corrupt = 0, any = 0;
     double delay_ms = 0.0, jitter_ms = 0.0;
-    unsigned int loss_pct = 0, dup_pct = 0;
+    unsigned int loss_pct = 0, dup_pct = 0, corrupt_pct = 0;
     int i, err;
 
     if (strcmp(argv[0], "set") != 0) {
@@ -217,14 +226,15 @@ static int cmd_netem(hypervisor_conn_t *conn, int argc, char *argv[])
             if (kw[0] == 'd') { delay_ms = ms; has_delay = 1; }
             else { jitter_ms = ms; has_jitter = 1; }
             any = 1;
-        } else if (!strcmp(kw, "loss") || !strcmp(kw, "dup")) {
+        } else if (!strcmp(kw, "loss") || !strcmp(kw, "dup") || !strcmp(kw, "corrupt")) {
             long p = strtol(val, &end, 10);
             if (end == val || *end != '\0' || p < 0 || p > 100) {
                 hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "invalid %s percent '%s' (0-100)", kw, val);
                 return -1;
             }
-            if (kw[0] == 'l') { loss_pct = (unsigned int)p; has_loss = 1; }
-            else { dup_pct = (unsigned int)p; has_dup = 1; }
+            if (!strcmp(kw, "loss")) { loss_pct = (unsigned int)p; has_loss = 1; }
+            else if (!strcmp(kw, "dup")) { dup_pct = (unsigned int)p; has_dup = 1; }
+            else { corrupt_pct = (unsigned int)p; has_corrupt = 1; }
             any = 1;
         } else {
             hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "unknown netem option '%s'", kw);
@@ -238,12 +248,13 @@ static int cmd_netem(hypervisor_conn_t *conn, int argc, char *argv[])
     }
 
     if (!any) {
-        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "no impairment specified (use delay/jitter/loss/dup)");
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "no impairment specified (use delay/jitter/loss/dup/corrupt)");
         return -1;
     }
 
     err = tc_netem_replace(ifname, has_delay, delay_ms, has_jitter, jitter_ms,
-                           has_loss, loss_pct, has_dup, dup_pct);
+                           has_loss, loss_pct, has_dup, dup_pct,
+                           has_corrupt, corrupt_pct);
     if (err < 0) {
         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set netem on %s: %s", ifname, strerror(-err));
         return -1;
@@ -273,8 +284,8 @@ static int cmd_reset(hypervisor_conn_t *conn, int argc, char *argv[])
  * -------------------------------------------------------------------------- */
 
 static hypervisor_cmd_t tc_cmd_array[] = {
-   /* netem set <if> [delay <ms>] [jitter <ms>] [loss <%>] [dup <%>] */
-   { "netem", 4, 10, cmd_netem, NULL },
+   /* netem set <if> [delay <ms>] [jitter <ms>] [loss <%>] [dup <%>] [corrupt <%>] */
+   { "netem", 4, 12, cmd_netem, NULL },
    { "reset", 1, 1, cmd_reset, NULL },
    { NULL, -1, -1, NULL, NULL },
 };

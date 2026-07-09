@@ -57,6 +57,11 @@ def main():
                 # (not the word "jitter"), so assert the jitter value is present.
                 r.check("kernel: jitter applied", "10ms" in q, q.strip()[:120])
 
+                # --- netem set: corrupt ---
+                r.check("netem set corrupt",
+                        c.send("tc netem set %s corrupt 30" % IFC).startswith("100-"))
+                r.check("kernel: corrupt applied", "corrupt 30%" in _qdisc(IFC), _qdisc(IFC).strip()[:120])
+
                 # --- reset removes the qdisc ---
                 r.check("reset", c.send("tc reset %s" % IFC).startswith("100-"))
                 r.check("kernel: netem gone after reset", "netem" not in _qdisc(IFC))
