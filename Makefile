@@ -66,6 +66,7 @@ ifeq ($(shell uname), Linux)
            src/hypervisor_tap.c   \
            src/hypervisor_tc.c   \
            src/hypervisor_capture.c   \
+           src/hypervisor_marker.c   \
            src/netlink/nl.c
 endif
 
