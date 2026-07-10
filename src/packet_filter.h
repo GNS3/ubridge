@@ -30,6 +30,7 @@ enum {
     FILTER_TYPE_DELAY,
     FILTER_TYPE_CORRUPT,
     FILTER_TYPE_BPF,
+    FILTER_TYPE_MARK,
 };
 
 enum {
