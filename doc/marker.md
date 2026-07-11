@@ -27,19 +27,39 @@ no-op when no sink is set, so `mark` filters are cheap when unused.
 Registered under the `bridge` module like the other filter types:
 
 ```
-bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>]
+bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>] [pcap <path>]
 ```
 
 - Matches via libpcap cBPF (`pcap_offline_filter`), exactly like the `bpf`
   filter type.
-- On match → emits a marker signal. **Always returns PASS** (the packet
-  continues; to drop on match use the separate `bpf` filter type).
-- `<id>` is an optional tag echoed in the signal, for correlation.
+- On match → emits a marker signal (if a sink is set) **and**, if `pcap <path>`
+  is given, appends the packet to that pcap file. **Always returns PASS** (the
+  packet continues; to drop on match use the separate `bpf` filter type).
+- `tag <id>` is an optional id echoed in the signal, for correlation.
+- `pcap <path>` is an optional path to a pcap file (standard, `EN10MB`) that
+  **accumulates every matched packet** for this filter (open once on setup,
+  append one record per match, closed when the filter is deleted). This is a
+  BPF-filtered capture: only matches land in the file. gns3server names the
+  path per link/filter (e.g. `<project>/markers/<node>_<bridge>_<filter>.pcap`)
+  and reads it back for offline replay/analysis with tcpdump/Wireshark/PyShark.
+- Keyword pairs (`tag`, `pcap`) may appear in any order.
 
 ```
 bridge add_packet_filter br0 dhcp_probe mark "udp port 67" tag 11
 100-Filter 'dhcp_probe' configured in position 1
+
+bridge add_packet_filter br0 ip_cap mark ip pcap /tmp/ip.pcap
+100-Filter 'ip_cap' configured in position 2
+
+# both at once (real-time signal + on-disk capture):
+bridge add_packet_filter br0 dhcp mark "udp port 67" tag 11 pcap /tmp/dhcp.pcap
 ```
+
+> The `pcap` option writes a **standard pcap** (same writer as
+> `bridge start_capture` / `capture start_kernel`), so any pcap tool reads it
+> with no conversion. Which link a file came from is encoded in its **path**
+> (gns3server's naming) — classic pcap records carry no per-packet metadata, so
+> the link identity lives at the file level, not inside the pcap.
 
 ## The `marker` module
 

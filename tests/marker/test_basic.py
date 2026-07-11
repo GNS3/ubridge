@@ -95,6 +95,25 @@ def main():
                 except socket.timeout:
                     r.check("no signal after marker off", True)
 
+                # mark filter with pcap: matched packets are appended to a pcap
+                PCAP = "/tmp/ubmark_test.pcap"
+                if os.path.exists(PCAP):
+                    os.remove(PCAP)
+                r.check("add mark+pcap filter",
+                        c.send("bridge add_packet_filter br0 f2 mark ip pcap %s" % PCAP).startswith("100-"))
+                inj.sendto(frame, ("127.0.0.1", la))
+                time.sleep(0.3)
+                c.send("bridge delete_packet_filter br0 f2")   # closes/flushes the pcap
+                time.sleep(0.1)
+                r.check("pcap file created", os.path.exists(PCAP))
+                if os.path.exists(PCAP):
+                    blob = open(PCAP, "rb").read()
+                    # 24B global header + 16B record header + frame bytes; frame must be present
+                    r.check("pcap captured the frame", frame in blob and len(blob) > 24 + 16,
+                            "size=%d" % len(blob))
+                if os.path.exists(PCAP):
+                    os.remove(PCAP)
+
                 # status reports an emitted count
                 st = c.send("marker status")
                 r.check("status reports emitted", "emitted=" in st, st.replace("\n", " | "))

@@ -383,22 +383,25 @@ static void create_bpf_filter(packet_filter_t *filter)
 /* ======================================================================== */
 #ifdef __linux__
 #include "marker.h"
+#include "pcap_capture.h"
 
 struct mark_data {
    struct bpf_program fp;
    char *name;   /* filter name, captured at create time (handler never sees it) */
    char *tag;    /* optional tag id, echoed in the signal */
+   pcap_capture_t *cap;   /* optional: append matched packets to this pcap file */
 };
 
-/* Setup: argv[0] = bpf expr; optional argv[1]="tag", argv[2]=id */
+/* Setup: argv[0] = bpf expr; optional keyword pairs "tag <id>" / "pcap <path>"
+ * (any order, each at most once). */
 static int mark_setup(void **opt, int argc, char *argv[])
 {
    struct mark_data *data = *opt;
    pcap_t *pcap_dev;
    char *filter;
-   int link_type;
+   int link_type, i;
 
-   if (argc != 1 && !(argc == 3 && !strcmp(argv[1], "tag")))
+   if (argc < 1)
       return (-1);
 
    if (!data) {
@@ -413,16 +416,35 @@ static int mark_setup(void **opt, int argc, char *argv[])
    pcap_dev = pcap_open_dead(link_type, 65535);
    if (pcap_compile(pcap_dev, &data->fp, filter, 1, PCAP_NETMASK_UNKNOWN) < 0) {
        fprintf(stderr, "Cannot compile mark filter '%s': %s\n", filter, pcap_geterr(pcap_dev));
+       pcap_close(pcap_dev);
        return (-1);
    }
    pcap_close(pcap_dev);
 
-   if (argc == 3)
-      data->tag = strdup(argv[2]);
+   /* optional keyword/value pairs: tag <id>, pcap <path> */
+   for (i = 1; i + 1 < argc; i += 2) {
+      if (!strcmp(argv[i], "tag")) {
+         free(data->tag);
+         data->tag = strdup(argv[i + 1]);
+      } else if (!strcmp(argv[i], "pcap")) {
+         if (data->cap)
+            free_pcap_capture(data->cap);
+         data->cap = create_pcap_capture(argv[i + 1], "EN10MB");
+         if (!data->cap) {
+            fprintf(stderr, "mark: cannot open pcap '%s'\n", argv[i + 1]);
+            return (-1);
+         }
+      } else {
+         return (-1);
+      }
+   }
+   if (i < argc)
+      return (-1);   /* dangling value without a keyword */
    return (0);
 }
 
-/* Packet handler: emit a marker signal on match; always PASS (passive tap). */
+/* Packet handler: on match, emit a marker signal and (optionally) append the
+ * packet to the pcap file; always PASS (passive tap). */
 static int mark_handler(void *pkt, size_t len, void *opt)
 {
    struct mark_data *data = opt;
@@ -432,8 +454,11 @@ static int mark_handler(void *pkt, size_t len, void *opt)
    pkthdr.caplen = len;
    pkthdr.len = len;
    if (data != NULL) {
-       if (pcap_offline_filter(&data->fp, &pkthdr, pkt))
+       if (pcap_offline_filter(&data->fp, &pkthdr, pkt)) {
           marker_emit(data->name, data->tag, len);
+          if (data->cap)
+             pcap_capture_packet(data->cap, pkt, len);
+       }
    }
    return (FILTER_ACTION_PASS);
 }
@@ -445,6 +470,8 @@ static void mark_free(void **opt)
       pcap_freecode(&data->fp);
       free(data->tag);
       free(data->name);
+      if (data->cap)
+         free_pcap_capture(data->cap);
       free(*opt);
       *opt = NULL;
    }
