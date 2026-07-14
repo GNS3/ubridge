@@ -119,16 +119,21 @@ reports `enabled/sink/node/emitted`.)
 
 **Per-link filter** — when the user configures BPF on a link:
 ```
-bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>] [pcap <path>]
+bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>] [link <id>] [pcap <path>]
 ```
 - `<bridge>`: the ubridge bridge for this GNS3 link.
 - `<name>`: filter name (gns3server-chosen; echoed in signals, used as pcap identity).
 - `<bpf_expr>`: libpcap cBPF syntax (same as the `bpf` filter type).
 - `tag <id>`: optional correlation id echoed in the signal.
+- `link <id>`: optional link id echoed in the signal, for per-link attribution.
+  Needed when one ubridge bridge serves several GNS3 links (e.g. IOU's per-node
+  bridge): there `bridge` and `filter` are identical across links, so `link` is
+  the only way to tell signals — and pcap files — apart.
 - `pcap <path>`: optional; if given, every matched packet is appended to that
-  pcap (standard, `EN10MB`). **gns3server should name it to encode identity**, e.g.
-  `<project>/markers/<node_id>_<bridge>_<filter>.pcap`.
-- `tag`/`pcap` keyword pairs may appear in any order, each at most once.
+  pcap (standard, `EN10MB`). **gns3server should name it to encode identity**,
+  keyed on `link` (not `bridge`+`filter`, which collide when one bridge serves
+  several links), e.g. `<project>/markers/<node_id>_<link>_<filter>.pcap`.
+- `tag`/`link`/`pcap` keyword pairs may appear in any order, each at most once.
 
 **Disable / change** — `bridge delete_packet_filter <bridge> <name>` (closes and
 flushes the pcap; file persists). To change the BPF, delete then re-add.
@@ -137,7 +142,7 @@ flushes the pcap; file persists). To change the BPF, delete then re-add.
 
 One UDP datagram per match, line-based ASCII:
 ```
-MARK <sec.usec> node=<id> filter=<name> tag=<tag> len=<n>\n
+MARK <sec.usec> node=<id> filter=<name> link=<link> tag=<tag> len=<n>\n
 ```
 | Field | Meaning | When unset |
 |-------|---------|------------|
@@ -145,6 +150,7 @@ MARK <sec.usec> node=<id> filter=<name> tag=<tag> len=<n>\n
 | `<sec.usec>` | Unix epoch, `gettimeofday`, microsecond | — |
 | `node=<id>` | the ubridge/node (`UBRIDGE_MARKER_NODE`) | `node=-` |
 | `filter=<name>` | the matched filter's name | `filter=-` |
+| `link=<link>` | the link id from `mark … link <id>` | `link=-` |
 | `tag=<tag>` | the tag id from `mark … tag <id>` | `tag=-` |
 | `len=<n>` | matched packet length in bytes | — |
 
@@ -152,7 +158,7 @@ Parse (Python):
 ```python
 ts = float(data.split()[1])
 kv = dict(t.split(b"=",1) for t in data.split() if b"=" in t)
-# {'node':.., 'filter':.., 'tag':.., 'len':..}
+# {'node':.., 'filter':.., 'link':.., 'tag':.., 'len':..}
 ```
 > The signal carries **metadata only** — no packet bytes. `len` is the size; the
 > bytes go to the `pcap` file (if configured).
@@ -168,9 +174,9 @@ carry no per-packet metadata) — gns3server tracks `path ↔ (node, link, filte
 
 | Want | Configure |
 |------|-----------|
-| Real-time coloring only | set sink; `mark <bpf> [tag]` (no `pcap`) |
+| Real-time coloring only | set sink; `mark <bpf> [tag] [link]` (no `pcap`) |
 | Offline replay only | `mark <bpf> [pcap <path>]` (no sink needed) |
-| Both | `mark <bpf> tag <id> pcap <path>` + sink set |
+| Both | `mark <bpf> link <id> tag <id> pcap <path>` + sink set |
 
 ---
 

@@ -60,7 +60,7 @@ def main():
                 c.send("bridge add_nio_udp br0 %d 127.0.0.1 %d" % (la, ra))   # NIO-A
                 c.send("bridge add_nio_udp br0 %d 127.0.0.1 %d" % (lb, rb))   # NIO-B
                 r.check("add mark filter",
-                        c.send("bridge add_packet_filter br0 f1 mark ip tag 7").startswith("100-"))
+                        c.send("bridge add_packet_filter br0 f1 mark ip tag 7 link 9").startswith("100-"))
                 r.check("bridge start", c.send("bridge start br0").startswith("100-"))
 
                 # inject an IP frame into NIO-A's listen port
@@ -72,8 +72,8 @@ def main():
                     data, _ = ms.recvfrom(4096)
                     sig = data.decode(errors="replace")
                     r.check("marker signal received", sig.startswith("MARK "), sig.strip())
-                    r.check("signal node/filter/tag", all(x in sig for x in
-                            ("node=testnode", "filter=f1", "tag=7")), sig.strip())
+                    r.check("signal node/filter/link/tag", all(x in sig for x in
+                            ("node=testnode", "filter=f1", "link=9", "tag=7")), sig.strip())
                     r.check("signal len", ("len=%d" % len(frame)) in sig, sig.strip())
                 except socket.timeout:
                     r.check("marker signal received", False, "timeout")
@@ -95,6 +95,9 @@ def main():
                 except socket.timeout:
                     r.check("no signal after marker off", True)
 
+                # done with f1; drop it so later checks see a known filter set
+                c.send("bridge delete_packet_filter br0 f1")
+
                 # mark filter with pcap: matched packets are appended to a pcap
                 PCAP = "/tmp/ubmark_test.pcap"
                 if os.path.exists(PCAP):
@@ -113,6 +116,21 @@ def main():
                             "size=%d" % len(blob))
                 if os.path.exists(PCAP):
                     os.remove(PCAP)
+
+                # link/tag omitted -> signal carries link=- and tag=- (the default
+                # for absent opaque fields); marker was turned off above, re-enable
+                c.send("marker sink 127.0.0.1 %d" % marker_port)
+                r.check("add mark filter (no link)",
+                        c.send("bridge add_packet_filter br0 f3 mark ip").startswith("100-"))
+                inj.sendto(frame, ("127.0.0.1", la))
+                time.sleep(0.3)
+                try:
+                    data, _ = ms.recvfrom(4096)
+                    sig2 = data.decode(errors="replace")
+                    r.check("signal link=- when omitted",
+                            ("link=-" in sig2 and "tag=-" in sig2), sig2.strip())
+                except socket.timeout:
+                    r.check("signal link=- when omitted", False, "timeout")
 
                 # status reports an emitted count
                 st = c.send("marker status")

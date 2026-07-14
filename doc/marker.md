@@ -27,7 +27,7 @@ no-op when no sink is set, so `mark` filters are cheap when unused.
 Registered under the `bridge` module like the other filter types:
 
 ```
-bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>] [pcap <path>]
+bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>] [link <id>] [pcap <path>]
 ```
 
 - Matches via libpcap cBPF (`pcap_offline_filter`), exactly like the `bpf`
@@ -36,23 +36,32 @@ bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>] [pcap <path>
   is given, appends the packet to that pcap file. **Always returns PASS** (the
   packet continues; to drop on match use the separate `bpf` filter type).
 - `tag <id>` is an optional id echoed in the signal, for correlation.
+- `link <id>` is an optional id echoed in the signal, for **topology link
+  attribution**. Distinct from `tag` (free-form correlation): when one ubridge
+  bridge carries several links — notably IOU's per-node `IOL-BRIDGE`, where
+  every link shares the same bridge — `bridge` and `filter` are identical
+  across those links, so the controller needs `link` to tell their signals (and
+  pcap paths) apart. ubridge treats it as opaque and echoes it verbatim.
 - `pcap <path>` is an optional path to a pcap file (standard, `EN10MB`) that
   **accumulates every matched packet** for this filter (open once on setup,
   append one record per match, closed when the filter is deleted). This is a
   BPF-filtered capture: only matches land in the file. gns3server names the
-  path per link/filter (e.g. `<project>/markers/<node>_<bridge>_<filter>.pcap`)
-  and reads it back for offline replay/analysis with tcpdump/Wireshark/PyShark.
-- Keyword pairs (`tag`, `pcap`) may appear in any order.
+  path per link (e.g. `<project>/markers/<node>_<link>_<filter>.pcap`), keyed
+  on `link` — `bridge`+`filter` collide when one bridge serves several links
+  (IOU) — and reads it back for offline replay/analysis with
+  tcpdump/Wireshark/PyShark.
+- Keyword pairs (`tag`, `link`, `pcap`) may appear in any order.
 
 ```
 bridge add_packet_filter br0 dhcp_probe mark "udp port 67" tag 11
 100-Filter 'dhcp_probe' configured in position 1
 
-bridge add_packet_filter br0 ip_cap mark ip pcap /tmp/ip.pcap
-100-Filter 'ip_cap' configured in position 2
+# per-link attribution (e.g. one port of a shared IOU bridge):
+bridge add_packet_filter br0 icmp_l3 mark "icmp" link 3 pcap /tmp/icmp_l3.pcap
+100-Filter 'icmp_l3' configured in position 2
 
-# both at once (real-time signal + on-disk capture):
-bridge add_packet_filter br0 dhcp mark "udp port 67" tag 11 pcap /tmp/dhcp.pcap
+# all at once (real-time signal + per-link + on-disk capture):
+bridge add_packet_filter br0 dhcp mark "udp port 67" tag 11 link 3 pcap /tmp/dhcp.pcap
 ```
 
 > The `pcap` option writes a **standard pcap** (same writer as
@@ -91,11 +100,12 @@ marker status
 One UDP datagram per match, line-based:
 
 ```
-MARK <sec.usec> node=<id> filter=<name> tag=<tag> len=<n>
+MARK <sec.usec> node=<id> filter=<name> link=<link> tag=<tag> len=<n>
 ```
 
-`node`/`tag` are `-` when unset. The controller parses the line and dispatches
-by `node` / `filter` / `tag`.
+`node`/`link`/`tag` are `-` when unset. The controller parses the line and
+dispatches by `node` / `link` / `filter` / `tag` (`link` disambiguates signals
+that share a bridge+filter across multiple links).
 
 ## Status codes
 
@@ -108,8 +118,8 @@ by `node` / `filter` / `tag`.
 ## Consumer side (gns3server)
 
 Out of ubridge's scope, but ~10 lines of Python: open a UDP socket, `recvfrom`,
-split the `MARK` line into key/values, dispatch by tag (or expose a
-`wait_for(tag, timeout)` helper for test synchronization).
+split the `MARK` line into key/values, dispatch by `node`/`link`/`tag` (or
+expose a `wait_for(tag, timeout)` helper for test synchronization).
 
 ```python
 s = socket.socket(socket.AF_UNIX if False else socket.AF_INET, socket.SOCK_DGRAM)

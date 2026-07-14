@@ -389,11 +389,12 @@ struct mark_data {
    struct bpf_program fp;
    char *name;   /* filter name, captured at create time (handler never sees it) */
    char *tag;    /* optional tag id, echoed in the signal */
+   char *link;   /* optional link id, echoed in the signal for topology attribution */
    pcap_capture_t *cap;   /* optional: append matched packets to this pcap file */
 };
 
-/* Setup: argv[0] = bpf expr; optional keyword pairs "tag <id>" / "pcap <path>"
- * (any order, each at most once). */
+/* Setup: argv[0] = bpf expr; optional keyword pairs "tag <id>" / "link <id>" /
+ * "pcap <path>" (any order, each at most once). */
 static int mark_setup(void **opt, int argc, char *argv[])
 {
    struct mark_data *data = *opt;
@@ -421,11 +422,14 @@ static int mark_setup(void **opt, int argc, char *argv[])
    }
    pcap_close(pcap_dev);
 
-   /* optional keyword/value pairs: tag <id>, pcap <path> */
+   /* optional keyword/value pairs: tag <id>, link <id>, pcap <path> */
    for (i = 1; i + 1 < argc; i += 2) {
       if (!strcmp(argv[i], "tag")) {
          free(data->tag);
          data->tag = strdup(argv[i + 1]);
+      } else if (!strcmp(argv[i], "link")) {
+         free(data->link);
+         data->link = strdup(argv[i + 1]);
       } else if (!strcmp(argv[i], "pcap")) {
          if (data->cap)
             free_pcap_capture(data->cap);
@@ -455,7 +459,7 @@ static int mark_handler(void *pkt, size_t len, void *opt)
    pkthdr.len = len;
    if (data != NULL) {
        if (pcap_offline_filter(&data->fp, &pkthdr, pkt)) {
-          marker_emit(data->name, data->tag, len);
+          marker_emit(data->name, data->tag, data->link, len);
           if (data->cap)
              pcap_capture_packet(data->cap, pkt, len);
        }
@@ -469,6 +473,7 @@ static void mark_free(void **opt)
       struct mark_data *data = *opt;
       pcap_freecode(&data->fp);
       free(data->tag);
+      free(data->link);
       free(data->name);
       if (data->cap)
          free_pcap_capture(data->cap);
