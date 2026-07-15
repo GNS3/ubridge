@@ -201,7 +201,7 @@ out:
 static int cmd_netem(hypervisor_conn_t *conn, int argc, char *argv[])
 {
     const char *ifname;
-    int has_delay = 0, has_jitter = 0, has_loss = 0, has_dup = 0, has_corrupt = 0, any = 0;
+    int has_delay = 0, has_jitter = 0, has_loss = 0, has_dup = 0, has_corrupt = 0;
     double delay_ms = 0.0, jitter_ms = 0.0;
     unsigned int loss_pct = 0, dup_pct = 0, corrupt_pct = 0;
     int i, err;
@@ -225,7 +225,6 @@ static int cmd_netem(hypervisor_conn_t *conn, int argc, char *argv[])
             }
             if (kw[0] == 'd') { delay_ms = ms; has_delay = 1; }
             else { jitter_ms = ms; has_jitter = 1; }
-            any = 1;
         } else if (!strcmp(kw, "loss") || !strcmp(kw, "dup") || !strcmp(kw, "corrupt")) {
             long p = strtol(val, &end, 10);
             if (end == val || *end != '\0' || p < 0 || p > 100) {
@@ -235,7 +234,6 @@ static int cmd_netem(hypervisor_conn_t *conn, int argc, char *argv[])
             if (!strcmp(kw, "loss")) { loss_pct = (unsigned int)p; has_loss = 1; }
             else if (!strcmp(kw, "dup")) { dup_pct = (unsigned int)p; has_dup = 1; }
             else { corrupt_pct = (unsigned int)p; has_corrupt = 1; }
-            any = 1;
         } else {
             hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "unknown netem option '%s'", kw);
             return -1;
@@ -244,11 +242,6 @@ static int cmd_netem(hypervisor_conn_t *conn, int argc, char *argv[])
 
     if (i < argc) {
         hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1, "option '%s' missing its value", argv[i]);
-        return -1;
-    }
-
-    if (!any) {
-        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "no impairment specified (use delay/jitter/loss/dup/corrupt)");
         return -1;
     }
 
