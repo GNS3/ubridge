@@ -56,6 +56,7 @@ getcap $(which ubridge) # verify
 | `addif <bridge> <port>` | 2 | Enslave a port to the bridge (`RTM_SETLINK` + `IFLA_MASTER`) **and bring the port UP**. Port must pre-exist. |
 | `delif <bridge> <port>` | 2 | Release a port from a bridge. Verifies the port is actually on the given bridge; else `-EINVAL`. |
 | `addip <bridge> <ip/prefix>` | 2 | Assign an IPv4 address (`RTM_NEWADDR`) and bring the bridge UP. CIDR must include a `/` and prefix ≤ 32. |
+| `delip <bridge> <ip/prefix>` | 2 | Remove an IPv4 address from a bridge (`RTM_DELADDR`). Bad CIDR → `204`; missing bridge/IP → `207`. |
 | `setup <bridge> <ip/prefix>` | 2 | `create` + `addip` in one step. Validates the CIDR **before** creating; rolls back the bridge if `addip` fails. |
 | `show <bridge>` | 1 | Query the bridge's IPv4 address/prefix and operational flags (`UP`/`RUNNING`). |
 
@@ -70,17 +71,21 @@ All set attributes via `RTM_NEWLINK` + `IFLA_LINKINFO{kind=bridge, INFO_DATA{att
 | `setfd <bridge> <s>` | `IFLA_BR_FORWARD_DELAY` | 2–30 (seconds) |
 | `sethello <bridge> <s>` | `IFLA_BR_HELLO_TIME` | 1–10 (seconds) |
 | `setmaxage <bridge> <s>` | `IFLA_BR_MAX_AGE` | 6–40 (seconds) |
-| `setageing <bridge> <s>` | `IFLA_BR_AGEING_TIME` | ≥0 (seconds; 0 = never age) |
+| `setageing <bridge> <s>` | `IFLA_BR_AGEING_TIME` | 0–1000000 (seconds; 0 = never age) |
 | `vlanfiltering <bridge> on\|off` | `IFLA_BR_VLAN_FILTERING` | `on`/`off` |
 | `setvlanproto <bridge> <v>` | `IFLA_BR_VLAN_PROTOCOL` (u16) | `0x8100` (802.1Q) or `0x88a8` (802.1ad) |
 | `mcastsnoop <bridge> on\|off` | `IFLA_BR_MCAST_SNOOPING` | `on`/`off` |
 | `setgroupfwd <bridge> <n>` | `IFLA_BR_GROUP_FWD_MASK` | 0–65535 |
 
 > Time-valued attributes (`setfd`/`sethello`/`setmaxage`/`setageing`) are
-> converted seconds → centiseconds (×`sysconf(_SC_CLK_TK)`, i.e. ×100 on x86)
+> converted seconds → centiseconds (×`sysconf(_SC_CLK_TCK)`, i.e. ×100 on x86)
 > because the kernel stores them as `clock_t`/jiffies.
+>
+> All `on|off` commands (`stp`, `vlanfiltering`, `mcastsnoop`, and the port-level
+> `hairpin`/`isolated`) share one parser and accept `on`/`off`, `1`/`0`,
+> `yes`/`no`, `true`/`false`.
 
-### Port-level parameters (4)
+### Port-level parameters (5)
 
 All set attributes via `RTM_SETLINK` + `IFLA_PROTINFO{attr}` with
 `ifi_family = AF_BRIDGE` and `NLA_F_NESTED` on `IFLA_PROTINFO`. The port must

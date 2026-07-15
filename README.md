@@ -79,19 +79,35 @@ The modules that are currently defined are given below:
 - docker : Docker management 
 - brctl : Linux bridge management
 - link : generic interface management
+- tap : persistent TAP device lifecycle (Linux only)
+- tc : kernel netem link impairment — delay/jitter/loss/dup/corrupt (Linux only)
+- capture : kernel-side AF_PACKET capture (Linux only)
+- marker : packet-filter match signals, pushed to a UDP sink (Linux only)
+
+The Linux-only modules (`tap`, `tc`, `capture`, `marker`) support the
+**kernel data plane** (frames flowing `TAP → kernel bridge → TAP`, bypassing
+ubridge's user-space NIO relay): `tap`/`brctl` build the plumbing, `tc`
+replaces the user-space filters at the qdisc level, `capture` taps the
+interface at the kernel level, and `marker` signals filter matches off band.
+See [`doc/`](doc/) for per-module details.
 
 ### Hypervisor module ("hypervisor")
 
-- **hypervisor version**: Display the version of dynamips.
+- **hypervisor version**: Display the version of ubridge.
 
 ``` {.bash}
 hypervisor version
-100-0.9.12
+100-1.1.1
 ```
 
 - **hypervisor module_list**: Display the module list.
 
 ``` {.bash}
+101 marker
+101 capture
+101 tc
+101 tap
+101 link
 101 brctl
 101 iol_bridge
 101 docker
@@ -357,6 +373,15 @@ with the Berkeley Packet Filter (BPF) syntax. This filter will drop any
 packet matching the expression. It also has 1 optional argument
 *\<pcap_linktype\>* which is the PCAP link type, the default is
 Ethernet "EN10MB".
+
+##### mark
+
+(Linux only) "mark" has 1 argument "*\<filter_expression\>*" (libpcap cBPF
+syntax, like "bpf") plus optional keyword pairs `tag <id>`, `link <id>`,
+`pcap <path>` (any order). It is a **passive tap**: on a match it emits a UDP
+marker signal to a configured sink (set via the `marker` module) and, when
+`pcap <path>` is given, appends the matched packet to that pcap file — it never
+drops traffic (use "bpf" to drop). See [`doc/marker.md`](doc/marker.md).
 
 ``` {.bash}
 bridge add_packet_filter br0 "my_filter1" "delay" 50 10

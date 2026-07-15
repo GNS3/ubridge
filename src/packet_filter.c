@@ -379,6 +379,128 @@ static void create_bpf_filter(packet_filter_t *filter)
 }
 
 /* ======================================================================== */
+/* MARK — passive tap: emit a marker signal on match, never drop (Linux)    */
+/* ======================================================================== */
+#ifdef __linux__
+#include "marker.h"
+#include "pcap_capture.h"
+
+struct mark_data {
+   struct bpf_program fp;
+   char *name;   /* filter name, captured at create time (handler never sees it) */
+   char *tag;    /* optional tag id, echoed in the signal */
+   char *link;   /* optional link id, echoed in the signal for topology attribution */
+   pcap_capture_t *cap;   /* optional: append matched packets to this pcap file */
+};
+
+/* Setup: argv[0] = bpf expr; optional keyword pairs "tag <id>" / "link <id>" /
+ * "pcap <path>" (any order, each at most once). */
+static int mark_setup(void **opt, int argc, char *argv[])
+{
+   struct mark_data *data = *opt;
+   pcap_t *pcap_dev;
+   char *filter;
+   int link_type, i;
+
+   if (argc < 1)
+      return (-1);
+
+   if (!data) {
+      if (!(data = malloc(sizeof(*data))))
+         return (-1);
+      memset(data, 0, sizeof(*data));
+      *opt = data;
+   }
+
+   filter = argv[0];
+   link_type = DLT_EN10MB;
+   pcap_dev = pcap_open_dead(link_type, 65535);
+   if (pcap_compile(pcap_dev, &data->fp, filter, 1, PCAP_NETMASK_UNKNOWN) < 0) {
+       fprintf(stderr, "Cannot compile mark filter '%s': %s\n", filter, pcap_geterr(pcap_dev));
+       pcap_close(pcap_dev);
+       return (-1);
+   }
+   pcap_close(pcap_dev);
+
+   /* optional keyword/value pairs: tag <id>, link <id>, pcap <path> */
+   for (i = 1; i + 1 < argc; i += 2) {
+      if (!strcmp(argv[i], "tag")) {
+         free(data->tag);
+         data->tag = strdup(argv[i + 1]);
+      } else if (!strcmp(argv[i], "link")) {
+         free(data->link);
+         data->link = strdup(argv[i + 1]);
+      } else if (!strcmp(argv[i], "pcap")) {
+         if (data->cap)
+            free_pcap_capture(data->cap);
+         data->cap = create_pcap_capture(argv[i + 1], "EN10MB");
+         if (!data->cap) {
+            fprintf(stderr, "mark: cannot open pcap '%s'\n", argv[i + 1]);
+            return (-1);
+         }
+      } else {
+         return (-1);
+      }
+   }
+   if (i < argc)
+      return (-1);   /* dangling value without a keyword */
+   return (0);
+}
+
+/* Packet handler: on match, emit a marker signal and (optionally) append the
+ * packet to the pcap file; always PASS (passive tap). */
+static int mark_handler(void *pkt, size_t len, void *opt)
+{
+   struct mark_data *data = opt;
+   struct pcap_pkthdr pkthdr;
+
+   memset(&pkthdr, 0, sizeof(pkthdr));
+   pkthdr.caplen = len;
+   pkthdr.len = len;
+   if (data != NULL) {
+       if (pcap_offline_filter(&data->fp, &pkthdr, pkt)) {
+          marker_emit(data->name, data->tag, data->link, len);
+          if (data->cap)
+             pcap_capture_packet(data->cap, pkt, len);
+       }
+   }
+   return (FILTER_ACTION_PASS);
+}
+
+static void mark_free(void **opt)
+{
+   if (*opt) {
+      struct mark_data *data = *opt;
+      pcap_freecode(&data->fp);
+      free(data->tag);
+      free(data->link);
+      free(data->name);
+      if (data->cap)
+         free_pcap_capture(data->cap);
+      free(*opt);
+      *opt = NULL;
+   }
+}
+
+static void create_mark_filter(packet_filter_t *filter)
+{
+    struct mark_data *data;
+
+    /* filter->name is strdup'd by add_packet_filter before create_filter runs,
+     * so capture it here (the handler only ever receives filter->data). */
+    if (!(data = malloc(sizeof(*data))))
+        return;
+    memset(data, 0, sizeof(*data));
+    data->name = filter->name ? strdup(filter->name) : NULL;
+    filter->data = data;
+    filter->type = FILTER_TYPE_MARK;
+    filter->setup = (void *)mark_setup;
+    filter->handler = (void *)mark_handler;
+    filter->free = (void *)mark_free;
+}
+#endif /* __linux__ */
+
+/* ======================================================================== */
 /* Generic functions for filter management                                  */
 /* ======================================================================== */
 
@@ -394,6 +516,9 @@ static filter_table_t lookup_table[] = {
     { "delay", create_delay_filter },
     { "corrupt", create_corrupt_filter },
     { "bpf", create_bpf_filter},
+#ifdef __linux__
+    { "mark", create_mark_filter },
+#endif
 };
 
 static int create_filter(packet_filter_t *filter, char *filter_type)
