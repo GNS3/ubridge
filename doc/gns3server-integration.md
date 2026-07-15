@@ -133,7 +133,8 @@ bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>] [link <id>] 
   pcap (standard, `EN10MB`). **gns3server should name it to encode identity**,
   keyed on `link` (not `bridge`+`filter`, which collide when one bridge serves
   several links), e.g. `<project>/markers/<node_id>_<link>_<filter>.pcap`.
-- `tag`/`link`/`pcap` keyword pairs may appear in any order, each at most once.
+- `tag`/`link`/`pcap` keyword pairs may appear in any order; each is normally given
+  once (a repeat silently overwrites the earlier value — last one wins).
 
 **Disable / change** — `bridge delete_packet_filter <bridge> <name>` (closes and
 flushes the pcap; file persists). To change the BPF, delete then re-add.
@@ -241,6 +242,6 @@ capture start_kernel <if> <pcap> [dlt]                               capture sto
 # marker
 marker sink <host> <port>          marker node <id>                  marker off                     marker status
 # mark filter (under bridge)
-bridge add_packet_filter <br> <name> mark <bpf> [tag <id>] [pcap <path>]
+bridge add_packet_filter <br> <name> mark <bpf> [tag <id>] [link <id>] [pcap <path>]
 bridge delete_packet_filter <br> <name>
 ```

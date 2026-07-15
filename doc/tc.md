@@ -41,7 +41,7 @@ pairs, any order:
 | `delay <ms>` | milliseconds (may be fractional) | added latency |
 | `jitter <ms>` | milliseconds | latency variation |
 | `loss <%>` | 0–100 | random packet loss |
-| `dup <%` | 0–100 | random duplication |
+| `dup <%>` | 0–100 | random duplication |
 | `corrupt <%>` | 0–100 | random corruption |
 
 ```

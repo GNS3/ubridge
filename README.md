@@ -93,16 +93,21 @@ See [`doc/`](doc/) for per-module details.
 
 ### Hypervisor module ("hypervisor")
 
-- **hypervisor version**: Display the version of dynamips.
+- **hypervisor version**: Display the version of ubridge.
 
 ``` {.bash}
 hypervisor version
-100-0.9.12
+100-1.1.1
 ```
 
 - **hypervisor module_list**: Display the module list.
 
 ``` {.bash}
+101 marker
+101 capture
+101 tc
+101 tap
+101 link
 101 brctl
 101 iol_bridge
 101 docker
@@ -368,6 +373,15 @@ with the Berkeley Packet Filter (BPF) syntax. This filter will drop any
 packet matching the expression. It also has 1 optional argument
 *\<pcap_linktype\>* which is the PCAP link type, the default is
 Ethernet "EN10MB".
+
+##### mark
+
+(Linux only) "mark" has 1 argument "*\<filter_expression\>*" (libpcap cBPF
+syntax, like "bpf") plus optional keyword pairs `tag <id>`, `link <id>`,
+`pcap <path>` (any order). It is a **passive tap**: on a match it emits a UDP
+marker signal to a configured sink (set via the `marker` module) and, when
+`pcap <path>` is given, appends the matched packet to that pcap file — it never
+drops traffic (use "bpf" to drop). See [`doc/marker.md`](doc/marker.md).
 
 ``` {.bash}
 bridge add_packet_filter br0 "my_filter1" "delay" 50 10

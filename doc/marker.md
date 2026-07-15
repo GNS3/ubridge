@@ -91,7 +91,7 @@ marker sink 127.0.0.1 9000
 marker node qemu-r1
 100-marker node set to qemu-r1
 marker status
-101-enabled=1 sink=127.0.0.1:9000 node=qemu-r1 emitted=3
+101 enabled=1 sink=127.0.0.1:9000 node=qemu-r1 emitted=3
 100-OK
 ```
 

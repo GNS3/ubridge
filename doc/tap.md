@@ -94,7 +94,7 @@ Missing device → `207/ENODEV`.
 |------|---------|
 | `100` | OK |
 | `204` | Invalid parameter (name too long, bad uid) |
-| `206` | Unable to create / set owner (`EEXIST`, `EBUSY`, `ENODEV`) |
+| `206` | Unable to create / set owner (`EBUSY`, `ENODEV`) |
 | `207` | Unable to delete (`ENODEV`) |
 
 ## Typical workflow

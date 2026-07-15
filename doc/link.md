@@ -105,8 +105,10 @@ Invalid state (not `up`/`down`) → `204/EINVAL`. Missing interface →
 | Code | Meaning |
 |------|---------|
 | `100` | OK |
+| `203` | Bad number of parameters |
 | `204` | Invalid parameter value |
 | `206` | Unable to create object |
+| `207` | Unable to delete object |
 
 ## Typical workflow
 
