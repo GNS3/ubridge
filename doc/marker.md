@@ -157,5 +157,5 @@ and that `marker off` stops the signals.
 **Pure user-space (UDP + libpcap cBPF) — no `CAP_NET_ADMIN` needed, no sudo:**
 
 ```bash
-cd tests/marker && python3 run_all.py   # 8/8 PASS
+cd tests/marker && python3 run_all.py   # 13/13 PASS
 ```
