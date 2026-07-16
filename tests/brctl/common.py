@@ -136,3 +136,28 @@ def no_residual(prefix="regtest"):
         ["ip", "-o", "link", "show", "type", "bridge"], capture_output=True, text=True
     ).stdout
     return not any(prefix in line for line in out.splitlines())
+
+
+def ensure_ubtest():
+    """Ensure the shared `ubtest` dummy port exists for port-scoped tests.
+
+    Auto-created when running as root (CAP_NET_ADMIN) and missing; a no-op
+    otherwise, in which case suites that need it fall back to detect-and-skip.
+    Idempotent, and intentionally never destroyed — `ubtest` is a persistent
+    fixture shared across all brctl suites (a documented prerequisite that is
+    simply automated when the runner has privileges).
+
+    Returns True if `ubtest` is usable, False otherwise.
+    """
+    if subprocess.run(["ip", "-o", "link", "show", "ubtest"],
+                      capture_output=True).returncode == 0:
+        return True
+    if os.geteuid() != 0:
+        return False
+    r = subprocess.run(["ip", "link", "add", "ubtest", "type", "dummy"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        print("  [NOTE] could not create ubtest dummy: %s" % r.stderr.strip())
+        return False
+    print("  [setup] created ubtest dummy (auto)")
+    return True

@@ -5,8 +5,9 @@ netlink (no ioctl). It is exposed via the hypervisor text protocol as
 `brctl <command> [args...]`.
 
 It supports the full bridge lifecycle (create/delete, port enslave/release,
-IP assignment), runtime bridge-level parameters (STP, ageing, VLAN, multicast)
-and per-port parameters (priority, path cost, state, hairpin).
+IP assignment), runtime bridge-level parameters (STP, ageing, VLAN, multicast),
+per-port parameters (priority, path cost, state, hairpin) and per-port VLAN
+membership (the primitives for access/trunk/QinQ port modes).
 
 > **Note:** veth pair creation, IP assignment on arbitrary interfaces, and
 > link state control live in the separate [`link`](link.md) module
@@ -99,6 +100,27 @@ already be enslaved to the bridge; otherwise `-EINVAL`.
 | `hairpin <bridge> <port> on\|off` | `IFLA_BRPORT_MODE` | `on`/`off` (on = `BRIDGE_MODE_HAIRPIN`) |
 | `isolated <bridge> <port> on\|off` | `IFLA_BRPORT_ISOLATED` | `on`/`off` (on = port can only reach the CPU, not other ports) |
 
+### VLAN membership (2)
+
+Per-port VID add/delete — the building blocks for access/trunk/QinQ port modes.
+VLANs ride in `IFLA_AF_SPEC` (the `AF_BRIDGE` sibling of `IFLA_PROTINFO`), as
+iproute2 `bridge vlan add|del` sends them: `add` maps to the kernel's
+`br_setlink`, `del` to `br_dellink`. The port must be enslaved to the bridge,
+and the bridge must have `vlanfiltering on` (else the kernel rejects with
+`-EINVAL`). `BRIDGE_FLAGS_SELF` makes the op target the port itself.
+
+| Command | Args | Description |
+|---------|------|-------------|
+| `vlan_add <bridge> <port> <vid> [vid <end>] [pvid] [untagged]` | 3–7 | Add a VID (or `vid <end>` range). `pvid` = strip tag on ingress (sets the port PVID); `untagged` = strip on egress. A range is encoded as `RANGE_BEGIN`/`RANGE_END`. Duplicate VID → `EEXIST` (206). |
+| `vlan_del <bridge> <port> <vid> [vid <end>]` | 3–5 | Delete a VID/range. Flags are rejected — deletion is by VID only. |
+
+VIDs are 1–4094 (4095 reserved); an out-of-range or reversed range → `204`.
+
+ESW access/trunk modes are composed from these two primitives (in gns3-server,
+not here): access VLAN *N* = `vlanfiltering on` → `vlan_del <port> 1` →
+`vlan_add <br> <port> N pvid untagged`; a dot1q trunk's tagged list is a series
+of `vlan_add` (ranges), with the native VLAN added `pvid untagged`.
+
 ## Implementation notes
 
 - **netlink library** — `src/netlink/nl.c` (lxc-derived). Helpers used:
@@ -146,12 +168,13 @@ attributes appear on the port).
 ### Prerequisites
 
 ```bash
-# A throwaway dummy port for addif/delif/port-param tests
-sudo ip link add ubtest type dummy
-sudo ip link set ubtest down
-
 # ubridge installed with capabilities
 sudo make install
+
+# A throwaway dummy port for addif/delif/port-param tests.
+# Auto-created when suites run under sudo (ensure_ubtest in common.py);
+# create it manually only if you run a suite without privileges:
+sudo ip link add ubtest type dummy
 ```
 
 ### Test suites
@@ -169,7 +192,7 @@ python3 test_basic.py
 python3 run_all.py
 ```
 
-Seven suites (127 tests in total):
+Eight suites (151 tests in total):
 
 | Suite | Tests | Scope |
 |-------|-------|-------|
@@ -180,8 +203,9 @@ Seven suites (127 tests in total):
 | `test_state` | 12 | addif/addip idempotency, UP/DOWN transitions, ports on delete |
 | `test_stress` | 5 | 400 create/delete cycles, fd stability, dump at scale (60 bridges) |
 | `test_no_privs` | 4 | No-cap binary rejects mutations, survives gracefully |
+| `test_vlan` | 24 | Per-port VLAN add/del/range, kernel-side verification, error paths |
 
-All 127 tests pass on the reference kernel (6.19.11-1-default).
+All 151 tests pass on the reference kernel (6.19.11-1-default).
 
 ### Kernel verification reference
 
@@ -197,3 +221,12 @@ All 127 tests pass on the reference kernel (6.19.11-1-default).
 | `setpathcost 500` | `cost 500` (on the port) |
 | `hairpin on` | `hairpin on` (on the port) |
 ```
+
+VLAN membership is verified with `bridge vlan show dev <port>` instead:
+
+| Set via brctl | Read back from `bridge vlan show dev <port>` |
+|---------------|----------------------------------------------|
+| `vlan_add <br> <p> 100 pvid untagged` | `100 PVID Egress Untagged` |
+| `vlan_add <br> <p> 200` | `200` |
+| `vlan_add <br> <p> 300 vid 302` | `300-302` |
+| `vlan_del <br> <p> 200` | `200` row gone |
