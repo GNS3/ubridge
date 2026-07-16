@@ -117,7 +117,7 @@ ports.
 |---------|------|-------------|
 | `vlan_add <bridge> <port> <vid> [vid <end>] [pvid] [untagged]` | 3–7 | Add a VID (or `vid <end>` range). `pvid` = strip tag on ingress (sets the port PVID); `untagged` = strip on egress. A range is encoded as `RANGE_BEGIN`/`RANGE_END`. Re-adding a VID is idempotent (success; flags are updated if they differ). |
 | `vlan_del <bridge> <port> <vid> [vid <end>]` | 3–5 | Delete a VID/range. Flags are rejected — deletion is by VID only. |
-| `vlan_show <bridge> [port]` | 1–2 | List per-port VID membership (`RTM_GETLINK` AF_BRIDGE dump + `IFLA_EXT_MASK=RTEXT_FILTER_BRVLAN`). One line per (port, vid): `<port> <vid> [PVID] [Egress Untagged]`. |
+| `vlan_show <bridge> [port]` | 1–2 | List per-port VID membership (`RTM_GETLINK` AF_BRIDGE dump, compressed — `RTEXT_FILTER_BRVLAN_COMPRESSED` — so a port with thousands of VIDs fits the kernel's ~32 KiB datagram cap; ranges are expanded back to one line per vid). Line format: `<port> <vid> [PVID] [Egress Untagged]`. |
 
 VIDs are 1–4094 (4095 reserved); an out-of-range or reversed range → `204`.
 
@@ -163,6 +163,8 @@ of `vlan_add` (ranges), with the native VLAN added `pvid untagged`.
 | `realloc` failure in `br_dump_addresses` jumped to the success path | Partial address list returned as a complete dump under memory pressure | `ret = -1; goto out` on realloc failure |
 | `netlink_open` returned `-errno` without closing the socket after `setsockopt` / `bind` / `getsockname` failed | fd leak on (rare) open-time failure paths | `goto err` closes the fd and preserves the original errno |
 | `br_set_port_attr` sent `IFLA_BRPORT_PRIORITY` as u8 | Kernel policy `NLA_U16` rejects the 1-byte attr with `-ERANGE` → `setportprio` always failed (masked by older kernels' lenient netlink parsing) | Send u16 via the dedicated `br_set_port_attr_u16` |
+| `br_vlan_dump` read `-errno` after `netlink_rcv` returned `-EMSGSIZE` | `netlink_rcv` returns the negative errno directly; `errno` isn't reliably set on that path, so a truncated dump (port too big for the ~32 KiB datagram cap) was mis-reported as success with 0 entries | Use the return value (`ret = r`), not `-errno`; and use the compressed dump so large ports fit |
+| `vlan_show` used the non-compressed dump | A port holding ~4000+ VIDs exceeds the kernel's ~32 KiB dump-datagram cap and is skipped → 0 entries | Switch to `RTEXT_FILTER_BRVLAN_COMPRESSED` and expand ranges to per-VID lines |
 
 ## Testing
 
@@ -198,7 +200,7 @@ python3 test_basic.py
 python3 run_all.py
 ```
 
-Eight suites (155 tests in total):
+Nine suites (165 tests in total):
 
 | Suite | Tests | Scope |
 |-------|-------|-------|
@@ -210,8 +212,9 @@ Eight suites (155 tests in total):
 | `test_stress` | 5 | 400 create/delete cycles, fd stability, dump at scale (60 bridges) |
 | `test_no_privs` | 4 | No-cap binary rejects mutations, survives gracefully |
 | `test_vlan` | 28 | Per-port VLAN add/del/show/range, kernel-side verification, error paths |
+| `test_vlan_perf` | 10 | `vlan_show` over the full VID range (4094), timed |
 
-All 155 tests pass on the reference kernel (7.1.2-1-default).
+All 165 tests pass on the reference kernel (7.1.2-1-default).
 
 ### Kernel verification reference
 

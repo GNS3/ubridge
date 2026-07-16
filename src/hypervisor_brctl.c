@@ -1432,13 +1432,37 @@ struct br_vlan_entry {
     unsigned short flags;
 };
 
+/* Append one (port, vid, flags) to a growable array (cf. br_dump_addresses).
+ * Returns 0 on success or -ENOMEM. */
+static int append_vlan_entry(struct br_vlan_entry **entries, int *n, int *cap,
+                             int ifindex, unsigned short vid, unsigned short flags)
+{
+    if (*n == *cap) {
+        int newcap = *cap ? *cap * 2 : 16;
+        struct br_vlan_entry *tmp = realloc(*entries, newcap * sizeof(*tmp));
+        if (!tmp)
+            return -ENOMEM;
+        *entries = tmp;
+        *cap = newcap;
+    }
+    (*entries)[*n].ifindex = ifindex;
+    (*entries)[*n].vid = vid;
+    (*entries)[*n].flags = flags;
+    (*n)++;
+    return 0;
+}
+
 /*
  * Dump per-port VLAN membership via RTM_GETLINK (AF_BRIDGE) + IFLA_EXT_MASK =
- * RTEXT_FILTER_BRVLAN — the same request iproute2 `bridge vlan show` sends.
- * Each RTM_NEWLINK reply carries IFLA_MASTER (the bridge) and IFLA_AF_SPEC
- * {IFLA_BRIDGE_VLAN_INFO}; we keep entries whose master is `bridge` (excluding
- * the bridge device itself), optionally a single `port`.  Non-compressed dump,
- * so every VID is its own entry (no RANGE_BEGIN/END state machine needed).
+ * RTEXT_FILTER_BRVLAN_COMPRESSED — the compressed variant iproute2 `bridge vlan
+ * show` uses: a run of same-flag VIDs arrives as one RANGE_BEGIN/END pair.  The
+ * kernel caps dump datagrams at ~32 KiB, so the non-compressed dump cannot
+ * carry a port holding ~4000+ VIDs in one message; compressed avoids that.
+ * Each RTM_NEWLINK reply carries IFLA_MASTER (the bridge) and
+ * IFLA_AF_SPEC{IFLA_BRIDGE_VLAN_INFO}; we keep entries whose master is `bridge`
+ * (excluding the bridge device itself), optionally a single `port`, and expand
+ * ranges back to per-VID entries so the output is one line per VID regardless
+ * of how the VLANs were added.
  * On success returns 0 and a malloc'd array in *out (caller frees); *count
  * holds the entry count.  Returns a negative errno otherwise (NOT -1).
  */
@@ -1482,19 +1506,20 @@ static int br_vlan_dump(const char *bridge, const char *port,
     msg->nlmsghdr.nlmsg_type = RTM_GETLINK;
     msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
     msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
-    nla_put_u32(msg, IFLA_EXT_MASK, RTEXT_FILTER_BRVLAN);
+    nla_put_u32(msg, IFLA_EXT_MASK, RTEXT_FILTER_BRVLAN_COMPRESSED);
 
-    if (netlink_send(&nlh, msg) < 0) {
-        ret = -errno;
+    ret = netlink_send(&nlh, msg);
+    if (ret < 0)
         goto out;
-    }
 
     while (1) {
         reply->nlmsghdr.nlmsg_len = NLMSG_ALIGN(NLMSG_GOOD_SIZE);
         int r = netlink_rcv(&nlh, reply);
         if (r < 0) {
-            /* recv error (e.g. -EMSGSIZE) means a truncated dump, not done */
-            ret = -errno;
+            /* netlink_rcv returns the negative errno directly (e.g. -EMSGSIZE
+             * on a truncated dump); use r, not -errno — errno is not reliably
+             * set on this path. */
+            ret = r;
             goto out;
         }
         if (r == 0)
@@ -1534,24 +1559,35 @@ static int br_vlan_dump(const char *bridge, const char *port,
 
             int alen = RTA_PAYLOAD(afspec);
             struct rtattr *va = (struct rtattr *)RTA_DATA(afspec);
+            unsigned short rs_vid = 0, rs_flags = 0;
+            int in_range = 0;
             while (RTA_OK(va, alen)) {
                 if (va->rta_type == IFLA_BRIDGE_VLAN_INFO &&
                     RTA_PAYLOAD(va) == sizeof(struct bridge_vlan_info)) {
                     struct bridge_vlan_info *vinfo = (struct bridge_vlan_info *)RTA_DATA(va);
-                    if (n == cap) {
-                        int newcap = cap ? cap * 2 : 16;
-                        struct br_vlan_entry *tmp = realloc(entries, newcap * sizeof(*tmp));
-                        if (!tmp) {
-                            ret = -ENOMEM;
-                            goto out;
+                    /* RANGE_* are dump encoding, not per-VID flags; strip them. */
+                    unsigned short vf = vinfo->flags &
+                        ~(BRIDGE_VLAN_INFO_RANGE_BEGIN | BRIDGE_VLAN_INFO_RANGE_END);
+                    if (vinfo->flags & BRIDGE_VLAN_INFO_RANGE_BEGIN) {
+                        rs_vid = vinfo->vid;
+                        rs_flags = vf;
+                        in_range = 1;
+                    } else if (in_range &&
+                               (vinfo->flags & BRIDGE_VLAN_INFO_RANGE_END)) {
+                        unsigned int v;
+                        for (v = rs_vid; v <= vinfo->vid; v++) {
+                            ret = append_vlan_entry(&entries, &n, &cap,
+                                                    ifi_r->ifi_index, v, rs_flags);
+                            if (ret)
+                                goto out;
                         }
-                        entries = tmp;
-                        cap = newcap;
+                        in_range = 0;
+                    } else {
+                        ret = append_vlan_entry(&entries, &n, &cap,
+                                                ifi_r->ifi_index, vinfo->vid, vf);
+                        if (ret)
+                            goto out;
                     }
-                    entries[n].ifindex = ifi_r->ifi_index;
-                    entries[n].vid = vinfo->vid;
-                    entries[n].flags = vinfo->flags;
-                    n++;
                 }
                 va = RTA_NEXT(va, alen);
             }
