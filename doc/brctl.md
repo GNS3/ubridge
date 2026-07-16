@@ -107,11 +107,15 @@ VLANs ride in `IFLA_AF_SPEC` (the `AF_BRIDGE` sibling of `IFLA_PROTINFO`), as
 iproute2 `bridge vlan add|del` sends them: `add` maps to the kernel's
 `br_setlink`, `del` to `br_dellink`. The port must be enslaved to the bridge,
 and the bridge must have `vlanfiltering on` (else the kernel rejects with
-`-EINVAL`). `BRIDGE_FLAGS_SELF` makes the op target the port itself.
+`-EINVAL`). No `IFLA_BRIDGE_FLAGS` is sent — an unset flags field routes the
+op through the MASTER path (`br_setlink`), like iproute2 with no
+`self`/`master`; sending `BRIDGE_FLAGS_SELF` would instead target the port's
+own `ndo_bridge_setlink` and fail with `-EOPNOTSUPP` on plain (non-switchdev)
+ports.
 
 | Command | Args | Description |
 |---------|------|-------------|
-| `vlan_add <bridge> <port> <vid> [vid <end>] [pvid] [untagged]` | 3–7 | Add a VID (or `vid <end>` range). `pvid` = strip tag on ingress (sets the port PVID); `untagged` = strip on egress. A range is encoded as `RANGE_BEGIN`/`RANGE_END`. Duplicate VID → `EEXIST` (206). |
+| `vlan_add <bridge> <port> <vid> [vid <end>] [pvid] [untagged]` | 3–7 | Add a VID (or `vid <end>` range). `pvid` = strip tag on ingress (sets the port PVID); `untagged` = strip on egress. A range is encoded as `RANGE_BEGIN`/`RANGE_END`. Re-adding a VID is idempotent (success; flags are updated if they differ). |
 | `vlan_del <bridge> <port> <vid> [vid <end>]` | 3–5 | Delete a VID/range. Flags are rejected — deletion is by VID only. |
 
 VIDs are 1–4094 (4095 reserved); an out-of-range or reversed range → `204`.
@@ -161,7 +165,7 @@ of `vlan_add` (ranges), with the native VLAN added `pvid untagged`.
 
 ## Testing
 
-Tested on **Linux 6.19.11-1-default** (x86_64), ubridge with
+Tested on **Linux 7.1.2-1-default** (x86_64), ubridge with
 `cap_net_admin,cap_net_raw=ep`. Kernel-side state was verified with
 `ip -d link show <bridge>` and `ip -d link show <port>` (the `bridge_slave`
 attributes appear on the port).
@@ -206,7 +210,7 @@ Eight suites (151 tests in total):
 | `test_no_privs` | 4 | No-cap binary rejects mutations, survives gracefully |
 | `test_vlan` | 24 | Per-port VLAN add/del/range, kernel-side verification, error paths |
 
-All 151 tests pass on the reference kernel (6.19.11-1-default).
+All 151 tests pass on the reference kernel (7.1.2-1-default).
 
 ### Kernel verification reference
 
@@ -229,5 +233,5 @@ VLAN membership is verified with `bridge vlan show dev <port>` instead:
 |---------------|----------------------------------------------|
 | `vlan_add <br> <p> 100 pvid untagged` | `100 PVID Egress Untagged` |
 | `vlan_add <br> <p> 200` | `200` |
-| `vlan_add <br> <p> 300 vid 302` | `300-302` |
+| `vlan_add <br> <p> 300 vid 302` | `300`, `301`, `302` (per-VID lines; `300-302` only with `bridge -compressed vlan show`) |
 | `vlan_del <br> <p> 200` | `200` row gone |
