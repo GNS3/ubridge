@@ -1425,6 +1425,188 @@ static int cmd_vlan_del(hypervisor_conn_t *conn, int argc, char *argv[])
     return 0;
 }
 
+/* One (port, vid, flags) tuple collected from an RTM_GETLINK AF_BRIDGE dump. */
+struct br_vlan_entry {
+    int ifindex;
+    unsigned short vid;
+    unsigned short flags;
+};
+
+/*
+ * Dump per-port VLAN membership via RTM_GETLINK (AF_BRIDGE) + IFLA_EXT_MASK =
+ * RTEXT_FILTER_BRVLAN — the same request iproute2 `bridge vlan show` sends.
+ * Each RTM_NEWLINK reply carries IFLA_MASTER (the bridge) and IFLA_AF_SPEC
+ * {IFLA_BRIDGE_VLAN_INFO}; we keep entries whose master is `bridge` (excluding
+ * the bridge device itself), optionally a single `port`.  Non-compressed dump,
+ * so every VID is its own entry (no RANGE_BEGIN/END state machine needed).
+ * On success returns 0 and a malloc'd array in *out (caller frees); *count
+ * holds the entry count.  Returns a negative errno otherwise (NOT -1).
+ */
+static int br_vlan_dump(const char *bridge, const char *port,
+                        struct br_vlan_entry **out, int *count)
+{
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL, *reply = NULL;
+    struct ifinfomsg *ifi;
+    struct br_vlan_entry *entries = NULL;
+    int n = 0, cap = 0, ret = -1;
+    int br_ifindex, want_port = 0;
+
+    *out = NULL;
+    *count = 0;
+
+    br_ifindex = if_nametoindex(bridge);
+    if (br_ifindex == 0)
+        return -ENODEV;
+    if (port) {
+        want_port = if_nametoindex(port);
+        if (want_port == 0)
+            return -ENODEV;
+    }
+
+    ret = netlink_open(&nlh, NETLINK_ROUTE);
+    if (ret < 0)
+        return ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg); nlmsg_free(reply); netlink_close(&nlh);
+        return -ENOMEM;
+    }
+
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_BRIDGE;
+
+    msg->nlmsghdr.nlmsg_type = RTM_GETLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+    nla_put_u32(msg, IFLA_EXT_MASK, RTEXT_FILTER_BRVLAN);
+
+    if (netlink_send(&nlh, msg) < 0) {
+        ret = -errno;
+        goto out;
+    }
+
+    while (1) {
+        reply->nlmsghdr.nlmsg_len = NLMSG_ALIGN(NLMSG_GOOD_SIZE);
+        int r = netlink_rcv(&nlh, reply);
+        if (r < 0) {
+            /* recv error (e.g. -EMSGSIZE) means a truncated dump, not done */
+            ret = -errno;
+            goto out;
+        }
+        if (r == 0)
+            break;
+
+        struct nlmsghdr *nh;
+        int len = r;
+        for (nh = (struct nlmsghdr *)reply; NLMSG_OK(nh, len); nh = NLMSG_NEXT(nh, len)) {
+            if (nh->nlmsg_type == NLMSG_DONE)
+                goto done;
+            if (nh->nlmsg_type == NLMSG_ERROR)
+                goto out;
+            if (nh->nlmsg_type != RTM_NEWLINK)
+                continue;
+
+            struct ifinfomsg *ifi_r = (struct ifinfomsg *)NLMSG_DATA(nh);
+            if (ifi_r->ifi_index == br_ifindex)
+                continue;  /* skip the bridge device itself */
+            if (want_port && ifi_r->ifi_index != want_port)
+                continue;
+
+            int attrlen = nh->nlmsg_len - NLMSG_LENGTH(sizeof(struct ifinfomsg));
+            struct rtattr *rta = IFLA_RTA(ifi_r);
+            int master = 0, have_master = 0;
+            struct rtattr *afspec = NULL;
+            while (RTA_OK(rta, attrlen)) {
+                if (rta->rta_type == IFLA_MASTER) {
+                    memcpy(&master, RTA_DATA(rta), sizeof(master));
+                    have_master = 1;
+                } else if (rta->rta_type == IFLA_AF_SPEC) {
+                    afspec = rta;
+                }
+                rta = RTA_NEXT(rta, attrlen);
+            }
+            if (!have_master || master != br_ifindex || !afspec)
+                continue;
+
+            int alen = RTA_PAYLOAD(afspec);
+            struct rtattr *va = (struct rtattr *)RTA_DATA(afspec);
+            while (RTA_OK(va, alen)) {
+                if (va->rta_type == IFLA_BRIDGE_VLAN_INFO &&
+                    RTA_PAYLOAD(va) == sizeof(struct bridge_vlan_info)) {
+                    struct bridge_vlan_info *vinfo = (struct bridge_vlan_info *)RTA_DATA(va);
+                    if (n == cap) {
+                        int newcap = cap ? cap * 2 : 16;
+                        struct br_vlan_entry *tmp = realloc(entries, newcap * sizeof(*tmp));
+                        if (!tmp) {
+                            ret = -ENOMEM;
+                            goto out;
+                        }
+                        entries = tmp;
+                        cap = newcap;
+                    }
+                    entries[n].ifindex = ifi_r->ifi_index;
+                    entries[n].vid = vinfo->vid;
+                    entries[n].flags = vinfo->flags;
+                    n++;
+                }
+                va = RTA_NEXT(va, alen);
+            }
+        }
+    }
+
+done:
+    ret = 0;
+out:
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    netlink_close(&nlh);
+    if (ret == 0) {
+        *out = entries;
+        *count = n;
+    } else {
+        free(entries);
+    }
+    return ret;
+}
+
+/* brctl vlan_show <bridge> [port] — list per-port VLAN membership.
+ * One line per (port, vid): "<port> <vid> [PVID] [Egress Untagged]". */
+static int cmd_vlan_show(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    const char *bridge = argv[0];
+    const char *port = (argc >= 2) ? argv[1] : NULL;
+    struct br_vlan_entry *entries;
+    int count = 0, i;
+
+    int err = br_vlan_dump(bridge, port, &entries, &count);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1,
+            "Could not dump VLANs on %s: %s", bridge, strerror(-err));
+        return -1;
+    }
+
+    for (i = 0; i < count; i++) {
+        char ifname[IFNAMSIZ];
+        const char *name = if_indextoname(entries[i].ifindex, ifname);
+        char flags[32] = "";
+        if (entries[i].flags & BRIDGE_VLAN_INFO_PVID)
+            strncat(flags, " PVID", sizeof(flags) - strlen(flags) - 1);
+        if (entries[i].flags & BRIDGE_VLAN_INFO_UNTAGGED)
+            strncat(flags, " Egress Untagged", sizeof(flags) - strlen(flags) - 1);
+        hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "%s %u%s",
+                              name ? name : "?", entries[i].vid, flags);
+    }
+    free(entries);
+
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "%d VLAN entr%s",
+                          count, (count == 1) ? "y" : "ies");
+    return 0;
+}
+
 /* One IPv4 address entry collected from an RTM_GETADDR dump. */
 struct br_addr_entry {
     int ifindex;
@@ -1696,6 +1878,7 @@ static hypervisor_cmd_t brctl_cmd_array[] = {
    /* VLAN filtering — per-port VID membership (needs vlanfiltering on) */
    { "vlan_add", 3, 7, cmd_vlan_add, NULL },
    { "vlan_del", 3, 5, cmd_vlan_del, NULL },
+   { "vlan_show", 1, 2, cmd_vlan_show, NULL },
    { NULL, -1, -1, NULL, NULL },
 };
 

@@ -100,7 +100,7 @@ already be enslaved to the bridge; otherwise `-EINVAL`.
 | `hairpin <bridge> <port> on\|off` | `IFLA_BRPORT_MODE` | `on`/`off` (on = `BRIDGE_MODE_HAIRPIN`) |
 | `isolated <bridge> <port> on\|off` | `IFLA_BRPORT_ISOLATED` | `on`/`off` (on = port can only reach the CPU, not other ports) |
 
-### VLAN membership (2)
+### VLAN membership (3)
 
 Per-port VID add/delete — the building blocks for access/trunk/QinQ port modes.
 VLANs ride in `IFLA_AF_SPEC` (the `AF_BRIDGE` sibling of `IFLA_PROTINFO`), as
@@ -117,6 +117,7 @@ ports.
 |---------|------|-------------|
 | `vlan_add <bridge> <port> <vid> [vid <end>] [pvid] [untagged]` | 3–7 | Add a VID (or `vid <end>` range). `pvid` = strip tag on ingress (sets the port PVID); `untagged` = strip on egress. A range is encoded as `RANGE_BEGIN`/`RANGE_END`. Re-adding a VID is idempotent (success; flags are updated if they differ). |
 | `vlan_del <bridge> <port> <vid> [vid <end>]` | 3–5 | Delete a VID/range. Flags are rejected — deletion is by VID only. |
+| `vlan_show <bridge> [port]` | 1–2 | List per-port VID membership (`RTM_GETLINK` AF_BRIDGE dump + `IFLA_EXT_MASK=RTEXT_FILTER_BRVLAN`). One line per (port, vid): `<port> <vid> [PVID] [Egress Untagged]`. |
 
 VIDs are 1–4094 (4095 reserved); an out-of-range or reversed range → `204`.
 
@@ -197,7 +198,7 @@ python3 test_basic.py
 python3 run_all.py
 ```
 
-Eight suites (151 tests in total):
+Eight suites (155 tests in total):
 
 | Suite | Tests | Scope |
 |-------|-------|-------|
@@ -208,9 +209,9 @@ Eight suites (151 tests in total):
 | `test_state` | 12 | addif/addip idempotency, UP/DOWN transitions, ports on delete |
 | `test_stress` | 5 | 400 create/delete cycles, fd stability, dump at scale (60 bridges) |
 | `test_no_privs` | 4 | No-cap binary rejects mutations, survives gracefully |
-| `test_vlan` | 24 | Per-port VLAN add/del/range, kernel-side verification, error paths |
+| `test_vlan` | 28 | Per-port VLAN add/del/show/range, kernel-side verification, error paths |
 
-All 151 tests pass on the reference kernel (7.1.2-1-default).
+All 155 tests pass on the reference kernel (7.1.2-1-default).
 
 ### Kernel verification reference
 

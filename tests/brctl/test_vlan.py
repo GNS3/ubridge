@@ -82,6 +82,15 @@ def main():
                     c.code("brctl vlan_add regtestv0 ubtest 300 vid 302") == "100")
             r.check("kernel: 300..302 present", _has_range(port_vlans("ubtest"), 300, 302))
 
+            # vlan_show: read the port's full membership back via netlink
+            show = c.send("brctl vlan_show regtestv0 ubtest")
+            r.check("vlan_show: 100 PVID listed",
+                    "100" in show.split() and "PVID" in show)
+            r.check("vlan_show: 200..302 listed",
+                    all(str(v) in show.split() for v in (200, 300, 301, 302)), show)
+            r.check("vlan_show: final code 100",
+                    show.splitlines()[-1].startswith("100"))
+
             # delete a single VID
             r.check("vlan_del 200 -> 100",
                     c.code("brctl vlan_del regtestv0 ubtest 200") == "100")
@@ -91,6 +100,12 @@ def main():
             r.check("vlan_del 300 vid 302 -> 100",
                     c.code("brctl vlan_del regtestv0 ubtest 300 vid 302") == "100")
             r.check("kernel: 300..302 gone", not _has_range(port_vlans("ubtest"), 300, 302))
+
+            # vlan_show reflects the deletions
+            show = c.send("brctl vlan_show regtestv0 ubtest")
+            r.check("vlan_show: 200/300 gone, 100 stays",
+                    "200" not in show.split() and "300" not in show.split()
+                    and "100" in show.split())
 
             # --- error paths (parse-level -> 204) ---
             r.check("vlan_add vid 0 -> 204",
