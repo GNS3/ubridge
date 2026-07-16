@@ -689,6 +689,53 @@ static int br_set_port_attr_u32(const char *bridge, const char *port, int attr, 
     return ret;
 }
 
+/* Same as br_set_port_attr but for u16-valued port attributes.  IFLA_BRPORT_PRIORITY
+ * is declared NLA_U16 in the kernel's br_port_policy, so a 1-byte (u8) payload is
+ * rejected by validate_nla with -ERANGE (older kernels parsed short integer attrs
+ * leniently, which masked this); the value must be sent as 2 bytes. */
+static int br_set_port_attr_u16(const char *bridge, const char *port, int attr, unsigned short val)
+{
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL, *reply = NULL;
+    struct ifinfomsg *ifi;
+    struct rtattr *protinfo;
+    int ret, ifindex;
+
+    ret = br_check_master(bridge, port);
+    if (ret < 0) return ret;
+
+    ifindex = if_nametoindex(port);
+    if (ifindex == 0) return -ENODEV;
+
+    ret = netlink_open(&nlh, NETLINK_ROUTE);
+    if (ret < 0) return ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg); nlmsg_free(reply); netlink_close(&nlh);
+        return -ENOMEM;
+    }
+
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_BRIDGE;
+    ifi->ifi_index = ifindex;
+
+    msg->nlmsghdr.nlmsg_type = RTM_SETLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+
+    protinfo = nla_begin_nested(msg, IFLA_PROTINFO);
+    protinfo->rta_type |= NLA_F_NESTED;
+    nla_put_u16(msg, attr, val);
+    nla_end_nested(msg, protinfo);
+
+    ret = netlink_transaction(&nlh, msg, reply);
+    nlmsg_free(msg); nlmsg_free(reply); netlink_close(&nlh);
+    return ret;
+}
+
 /*
  * Add (RTM_SETLINK) or delete (RTM_DELLINK) a VLAN, or a contiguous VLAN
  * range, on a bridge port.  VLANs ride inside IFLA_AF_SPEC — the AF_BRIDGE
@@ -1229,7 +1276,7 @@ static int cmd_setportprio(hypervisor_conn_t *conn, int argc, char *argv[])
         hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid port priority %s (expected 0-255)", argv[2]);
         return -1;
     }
-    int err = br_set_port_attr(argv[0], port, IFLA_BRPORT_PRIORITY, (unsigned int)prio);
+    int err = br_set_port_attr_u16(argv[0], port, IFLA_BRPORT_PRIORITY, (unsigned short)prio);
     if (err < 0) {
         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set port priority on %s: %s", port, strerror(-err));
         return -1;

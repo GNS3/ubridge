@@ -94,7 +94,7 @@ already be enslaved to the bridge; otherwise `-EINVAL`.
 
 | Command | Netlink attr | Valid range |
 |---------|-------------|-------------|
-| `setportprio <bridge> <port> <n>` | `IFLA_BRPORT_PRIORITY` | 0–255 |
+| `setportprio <bridge> <port> <n>` | `IFLA_BRPORT_PRIORITY` | 0–63 (kernel; parse accepts 0–255, 64+ → 206) |
 | `setpathcost <bridge> <port> <n>` | `IFLA_BRPORT_COST` | 1–65535 |
 | `setportstate <bridge> <port> <n>` | `IFLA_BRPORT_STATE` | 0–3 (0=disabled, 1=listening, 2=learning, 3=forwarding) |
 | `hairpin <bridge> <port> on\|off` | `IFLA_BRPORT_MODE` | `on`/`off` (on = `BRIDGE_MODE_HAIRPIN`) |
@@ -157,6 +157,7 @@ of `vlan_add` (ranges), with the native VLAN added `pvid untagged`.
 | Dump `recv` error (e.g. `-EMSGSIZE` when a datagram overflows the buffer) treated as end-of-dump | `br_get_address` silently returned a truncated address list as complete → `show` printed a wrong/missing IP | Treat `netlink_rcv < 0` as failure (`ret = -1`); only `r == 0` / `NLMSG_DONE` ends the dump |
 | `realloc` failure in `br_dump_addresses` jumped to the success path | Partial address list returned as a complete dump under memory pressure | `ret = -1; goto out` on realloc failure |
 | `netlink_open` returned `-errno` without closing the socket after `setsockopt` / `bind` / `getsockname` failed | fd leak on (rare) open-time failure paths | `goto err` closes the fd and preserves the original errno |
+| `br_set_port_attr` sent `IFLA_BRPORT_PRIORITY` as u8 | Kernel policy `NLA_U16` rejects the 1-byte attr with `-ERANGE` → `setportprio` always failed (masked by older kernels' lenient netlink parsing) | Send u16 via the dedicated `br_set_port_attr_u16` |
 
 ## Testing
 
