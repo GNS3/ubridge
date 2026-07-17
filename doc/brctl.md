@@ -5,8 +5,9 @@ netlink (no ioctl). It is exposed via the hypervisor text protocol as
 `brctl <command> [args...]`.
 
 It supports the full bridge lifecycle (create/delete, port enslave/release,
-IP assignment), runtime bridge-level parameters (STP, ageing, VLAN, multicast)
-and per-port parameters (priority, path cost, state, hairpin).
+IP assignment), runtime bridge-level parameters (STP, ageing, VLAN, multicast),
+per-port parameters (priority, path cost, state, hairpin) and per-port VLAN
+membership (the primitives for access/trunk/QinQ port modes).
 
 > **Note:** veth pair creation, IP assignment on arbitrary interfaces, and
 > link state control live in the separate [`link`](link.md) module
@@ -93,11 +94,61 @@ already be enslaved to the bridge; otherwise `-EINVAL`.
 
 | Command | Netlink attr | Valid range |
 |---------|-------------|-------------|
-| `setportprio <bridge> <port> <n>` | `IFLA_BRPORT_PRIORITY` | 0–255 |
+| `setportprio <bridge> <port> <n>` | `IFLA_BRPORT_PRIORITY` | 0–63 (kernel; parse accepts 0–255, 64+ → 206) |
 | `setpathcost <bridge> <port> <n>` | `IFLA_BRPORT_COST` | 1–65535 |
 | `setportstate <bridge> <port> <n>` | `IFLA_BRPORT_STATE` | 0–3 (0=disabled, 1=listening, 2=learning, 3=forwarding) |
 | `hairpin <bridge> <port> on\|off` | `IFLA_BRPORT_MODE` | `on`/`off` (on = `BRIDGE_MODE_HAIRPIN`) |
 | `isolated <bridge> <port> on\|off` | `IFLA_BRPORT_ISOLATED` | `on`/`off` (on = port can only reach the CPU, not other ports) |
+
+### VLAN membership (3)
+
+Per-port VID add/delete — the building blocks for access/trunk/QinQ port modes.
+VLANs ride in `IFLA_AF_SPEC` (the `AF_BRIDGE` sibling of `IFLA_PROTINFO`), as
+iproute2 `bridge vlan add|del` sends them: `add` maps to the kernel's
+`br_setlink`, `del` to `br_dellink`. The port must be enslaved to the bridge,
+and the bridge must have `vlanfiltering on` (else the kernel rejects with
+`-EINVAL`). No `IFLA_BRIDGE_FLAGS` is sent — an unset flags field routes the
+op through the MASTER path (`br_setlink`), like iproute2 with no
+`self`/`master`; sending `BRIDGE_FLAGS_SELF` would instead target the port's
+own `ndo_bridge_setlink` and fail with `-EOPNOTSUPP` on plain (non-switchdev)
+ports.
+
+| Command | Args | Description |
+|---------|------|-------------|
+| `vlan_add <bridge> <port> <vid> [vid <end>] [pvid] [untagged]` | 3–7 | Add a VID (or `vid <end>` range). `pvid` = strip tag on ingress (sets the port PVID); `untagged` = strip on egress. A range is encoded as `RANGE_BEGIN`/`RANGE_END`. Re-adding a VID is idempotent (success; flags are updated if they differ). |
+| `vlan_del <bridge> <port> <vid> [vid <end>]` | 3–5 | Delete a VID/range. Flags are rejected — deletion is by VID only. |
+| `vlan_show <bridge> [port]` | 1–2 | List per-port VID membership (`RTM_GETLINK` AF_BRIDGE dump, compressed — `RTEXT_FILTER_BRVLAN_COMPRESSED` — so a port with thousands of VIDs fits the kernel's ~32 KiB datagram cap; ranges are expanded back to one line per vid). Line format: `<port> <vid> [PVID] [Egress Untagged]`. |
+
+VIDs are 1–4094 (4095 reserved); an out-of-range or reversed range → `204`.
+
+ESW access/trunk modes are composed from these two primitives (in gns3-server,
+not here): access VLAN *N* = `vlanfiltering on` → `vlan_del <port> 1` →
+`vlan_add <br> <port> N pvid untagged`; a dot1q trunk's tagged list is a series
+of `vlan_add` (ranges), with the native VLAN added `pvid untagged`.
+
+## Limitations
+
+- **Default PVID 1 is not auto-cleaned.** A port freshly enslaved to a
+  `vlanfiltering` bridge inherits the default PVID 1 (PVID + Egress Untagged).
+  Configuring an access or trunk port therefore needs an explicit
+  `vlan_del <bridge> <port> 1` first — `vlan_add ... pvid` moves the PVID but
+  leaves VID 1 as a plain member. This matches iproute2 (`bridge vlan add ...
+  pvid` likewise does not remove VID 1); compose the full sequence at the caller.
+- **QinQ is outer-tag (provider-bridge) only.** With `setvlanproto 0x88a8` the
+  bridge filters on the outer S-tag (0x88a8) and carries the inner C-tag
+  (0x8100) through transparently — standard Linux provider-bridge QinQ. It does
+  **not** do selective QinQ (classification/mapping on the inner VLAN); that
+  would require `IFLA_BRIDGE_VLAN_TUNNEL_INFO`, which is not implemented.
+- **Only standard VLAN EtherTypes (0x8100 / 0x88a8).** `setvlanproto` rejects
+  the legacy QinQ EtherTypes 0x9100 / 0x9200 / 0x9300 (`ETH_P_QINQ1/2/3`). Those
+  are deprecated, non-IEEE-registered vendor tags from before 802.1ad; the
+  kernel's `eth_type_vlan()` recognizes only 0x8100 and 0x88a8, so the bridge
+  cannot use the legacy ones as `vlan_protocol` regardless. Standard QinQ is
+  0x88a8.
+- **No MAC (FDB) table read/flush.** There is no `fdb_show` / `fdb_flush`. The
+  kernel bridge learns and ages MAC entries itself; ubridge has never exposed
+  mac-table access and gns3-server does not consume it, so it was deliberately
+  omitted. Inspect with the external `bridge fdb show dev <port>` if needed.
 
 ## Implementation notes
 
@@ -135,10 +186,14 @@ already be enslaved to the bridge; otherwise `-EINVAL`.
 | Dump `recv` error (e.g. `-EMSGSIZE` when a datagram overflows the buffer) treated as end-of-dump | `br_get_address` silently returned a truncated address list as complete → `show` printed a wrong/missing IP | Treat `netlink_rcv < 0` as failure (`ret = -1`); only `r == 0` / `NLMSG_DONE` ends the dump |
 | `realloc` failure in `br_dump_addresses` jumped to the success path | Partial address list returned as a complete dump under memory pressure | `ret = -1; goto out` on realloc failure |
 | `netlink_open` returned `-errno` without closing the socket after `setsockopt` / `bind` / `getsockname` failed | fd leak on (rare) open-time failure paths | `goto err` closes the fd and preserves the original errno |
+| `br_set_port_attr` sent `IFLA_BRPORT_PRIORITY` as u8 | Kernel policy `NLA_U16` rejects the 1-byte attr with `-ERANGE` → `setportprio` always failed (masked by older kernels' lenient netlink parsing) | Send u16 via the dedicated `br_set_port_attr_u16` |
+| `br_vlan_dump` read `-errno` after `netlink_rcv` returned `-EMSGSIZE` | `netlink_rcv` returns the negative errno directly; `errno` isn't reliably set on that path, so a truncated dump (port too big for the ~32 KiB datagram cap) was mis-reported as success with 0 entries | Use the return value (`ret = r`), not `-errno`; and use the compressed dump so large ports fit |
+| `vlan_show` used the non-compressed dump | A port holding ~4000+ VIDs exceeds the kernel's ~32 KiB dump-datagram cap and is skipped → 0 entries | Switch to `RTEXT_FILTER_BRVLAN_COMPRESSED` and expand ranges to per-VID lines |
+| `cmd_setvlanproto` sent `IFLA_BR_VLAN_PROTOCOL` host-order via `nla_put_u16` | Kernel reads it with `nla_get_be16` (network order); little-endian byte-swapped the value → `eth_type_vlan()` rejected 0x8100/0x88a8 → QinQ (802.1ad) couldn't be configured | `htons()` the value before sending |
 
 ## Testing
 
-Tested on **Linux 6.19.11-1-default** (x86_64), ubridge with
+Tested on **Linux 7.1.2-1-default** (x86_64), ubridge with
 `cap_net_admin,cap_net_raw=ep`. Kernel-side state was verified with
 `ip -d link show <bridge>` and `ip -d link show <port>` (the `bridge_slave`
 attributes appear on the port).
@@ -146,12 +201,13 @@ attributes appear on the port).
 ### Prerequisites
 
 ```bash
-# A throwaway dummy port for addif/delif/port-param tests
-sudo ip link add ubtest type dummy
-sudo ip link set ubtest down
-
 # ubridge installed with capabilities
 sudo make install
+
+# A throwaway dummy port for addif/delif/port-param tests.
+# Auto-created when suites run under sudo (ensure_ubtest in common.py);
+# create it manually only if you run a suite without privileges:
+sudo ip link add ubtest type dummy
 ```
 
 ### Test suites
@@ -169,19 +225,21 @@ python3 test_basic.py
 python3 run_all.py
 ```
 
-Seven suites (127 tests in total):
+Nine suites (168 tests in total):
 
 | Suite | Tests | Scope |
 |-------|-------|-------|
-| `test_basic` | 22 | Lifecycle, common errors, bridge scoping |
-| `test_boundary` | 58 | Boundary values for all ranged parameters, kernel-side verification |
+| `test_basic` | 21 | Lifecycle, common errors, bridge scoping |
+| `test_boundary` | 64 | Boundary values for all ranged parameters, kernel-side verification |
 | `test_concurrency` | 6 | Multi-client create races, show under churn |
 | `test_robustness` | 20 | Malformed input, overlong names, IPv6, crash-freedom |
 | `test_state` | 12 | addif/addip idempotency, UP/DOWN transitions, ports on delete |
-| `test_stress` | 5 | 400 create/delete cycles, fd stability, dump at scale (60 bridges) |
+| `test_stress` | 3 | 500 create/delete cycles, fd stability |
 | `test_no_privs` | 4 | No-cap binary rejects mutations, survives gracefully |
+| `test_vlan` | 28 | Per-port VLAN add/del/show/range, kernel-side verification, error paths |
+| `test_vlan_perf` | 10 | `vlan_show` over the full VID range (4094), timed |
 
-All 127 tests pass on the reference kernel (6.19.11-1-default).
+All 168 tests pass on the reference kernel (7.1.2-1-default).
 
 ### Kernel verification reference
 
@@ -197,3 +255,12 @@ All 127 tests pass on the reference kernel (6.19.11-1-default).
 | `setpathcost 500` | `cost 500` (on the port) |
 | `hairpin on` | `hairpin on` (on the port) |
 ```
+
+VLAN membership is verified with `bridge vlan show dev <port>` instead:
+
+| Set via brctl | Read back from `bridge vlan show dev <port>` |
+|---------------|----------------------------------------------|
+| `vlan_add <br> <p> 100 pvid untagged` | `100 PVID Egress Untagged` |
+| `vlan_add <br> <p> 200` | `200` |
+| `vlan_add <br> <p> 300 vid 302` | `300`, `301`, `302` (per-VID lines; `300-302` only with `bridge -compressed vlan show`) |
+| `vlan_del <br> <p> 200` | `200` row gone |

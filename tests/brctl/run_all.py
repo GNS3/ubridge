@@ -1,6 +1,7 @@
 """Run the whole brctl test suite in sequence, exit non-zero if any fail."""
 import importlib
 import sys
+from common import ensure_ubtest
 
 SUITES = [
     "test_basic",
@@ -10,10 +11,13 @@ SUITES = [
     "test_state",
     "test_stress",
     "test_no_privs",
+    "test_vlan",
+    "test_vlan_perf",
 ]
 
 
 def main():
+    ensure_ubtest()
     overall = 0
     for name in SUITES:
         print("\n" + "=" * 60)

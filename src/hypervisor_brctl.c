@@ -30,6 +30,7 @@
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <linux/if_link.h>
+#include <linux/if_bridge.h>
 #include <linux/if_addr.h>
 #include "netlink/nl.h"
 #include "ubridge.h"
@@ -688,6 +689,139 @@ static int br_set_port_attr_u32(const char *bridge, const char *port, int attr, 
     return ret;
 }
 
+/* Same as br_set_port_attr but for u16-valued port attributes.  IFLA_BRPORT_PRIORITY
+ * is declared NLA_U16 in the kernel's br_port_policy, so a 1-byte (u8) payload is
+ * rejected by validate_nla with -ERANGE (older kernels parsed short integer attrs
+ * leniently, which masked this); the value must be sent as 2 bytes. */
+static int br_set_port_attr_u16(const char *bridge, const char *port, int attr, unsigned short val)
+{
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL, *reply = NULL;
+    struct ifinfomsg *ifi;
+    struct rtattr *protinfo;
+    int ret, ifindex;
+
+    ret = br_check_master(bridge, port);
+    if (ret < 0) return ret;
+
+    ifindex = if_nametoindex(port);
+    if (ifindex == 0) return -ENODEV;
+
+    ret = netlink_open(&nlh, NETLINK_ROUTE);
+    if (ret < 0) return ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg); nlmsg_free(reply); netlink_close(&nlh);
+        return -ENOMEM;
+    }
+
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_BRIDGE;
+    ifi->ifi_index = ifindex;
+
+    msg->nlmsghdr.nlmsg_type = RTM_SETLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+
+    protinfo = nla_begin_nested(msg, IFLA_PROTINFO);
+    protinfo->rta_type |= NLA_F_NESTED;
+    nla_put_u16(msg, attr, val);
+    nla_end_nested(msg, protinfo);
+
+    ret = netlink_transaction(&nlh, msg, reply);
+    nlmsg_free(msg); nlmsg_free(reply); netlink_close(&nlh);
+    return ret;
+}
+
+/*
+ * Add (RTM_SETLINK) or delete (RTM_DELLINK) a VLAN, or a contiguous VLAN
+ * range, on a bridge port.  VLANs ride inside IFLA_AF_SPEC — the AF_BRIDGE
+ * sibling of IFLA_PROTINFO — exactly as iproute2 `bridge vlan add|del`:
+ *
+ *   ifinfomsg { ifi_family = AF_BRIDGE, ifi_index = <port> }
+ *   IFLA_AF_SPEC (nested) {
+ *     IFLA_BRIDGE_VLAN_INFO x 1|2  (struct bridge_vlan_info { flags, vid })
+ *   }
+ *
+ * No IFLA_BRIDGE_FLAGS is sent.  The flag is read in net/core/rtnetlink.c,
+ * not br_afspec: an unset flags field takes the MASTER path (br_setlink ->
+ * br_afspec), like `bridge vlan add` with no `self`/`master`; BRIDGE_FLAGS_SELF
+ * would instead target the port's own ndo_bridge_setlink, which a plain
+ * (non-switchdev) port lacks, yielding -EOPNOTSUPP.
+ *
+ * A single VID is one entry; a range is encoded as a RANGE_BEGIN/RANGE_END
+ * pair (the per-VID pvid/untagged flags apply to the whole range).  The port
+ * must already be enslaved to the bridge, matching the port-parameter
+ * convention.  add maps to the kernel's br_setlink, del to br_dellink.
+ * Returns 0 on success or a negative errno (NOT -1).
+ */
+static int br_vlan_modify(const char *bridge, const char *port,
+                          unsigned short vid_start, unsigned short vid_end,
+                          unsigned short vflags, int is_add)
+{
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL, *reply = NULL;
+    struct ifinfomsg *ifi;
+    struct rtattr *afspec;
+    struct bridge_vlan_info vinfo;
+    int ret, ifindex;
+
+    ret = br_check_master(bridge, port);
+    if (ret < 0) return ret;
+
+    ifindex = if_nametoindex(port);
+    if (ifindex == 0) return -ENODEV;
+
+    ret = netlink_open(&nlh, NETLINK_ROUTE);
+    if (ret < 0) return ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg); nlmsg_free(reply); netlink_close(&nlh);
+        return -ENOMEM;
+    }
+
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_BRIDGE;
+    ifi->ifi_index = ifindex;
+
+    msg->nlmsghdr.nlmsg_type = is_add ? RTM_SETLINK : RTM_DELLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+
+    afspec = nla_begin_nested(msg, IFLA_AF_SPEC);
+    afspec->rta_type |= NLA_F_NESTED;
+
+    /* No IFLA_BRIDGE_FLAGS: see the header comment — leaving flags unset is
+     * what routes the op to br_setlink (the MASTER path). */
+
+    if (vid_start == vid_end) {
+        vinfo.flags = vflags;
+        vinfo.vid = vid_start;
+        nla_put_buffer(msg, IFLA_BRIDGE_VLAN_INFO, &vinfo, sizeof(vinfo));
+    } else {
+        /* Encode vid_start..vid_end as a RANGE_BEGIN/RANGE_END pair. */
+        vinfo.flags = vflags | BRIDGE_VLAN_INFO_RANGE_BEGIN;
+        vinfo.vid = vid_start;
+        nla_put_buffer(msg, IFLA_BRIDGE_VLAN_INFO, &vinfo, sizeof(vinfo));
+
+        vinfo.flags = vflags | BRIDGE_VLAN_INFO_RANGE_END;
+        vinfo.vid = vid_end;
+        nla_put_buffer(msg, IFLA_BRIDGE_VLAN_INFO, &vinfo, sizeof(vinfo));
+    }
+
+    nla_end_nested(msg, afspec);
+
+    ret = netlink_transaction(&nlh, msg, reply);
+    nlmsg_free(msg); nlmsg_free(reply); netlink_close(&nlh);
+    return ret;
+}
+
 /* Parse a long integer in [min,max]; returns 0 on success, -1 with errno=EINVAL. */
 static int parse_long(const char *s, long min, long max, long *out)
 {
@@ -709,6 +843,62 @@ static int parse_onoff(const char *s)
     if (!strcasecmp(s, "off") || !strcasecmp(s, "no") || !strcasecmp(s, "false") || !strcmp(s, "0"))
         return 0;
     return -1;
+}
+
+/*
+ * Parse the shared vlan_add/vlan_del argument tail:
+ *   <vid> [vid <end>] [pvid] [untagged]
+ * argv[0]/[1] are bridge/port; argv[2] is the start VID.  Keywords may follow
+ * in any order.  VIDs are 1-4094 (4095 is reserved).  When allow_flags is 0,
+ * pvid/untagged are rejected (deletion is by VID only).  A reversed range
+ * (end < start) is rejected.
+ * Returns 0 on success (fills vid_start/vid_end/vflags), -1 with errno=EINVAL.
+ */
+static int parse_vlan_args(int argc, char *argv[], int allow_flags,
+                           long *vid_start, long *vid_end, unsigned short *vflags)
+{
+    long start, end;
+    unsigned short flags = 0;
+    int i;
+
+    if (parse_long(argv[2], 1, 4094, &start) < 0)
+        return -1;
+    end = start;
+
+    for (i = 3; i < argc; i++) {
+        if (allow_flags && !strcasecmp(argv[i], "pvid")) {
+            flags |= BRIDGE_VLAN_INFO_PVID;
+        } else if (allow_flags && !strcasecmp(argv[i], "untagged")) {
+            flags |= BRIDGE_VLAN_INFO_UNTAGGED;
+        } else if (!strcasecmp(argv[i], "vid")) {
+            if (i + 1 >= argc) {
+                errno = EINVAL;
+                return -1;
+            }
+            if (parse_long(argv[++i], 1, 4094, &end) < 0)
+                return -1;
+        } else {
+            errno = EINVAL;
+            return -1;
+        }
+    }
+
+    if (end < start) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    /* A port has exactly one PVID, so pvid on a range is meaningless —
+     * the kernel (br_vlan_valid_range) and iproute2 both reject it. */
+    if (start != end && (flags & BRIDGE_VLAN_INFO_PVID)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    *vid_start = start;
+    *vid_end = end;
+    *vflags = flags;
+    return 0;
 }
 
 /* brctl create <bridge> */
@@ -1032,7 +1222,11 @@ static int cmd_setvlanproto(hypervisor_conn_t *conn, int argc, char *argv[])
         hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid VLAN protocol %s (expected 0x8100 or 0x88a8)", argv[1]);
         return -1;
     }
-    int err = br_set_bridge_attr_u16(bridge, IFLA_BR_VLAN_PROTOCOL, (unsigned short)proto);
+    /* IFLA_BR_VLAN_PROTOCOL is __be16 in the kernel uAPI (read with
+     * nla_get_be16); send it in network byte order, otherwise little-endian
+     * byte-swaps the value and eth_type_vlan() rejects even 0x8100/0x88a8. */
+    int err = br_set_bridge_attr_u16(bridge, IFLA_BR_VLAN_PROTOCOL,
+                                     htons((unsigned short)proto));
     if (err < 0) {
         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set VLAN protocol on %s: %s", bridge, strerror(-err));
         return -1;
@@ -1086,7 +1280,7 @@ static int cmd_setportprio(hypervisor_conn_t *conn, int argc, char *argv[])
         hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid port priority %s (expected 0-255)", argv[2]);
         return -1;
     }
-    int err = br_set_port_attr(argv[0], port, IFLA_BRPORT_PRIORITY, (unsigned int)prio);
+    int err = br_set_port_attr_u16(argv[0], port, IFLA_BRPORT_PRIORITY, (unsigned short)prio);
     if (err < 0) {
         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set port priority on %s: %s", port, strerror(-err));
         return -1;
@@ -1166,6 +1360,290 @@ static int cmd_isolated(hypervisor_conn_t *conn, int argc, char *argv[])
         return -1;
     }
     hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Port isolation %s on %s", on ? "enabled" : "disabled", port);
+    return 0;
+}
+
+/* brctl vlan_add <bridge> <port> <vid> [vid <end>] [pvid] [untagged]
+ * Adds a VLAN (or range) to a port: pvid = strip the tag on ingress,
+ * untagged = strip it on egress.  The bridge must have vlan_filtering on,
+ * else the kernel rejects the request with -EINVAL.  Duplicate VID -> EEXIST. */
+static int cmd_vlan_add(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    long start, end;
+    unsigned short flags;
+
+    if (parse_vlan_args(argc, argv, 1, &start, &end, &flags) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1,
+            "Invalid VLAN spec (expected <bridge> <port> <vid> [vid <end>] [pvid] [untagged])");
+        return -1;
+    }
+
+    int err = br_vlan_modify(argv[0], argv[1], (unsigned short)start,
+                             (unsigned short)end, flags, 1);
+    if (err < 0) {
+        if (start == end)
+            hypervisor_send_reply(conn, HSC_ERR_CREATE, 1,
+                "Could not add VLAN %ld on %s: %s", start, argv[1], strerror(-err));
+        else
+            hypervisor_send_reply(conn, HSC_ERR_CREATE, 1,
+                "Could not add VLAN %ld-%ld on %s: %s", start, end, argv[1], strerror(-err));
+        return -1;
+    }
+
+    if (start == end)
+        hypervisor_send_reply(conn, HSC_INFO_OK, 1, "VLAN %ld added on %s", start, argv[1]);
+    else
+        hypervisor_send_reply(conn, HSC_INFO_OK, 1, "VLAN %ld-%ld added on %s", start, end, argv[1]);
+    return 0;
+}
+
+/* brctl vlan_del <bridge> <port> <vid> [vid <end>] — delete a VLAN/range from a port */
+static int cmd_vlan_del(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    long start, end;
+    unsigned short flags;
+
+    /* allow_flags=0: deletion is by VID only; reject pvid/untagged. */
+    if (parse_vlan_args(argc, argv, 0, &start, &end, &flags) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1,
+            "Invalid VLAN spec (expected <bridge> <port> <vid> [vid <end>])");
+        return -1;
+    }
+
+    int err = br_vlan_modify(argv[0], argv[1], (unsigned short)start,
+                             (unsigned short)end, flags, 0);
+    if (err < 0) {
+        if (start == end)
+            hypervisor_send_reply(conn, HSC_ERR_DELETE, 1,
+                "Could not delete VLAN %ld on %s: %s", start, argv[1], strerror(-err));
+        else
+            hypervisor_send_reply(conn, HSC_ERR_DELETE, 1,
+                "Could not delete VLAN %ld-%ld on %s: %s", start, end, argv[1], strerror(-err));
+        return -1;
+    }
+
+    if (start == end)
+        hypervisor_send_reply(conn, HSC_INFO_OK, 1, "VLAN %ld deleted from %s", start, argv[1]);
+    else
+        hypervisor_send_reply(conn, HSC_INFO_OK, 1, "VLAN %ld-%ld deleted from %s", start, end, argv[1]);
+    return 0;
+}
+
+/* One (port, vid, flags) tuple collected from an RTM_GETLINK AF_BRIDGE dump. */
+struct br_vlan_entry {
+    int ifindex;
+    unsigned short vid;
+    unsigned short flags;
+};
+
+/* Append one (port, vid, flags) to a growable array (cf. br_dump_addresses).
+ * Returns 0 on success or -ENOMEM. */
+static int append_vlan_entry(struct br_vlan_entry **entries, int *n, int *cap,
+                             int ifindex, unsigned short vid, unsigned short flags)
+{
+    if (*n == *cap) {
+        int newcap = *cap ? *cap * 2 : 16;
+        struct br_vlan_entry *tmp = realloc(*entries, newcap * sizeof(*tmp));
+        if (!tmp)
+            return -ENOMEM;
+        *entries = tmp;
+        *cap = newcap;
+    }
+    (*entries)[*n].ifindex = ifindex;
+    (*entries)[*n].vid = vid;
+    (*entries)[*n].flags = flags;
+    (*n)++;
+    return 0;
+}
+
+/*
+ * Dump per-port VLAN membership via RTM_GETLINK (AF_BRIDGE) + IFLA_EXT_MASK =
+ * RTEXT_FILTER_BRVLAN_COMPRESSED — the compressed variant iproute2 `bridge vlan
+ * show` uses: a run of same-flag VIDs arrives as one RANGE_BEGIN/END pair.  The
+ * kernel caps dump datagrams at ~32 KiB, so the non-compressed dump cannot
+ * carry a port holding ~4000+ VIDs in one message; compressed avoids that.
+ * Each RTM_NEWLINK reply carries IFLA_MASTER (the bridge) and
+ * IFLA_AF_SPEC{IFLA_BRIDGE_VLAN_INFO}; we keep entries whose master is `bridge`
+ * (excluding the bridge device itself), optionally a single `port`, and expand
+ * ranges back to per-VID entries so the output is one line per VID regardless
+ * of how the VLANs were added.
+ * On success returns 0 and a malloc'd array in *out (caller frees); *count
+ * holds the entry count.  Returns a negative errno otherwise (NOT -1).
+ */
+static int br_vlan_dump(const char *bridge, const char *port,
+                        struct br_vlan_entry **out, int *count)
+{
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL, *reply = NULL;
+    struct ifinfomsg *ifi;
+    struct br_vlan_entry *entries = NULL;
+    int n = 0, cap = 0, ret = -1;
+    int br_ifindex, want_port = 0;
+
+    *out = NULL;
+    *count = 0;
+
+    br_ifindex = if_nametoindex(bridge);
+    if (br_ifindex == 0)
+        return -ENODEV;
+    if (port) {
+        want_port = if_nametoindex(port);
+        if (want_port == 0)
+            return -ENODEV;
+    }
+
+    ret = netlink_open(&nlh, NETLINK_ROUTE);
+    if (ret < 0)
+        return ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg); nlmsg_free(reply); netlink_close(&nlh);
+        return -ENOMEM;
+    }
+
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_BRIDGE;
+
+    msg->nlmsghdr.nlmsg_type = RTM_GETLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+    nla_put_u32(msg, IFLA_EXT_MASK, RTEXT_FILTER_BRVLAN_COMPRESSED);
+
+    ret = netlink_send(&nlh, msg);
+    if (ret < 0)
+        goto out;
+
+    while (1) {
+        reply->nlmsghdr.nlmsg_len = NLMSG_ALIGN(NLMSG_GOOD_SIZE);
+        int r = netlink_rcv(&nlh, reply);
+        if (r < 0) {
+            /* netlink_rcv returns the negative errno directly (e.g. -EMSGSIZE
+             * on a truncated dump); use r, not -errno — errno is not reliably
+             * set on this path. */
+            ret = r;
+            goto out;
+        }
+        if (r == 0)
+            break;
+
+        struct nlmsghdr *nh;
+        int len = r;
+        for (nh = (struct nlmsghdr *)reply; NLMSG_OK(nh, len); nh = NLMSG_NEXT(nh, len)) {
+            if (nh->nlmsg_type == NLMSG_DONE)
+                goto done;
+            if (nh->nlmsg_type == NLMSG_ERROR)
+                goto out;
+            if (nh->nlmsg_type != RTM_NEWLINK)
+                continue;
+
+            struct ifinfomsg *ifi_r = (struct ifinfomsg *)NLMSG_DATA(nh);
+            if (ifi_r->ifi_index == br_ifindex)
+                continue;  /* skip the bridge device itself */
+            if (want_port && ifi_r->ifi_index != want_port)
+                continue;
+
+            int attrlen = nh->nlmsg_len - NLMSG_LENGTH(sizeof(struct ifinfomsg));
+            struct rtattr *rta = IFLA_RTA(ifi_r);
+            int master = 0, have_master = 0;
+            struct rtattr *afspec = NULL;
+            while (RTA_OK(rta, attrlen)) {
+                if (rta->rta_type == IFLA_MASTER) {
+                    memcpy(&master, RTA_DATA(rta), sizeof(master));
+                    have_master = 1;
+                } else if (rta->rta_type == IFLA_AF_SPEC) {
+                    afspec = rta;
+                }
+                rta = RTA_NEXT(rta, attrlen);
+            }
+            if (!have_master || master != br_ifindex || !afspec)
+                continue;
+
+            int alen = RTA_PAYLOAD(afspec);
+            struct rtattr *va = (struct rtattr *)RTA_DATA(afspec);
+            unsigned short rs_vid = 0, rs_flags = 0;
+            int in_range = 0;
+            while (RTA_OK(va, alen)) {
+                if (va->rta_type == IFLA_BRIDGE_VLAN_INFO &&
+                    RTA_PAYLOAD(va) == sizeof(struct bridge_vlan_info)) {
+                    struct bridge_vlan_info *vinfo = (struct bridge_vlan_info *)RTA_DATA(va);
+                    /* RANGE_* are dump encoding, not per-VID flags; strip them. */
+                    unsigned short vf = vinfo->flags &
+                        ~(BRIDGE_VLAN_INFO_RANGE_BEGIN | BRIDGE_VLAN_INFO_RANGE_END);
+                    if (vinfo->flags & BRIDGE_VLAN_INFO_RANGE_BEGIN) {
+                        rs_vid = vinfo->vid;
+                        rs_flags = vf;
+                        in_range = 1;
+                    } else if (in_range &&
+                               (vinfo->flags & BRIDGE_VLAN_INFO_RANGE_END)) {
+                        unsigned int v;
+                        for (v = rs_vid; v <= vinfo->vid; v++) {
+                            ret = append_vlan_entry(&entries, &n, &cap,
+                                                    ifi_r->ifi_index, v, rs_flags);
+                            if (ret)
+                                goto out;
+                        }
+                        in_range = 0;
+                    } else {
+                        ret = append_vlan_entry(&entries, &n, &cap,
+                                                ifi_r->ifi_index, vinfo->vid, vf);
+                        if (ret)
+                            goto out;
+                    }
+                }
+                va = RTA_NEXT(va, alen);
+            }
+        }
+    }
+
+done:
+    ret = 0;
+out:
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    netlink_close(&nlh);
+    if (ret == 0) {
+        *out = entries;
+        *count = n;
+    } else {
+        free(entries);
+    }
+    return ret;
+}
+
+/* brctl vlan_show <bridge> [port] — list per-port VLAN membership.
+ * One line per (port, vid): "<port> <vid> [PVID] [Egress Untagged]". */
+static int cmd_vlan_show(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    const char *bridge = argv[0];
+    const char *port = (argc >= 2) ? argv[1] : NULL;
+    struct br_vlan_entry *entries;
+    int count = 0, i;
+
+    int err = br_vlan_dump(bridge, port, &entries, &count);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1,
+            "Could not dump VLANs on %s: %s", bridge, strerror(-err));
+        return -1;
+    }
+
+    for (i = 0; i < count; i++) {
+        char ifname[IFNAMSIZ];
+        const char *name = if_indextoname(entries[i].ifindex, ifname);
+        char flags[32] = "";
+        if (entries[i].flags & BRIDGE_VLAN_INFO_PVID)
+            strncat(flags, " PVID", sizeof(flags) - strlen(flags) - 1);
+        if (entries[i].flags & BRIDGE_VLAN_INFO_UNTAGGED)
+            strncat(flags, " Egress Untagged", sizeof(flags) - strlen(flags) - 1);
+        hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "%s %u%s",
+                              name ? name : "?", entries[i].vid, flags);
+    }
+    free(entries);
+
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "%d VLAN entr%s",
+                          count, (count == 1) ? "y" : "ies");
     return 0;
 }
 
@@ -1437,6 +1915,10 @@ static hypervisor_cmd_t brctl_cmd_array[] = {
    { "setportstate", 3, 3, cmd_setportstate, NULL },
    { "hairpin", 3, 3, cmd_hairpin, NULL },
    { "isolated", 3, 3, cmd_isolated, NULL },
+   /* VLAN filtering — per-port VID membership (needs vlanfiltering on) */
+   { "vlan_add", 3, 7, cmd_vlan_add, NULL },
+   { "vlan_del", 3, 5, cmd_vlan_del, NULL },
+   { "vlan_show", 1, 2, cmd_vlan_show, NULL },
    { NULL, -1, -1, NULL, NULL },
 };
 
