@@ -139,6 +139,12 @@ of `vlan_add` (ranges), with the native VLAN added `pvid untagged`.
   (0x8100) through transparently — standard Linux provider-bridge QinQ. It does
   **not** do selective QinQ (classification/mapping on the inner VLAN); that
   would require `IFLA_BRIDGE_VLAN_TUNNEL_INFO`, which is not implemented.
+- **Only standard VLAN EtherTypes (0x8100 / 0x88a8).** `setvlanproto` rejects
+  the legacy QinQ EtherTypes 0x9100 / 0x9200 / 0x9300 (`ETH_P_QINQ1/2/3`). Those
+  are deprecated, non-IEEE-registered vendor tags from before 802.1ad; the
+  kernel's `eth_type_vlan()` recognizes only 0x8100 and 0x88a8, so the bridge
+  cannot use the legacy ones as `vlan_protocol` regardless. Standard QinQ is
+  0x88a8.
 - **No MAC (FDB) table read/flush.** There is no `fdb_show` / `fdb_flush`. The
   kernel bridge learns and ages MAC entries itself; ubridge has never exposed
   mac-table access and gns3-server does not consume it, so it was deliberately
