@@ -126,6 +126,24 @@ not here): access VLAN *N* = `vlanfiltering on` → `vlan_del <port> 1` →
 `vlan_add <br> <port> N pvid untagged`; a dot1q trunk's tagged list is a series
 of `vlan_add` (ranges), with the native VLAN added `pvid untagged`.
 
+## Limitations
+
+- **Default PVID 1 is not auto-cleaned.** A port freshly enslaved to a
+  `vlanfiltering` bridge inherits the default PVID 1 (PVID + Egress Untagged).
+  Configuring an access or trunk port therefore needs an explicit
+  `vlan_del <bridge> <port> 1` first — `vlan_add ... pvid` moves the PVID but
+  leaves VID 1 as a plain member. This matches iproute2 (`bridge vlan add ...
+  pvid` likewise does not remove VID 1); compose the full sequence at the caller.
+- **QinQ is outer-tag (provider-bridge) only.** With `setvlanproto 0x88a8` the
+  bridge filters on the outer S-tag (0x88a8) and carries the inner C-tag
+  (0x8100) through transparently — standard Linux provider-bridge QinQ. It does
+  **not** do selective QinQ (classification/mapping on the inner VLAN); that
+  would require `IFLA_BRIDGE_VLAN_TUNNEL_INFO`, which is not implemented.
+- **No MAC (FDB) table read/flush.** There is no `fdb_show` / `fdb_flush`. The
+  kernel bridge learns and ages MAC entries itself; ubridge has never exposed
+  mac-table access and gns3-server does not consume it, so it was deliberately
+  omitted. Inspect with the external `bridge fdb show dev <port>` if needed.
+
 ## Implementation notes
 
 - **netlink library** — `src/netlink/nl.c` (lxc-derived). Helpers used:

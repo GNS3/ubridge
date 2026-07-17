@@ -70,7 +70,7 @@ daemon; data-plane impairment/capture must therefore also live in the kernel.
 | Runtime re-link | `brctl delif <br> <tap>` then `brctl addif <newbr> <tap>` |
 | Link delete | `brctl delif` on both ends, then `brctl delete <br>` |
 
-(Full STP/VLAN/port-param set in `brctl.md`.)
+(Full STP/VLAN/port-param set in [`brctl.md`](brctl.md); its [§ Limitations](brctl.md#limitations) note the default-PVID-1 cleanup step, QinQ being outer-tag only, and the absence of FDB read/flush.)
 
 ### tc — netem impairment
 ```
