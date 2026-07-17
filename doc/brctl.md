@@ -165,6 +165,7 @@ of `vlan_add` (ranges), with the native VLAN added `pvid untagged`.
 | `br_set_port_attr` sent `IFLA_BRPORT_PRIORITY` as u8 | Kernel policy `NLA_U16` rejects the 1-byte attr with `-ERANGE` → `setportprio` always failed (masked by older kernels' lenient netlink parsing) | Send u16 via the dedicated `br_set_port_attr_u16` |
 | `br_vlan_dump` read `-errno` after `netlink_rcv` returned `-EMSGSIZE` | `netlink_rcv` returns the negative errno directly; `errno` isn't reliably set on that path, so a truncated dump (port too big for the ~32 KiB datagram cap) was mis-reported as success with 0 entries | Use the return value (`ret = r`), not `-errno`; and use the compressed dump so large ports fit |
 | `vlan_show` used the non-compressed dump | A port holding ~4000+ VIDs exceeds the kernel's ~32 KiB dump-datagram cap and is skipped → 0 entries | Switch to `RTEXT_FILTER_BRVLAN_COMPRESSED` and expand ranges to per-VID lines |
+| `cmd_setvlanproto` sent `IFLA_BR_VLAN_PROTOCOL` host-order via `nla_put_u16` | Kernel reads it with `nla_get_be16` (network order); little-endian byte-swapped the value → `eth_type_vlan()` rejected 0x8100/0x88a8 → QinQ (802.1ad) couldn't be configured | `htons()` the value before sending |
 
 ## Testing
 
@@ -200,21 +201,21 @@ python3 test_basic.py
 python3 run_all.py
 ```
 
-Nine suites (165 tests in total):
+Nine suites (168 tests in total):
 
 | Suite | Tests | Scope |
 |-------|-------|-------|
-| `test_basic` | 22 | Lifecycle, common errors, bridge scoping |
-| `test_boundary` | 58 | Boundary values for all ranged parameters, kernel-side verification |
+| `test_basic` | 21 | Lifecycle, common errors, bridge scoping |
+| `test_boundary` | 64 | Boundary values for all ranged parameters, kernel-side verification |
 | `test_concurrency` | 6 | Multi-client create races, show under churn |
 | `test_robustness` | 20 | Malformed input, overlong names, IPv6, crash-freedom |
 | `test_state` | 12 | addif/addip idempotency, UP/DOWN transitions, ports on delete |
-| `test_stress` | 5 | 400 create/delete cycles, fd stability, dump at scale (60 bridges) |
+| `test_stress` | 3 | 500 create/delete cycles, fd stability |
 | `test_no_privs` | 4 | No-cap binary rejects mutations, survives gracefully |
 | `test_vlan` | 28 | Per-port VLAN add/del/show/range, kernel-side verification, error paths |
 | `test_vlan_perf` | 10 | `vlan_show` over the full VID range (4094), timed |
 
-All 165 tests pass on the reference kernel (7.1.2-1-default).
+All 168 tests pass on the reference kernel (7.1.2-1-default).
 
 ### Kernel verification reference
 

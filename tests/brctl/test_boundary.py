@@ -79,8 +79,13 @@ def main():
         # --- vlan protocol: on this kernel both valid values are rejected (206) ---
         for tok in ("0x8100", "0x88a8"):
             code = c.code("brctl setvlanproto %s %s" % (BR, tok))
-            r.check("setvlanproto %s kernel-rejected -> 206" % tok,
-                    code == "206", code)
+            r.check("setvlanproto %s -> 100" % tok, code == "100", code)
+        # kernel read-back: iproute2 prints 0x88a8 as "802.1ad"
+        _ip = subprocess.run(["ip", "-d", "link", "show", BR],
+                             capture_output=True, text=True).stdout
+        r.check("kernel reflects vlan_protocol 0x88a8",
+                ("802.1ad" in _ip.lower()) or ("0x88a8" in _ip.lower()),
+                _ip.strip()[:80])
         r.check("setvlanproto 0x8101 parse-rejected -> 204",
                 c.code("brctl setvlanproto %s 0x8101" % BR) == "204")
 

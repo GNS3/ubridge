@@ -1222,7 +1222,11 @@ static int cmd_setvlanproto(hypervisor_conn_t *conn, int argc, char *argv[])
         hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid VLAN protocol %s (expected 0x8100 or 0x88a8)", argv[1]);
         return -1;
     }
-    int err = br_set_bridge_attr_u16(bridge, IFLA_BR_VLAN_PROTOCOL, (unsigned short)proto);
+    /* IFLA_BR_VLAN_PROTOCOL is __be16 in the kernel uAPI (read with
+     * nla_get_be16); send it in network byte order, otherwise little-endian
+     * byte-swaps the value and eth_type_vlan() rejects even 0x8100/0x88a8. */
+    int err = br_set_bridge_attr_u16(bridge, IFLA_BR_VLAN_PROTOCOL,
+                                     htons((unsigned short)proto));
     if (err < 0) {
         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set VLAN protocol on %s: %s", bridge, strerror(-err));
         return -1;
