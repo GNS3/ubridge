@@ -606,12 +606,13 @@ These commands modify bridge port attributes via the kernel's
 IFLA_PROTINFO interface. The port interface must already be
 enslaved to the bridge.
 
-- **brctl setportprio** *\<bridge_name\>* *\<port\>* *\<0-255\>*:
-    Set the STP port priority.
+- **brctl setportprio** *\<bridge_name\>* *\<port\>* *\<0-63\>*:
+    Set the STP port priority (kernel limit; the parser accepts 0-255
+    but 64+ is rejected by the kernel with 206).
 
 ``` {.bash}
-brctl setportprio br0 tap0 128
-100-Port priority 128 set on tap0
+brctl setportprio br0 tap0 48
+100-Port priority 48 set on tap0
 ```
 
 - **brctl setpathcost** *\<bridge_name\>* *\<port\>* *\<1-65535\>*:
@@ -647,6 +648,42 @@ brctl hairpin br0 tap0 on
 ``` {.bash}
 brctl isolated br0 tap0 on
 100-Port isolation enabled on tap0
+```
+
+#### VLAN membership
+
+Per-port VLAN ID add/delete/show — the primitives for access/trunk/QinQ
+port modes. The bridge must have `vlanfiltering on`, and the port must be
+enslaved to it. ESW access/trunk modes are composed from these primitives
+in gns3server, not here.
+
+- **brctl vlan_add** *\<bridge_name\>* *\<port\>* *\<vid\>* `[vid <end>]` `[pvid]` `[untagged]`:
+    Add a VLAN (or `vid <end>` range) to a port. `pvid` = strip the tag on
+    ingress (the port's PVID); `untagged` = strip on egress.
+
+``` {.bash}
+brctl vlan_add br0 tap0 100 pvid untagged
+100-VLAN 100 added on tap0
+```
+
+- **brctl vlan_del** *\<bridge_name\>* *\<port\>* *\<vid\>* `[vid <end>]`:
+    Delete a VLAN/range from a port (by VID only — flags are not accepted).
+
+``` {.bash}
+brctl vlan_del br0 tap0 100
+100-VLAN 100 deleted from tap0
+```
+
+- **brctl vlan_show** *\<bridge_name\>* `[<port>]`:
+    List per-port VLAN membership — one continuation line per (port, vid)
+    as `<port> <vid> [PVID] [Egress Untagged]`, then a `100-` summary.
+
+``` {.bash}
+brctl vlan_show br0 tap0
+101 tap0 1 Egress Untagged
+101 tap0 100 PVID Egress Untagged
+101 tap0 200
+100-3 VLAN entries
 ```
 
 
