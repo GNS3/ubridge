@@ -35,6 +35,7 @@
 #include "parse.h"
 #include "pcap_capture.h"
 #include "packet_filter.h"
+#include "delay_line.h"
 #include "hypervisor.h"
 #ifdef __linux__
 #include "hypervisor_iol_bridge.h"
@@ -46,11 +47,50 @@ bridge_t *bridge_list = NULL;
 int debug_level = 0;
 int hypervisor_mode = 0;
 
+/* Send callback for the delay line's release thread: forward a due packet out
+ * the transmitting NIO and account for it. (When no delay filter is present,
+ * bridge_nios sends inline instead and does this accounting itself.) */
+static ssize_t delay_send_cb(void *ctx, const void *pkt, size_t len)
+{
+   nio_t *tx_nio = ctx;
+   ssize_t bytes_sent;
+
+   bytes_sent = nio_send(tx_nio, (void *)pkt, len);
+   if (bytes_sent == -1) {
+      perror("send");
+      return -1;
+   }
+   tx_nio->packets_out++;
+   tx_nio->bytes_out += bytes_sent;
+   return bytes_sent;
+}
+
 static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
 {
   ssize_t bytes_received, bytes_sent;
   unsigned char pkt[NIO_MAX_PKT_SIZE];
   int drop_packet;
+  int latency_ms = 0, jitter_ms = 0;
+  delay_line_t *delay_line = NULL;
+  int rc = 0;
+
+  /* If a delay filter is configured, route the send through a real delay line
+   * instead of blocking this thread. The old delay handler slept inline,
+   * capping each direction at ~1000/latency pps and collapsing the link under
+   * load (GNS3/ubridge#114). The delay line's release thread owns the wait. */
+  if (packet_filter_get_delay(bridge->packet_filters, &latency_ms, &jitter_ms)) {
+      delay_line = delay_line_create(latency_ms, jitter_ms, delay_send_cb, tx_nio);
+      if (delay_line == NULL)
+         fprintf(stderr, "bridge '%s': could not create delay line, forwarding without delay\n", bridge->name);
+  }
+
+  /* Tear the delay line down on normal exit or pthread_cancel (bridges are
+   * stopped/deleted via pthread_cancel). delay_line_destroy() is a no-op on
+   * NULL, so we always push/pop — and we MUST: pthread_cleanup_push/pop are
+   * macros that open/close one block, so the loop has to live inside it.
+   * Guarding them with `if (delay_line)` would skip the whole loop when no
+   * delay filter is configured. */
+  pthread_cleanup_push((void (*)(void *))delay_line_destroy, delay_line);
 
   while (1) {
 
@@ -61,7 +101,8 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
         perror("recv");
         if (errno == ECONNREFUSED || errno == ENETDOWN)
            continue;
-        return -1;
+        rc = -1;
+        break;
     }
 
     if (bytes_received > NIO_MAX_PKT_SIZE) {
@@ -103,6 +144,14 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
     /* dump the packet to a PCAP file if capture is activated */
     pcap_capture_packet(bridge->capture, pkt, bytes_received);
 
+    if (delay_line) {
+        /* hand the packet to the release thread; never block the recv loop.
+         * On enqueue failure (out of memory) the packet is dropped. */
+        if (delay_line_enqueue(delay_line, pkt, bytes_received) != 0 && debug_level > 0)
+           printf("Packet dropped by delay line on bridge '%s'\n", bridge->name);
+        continue;
+    }
+
     /* send what we received to the transmitting NIO */
     bytes_sent = nio_send(tx_nio, pkt, bytes_received);
     if (bytes_sent == -1) {
@@ -117,13 +166,19 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
         if (tx_nio->type == NIO_TYPE_TAP && errno == EIO)
             continue;
 
-        return -1;
+        rc = -1;
+        break;
     }
 
     tx_nio->packets_out++;
     tx_nio->bytes_out += bytes_sent;
   }
-  return 0;
+
+  /* runs delay_line_destroy (no-op when no delay filter), joining the release
+   * thread and freeing any queued packets. On pthread_cancel the cleanup
+   * stack runs it instead and this line is never reached. */
+  pthread_cleanup_pop(1);
+  return rc;
 }
 
 /* Source NIO thread */

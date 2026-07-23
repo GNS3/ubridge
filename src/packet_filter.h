@@ -55,4 +55,10 @@ packet_filter_t *find_packet_filter(packet_filter_t *packet_filters, char *filte
 int delete_packet_filter(packet_filter_t **packet_filters, char *filter_name);
 void free_packet_filters(packet_filter_t *filter);
 
+/* If a delay filter is present, copy its latency/jitter (ms) into the out
+ * args and return TRUE; otherwise return FALSE. The delay filter no longer
+ * applies its latency inline (see packet_filter.c) — bridge_nios() reads the
+ * configured value via this accessor to drive a real delay line. */
+int packet_filter_get_delay(packet_filter_t *packet_filters, int *latency_ms, int *jitter_ms);
+
 #endif /* !FILTER_H_ */

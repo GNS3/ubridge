@@ -29,6 +29,7 @@ SRC     =   src/ubridge.c               \
             src/nio_tap.c               \
             src/parse.c                 \
             src/packet_filter.c         \
+            src/delay_line.c            \
             src/pcap_capture.c          \
             src/pcap_filter.c           \
             src/hypervisor.c            \

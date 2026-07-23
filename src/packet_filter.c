@@ -19,7 +19,6 @@
  */
 
 #include <string.h>
-#include <time.h>
 #include <pcap.h>
 #include "packet_filter.h"
 #include "pcap_filter.h"
@@ -184,24 +183,35 @@ static int delay_setup(void **opt, int argc, char *argv[])
    return (0);
 }
 
-/* Packet handler: add delay (latency and optionally jitter) */
+/* Packet handler: no-op. The configured latency is applied as a real delay
+ * line by bridge_nios() (see src/delay_line.c) so that delaying a packet
+ * never blocks the bridge thread. The old inline nanosleep() serialized each
+ * direction to ~1000/latency pps and collapsed links under load — see
+ * GNS3/ubridge#114. The latency/jitter values are read back via
+ * packet_filter_get_delay(). */
 static int delay_handler(void *pkt, size_t len, void *opt)
 {
-   struct delay_data *data = opt;
-   struct timespec ts;
-   int delay;
-
-   if (data != NULL) {
-      delay = data->latency;
-      if (data->jitter)
-         delay = (delay - data->jitter) + random() % ((delay + data->jitter + 1) - (delay - data->jitter));
-      if (delay < 0)
-          delay = 0;
-      ts.tv_sec = delay / 1000;
-      ts.tv_nsec = (delay % 1000) * 1000000;
-      nanosleep(&ts, NULL);
-   }
+   (void)pkt;
+   (void)len;
+   (void)opt;
    return (FILTER_ACTION_PASS);
+}
+
+/* Read the configured delay (ms) back out of the first delay filter, if any. */
+int packet_filter_get_delay(packet_filter_t *packet_filters, int *latency_ms, int *jitter_ms)
+{
+   packet_filter_t *filter = packet_filters;
+
+   while (filter != NULL) {
+      if (filter->type == FILTER_TYPE_DELAY && filter->data != NULL) {
+         struct delay_data *data = filter->data;
+         *latency_ms = data->latency;
+         *jitter_ms = data->jitter;
+         return (TRUE);
+      }
+      filter = filter->next;
+   }
+   return (FALSE);
 }
 
 /* Free resources used by filter */
