@@ -199,6 +199,35 @@ def main():
         finally:
             c.close()
 
+    # ---- 7. queue limit: overload is tail-dropped, delivery is bounded ----
+    # A separate session with a tiny limit (UBRIDGE_DELAY_LIMIT=20) so the
+    # user-space drop path is hit deterministically. Every delivered packet
+    # transits the queue, so delivery is capped at the limit; without the cap
+    # an offered burst is buffered without bound (the memory side of #114).
+    os.environ["UBRIDGE_DELAY_LIMIT"] = "20"
+    try:
+        with Ubridge(port=13098, binary=_binary()) as ub:
+            c = ub.connect()
+            try:
+                l1, r1, l2, r2 = _build_bridge(c, "d5", delay_ms=100, base=13100)
+                tx = _udp_bound(r1)
+                rx = _udp_bound(r2)
+                t0 = _send_burst(tx, (HOST, l1), 200)        # 200 >> limit(20)
+                count, t_last = _recv_count(rx, 200, timeout=3.0)
+                drain = (t_last - t0) if t_last else float("inf")
+                r.check("limit: delivery capped at <=20",
+                        0 < count <= 20, "%d/200 delivered" % count)
+                r.check("limit: latency still bounded (drain < 1.5s)",
+                        drain < 1.5, "drain=%.0fms" % (drain * 1000))
+                tx.close()
+                rx.close()
+                assert c.code("bridge stop d5") == "100"
+                assert c.code("bridge delete d5") == "100"
+            finally:
+                c.close()
+    finally:
+        os.environ.pop("UBRIDGE_DELAY_LIMIT", None)
+
     ok = r.summary()
     return 0 if ok else 1
 

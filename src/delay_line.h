@@ -35,6 +35,11 @@
  * load (see GNS3/ubridge#114 — the old delay filter slept inline in the
  * bridge thread, serializing each direction to ~1000/latency pps).
  *
+ * The queue is also depth-bounded (default 1000 packets, matching the kernel
+ * netem limit): once full, new packets are tail-dropped so memory stays
+ * bounded and excess load is shed rather than buffered. Every delivered packet
+ * transits this queue, so delivery is capped at the limit under overload.
+ *
  * One delay_line belongs to one direction of one bridge (it is created and
  * destroyed inside a single bridge_nios() call), so it is single-producer
  * (the recv thread) / single-consumer (the release thread).

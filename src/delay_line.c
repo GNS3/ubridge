@@ -28,6 +28,13 @@
 
 #define DL_MAX_PKT 65535   /* matches NIO_MAX_PKT_SIZE */
 
+/* Maximum packets buffered per direction before tail-drop. Mirrors the kernel
+ * netem default (NETEM_LIMIT_DEFAULT = 1000) so the user-space delay line, like
+ * netem, bounds memory and sheds excess load instead of buffering it without
+ * limit. Every delivered packet transits this queue, so delivery is capped at
+ * DL_LIMIT_DEFAULT packets under overload. */
+#define DL_LIMIT_DEFAULT 1000
+
 /* One queued packet. The list is kept ordered by release (earliest first). */
 typedef struct dl_entry {
    struct timespec release;        /* absolute time the packet becomes due */
@@ -45,6 +52,8 @@ struct delay_line {
    pthread_mutex_t lock;
    pthread_cond_t cond;            /* signaled when head changes or on stop */
    dl_entry_t *head;               /* earliest-release entry, or NULL */
+   int count;                      /* packets currently queued */
+   int limit;                      /* max queued before tail-drop (netem-like) */
    int stop;                       /* set by delay_line_destroy */
    pthread_t release_tid;
 };
@@ -96,6 +105,7 @@ static void *delay_release_thread(void *arg)
          /* due now: pop and send outside the lock so enqueue can proceed */
          e = dl->head;
          dl->head = e->next;
+         dl->count--;
          pthread_mutex_unlock(&dl->lock);
          dl->send_fn(dl->send_ctx, e->pkt, e->len);
          free(e);
@@ -125,6 +135,20 @@ delay_line_t *delay_line_create(int base_latency_ms, int jitter_ms,
    dl->send_fn = send_fn;
    dl->send_ctx = send_ctx;
    dl->head = NULL;
+   dl->count = 0;
+   dl->limit = DL_LIMIT_DEFAULT;
+
+   /* Optional override (UBRIDGE_DELAY_LIMIT packets). Mirrors netem's
+    * configurable limit without needing a protocol/filter-arg change. */
+   {
+      const char *s = getenv("UBRIDGE_DELAY_LIMIT");
+      if (s != NULL) {
+         long v = strtol(s, NULL, 10);
+         if (v > 0)
+            dl->limit = (int)v;
+      }
+   }
+
    dl->stop = 0;
 
    pthread_mutex_init(&dl->lock, NULL);
@@ -185,6 +209,13 @@ int delay_line_enqueue(delay_line_t *dl, const void *pkt, size_t len)
       free(e);
       return -1;
    }
+   if (dl->count >= dl->limit) {
+      /* queue full: tail-drop the newest packet so excess load is shed (like
+       * netem's limit) instead of buffering it without bound. */
+      pthread_mutex_unlock(&dl->lock);
+      free(e);
+      return -1;
+   }
    if (dl->head == NULL || dl_le(&e->release, &dl->head->release)) {
       e->next = dl->head;
       dl->head = e;
@@ -196,6 +227,7 @@ int delay_line_enqueue(delay_line_t *dl, const void *pkt, size_t len)
       e->next = prev->next;
       prev->next = e;
    }
+   dl->count++;
    pthread_mutex_unlock(&dl->lock);
 
    /* wake the release thread only when the earliest deadline moved up */

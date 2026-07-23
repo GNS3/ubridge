@@ -27,6 +27,22 @@ UDP NIOs (looped back to receiver sockets under the test's control) and a
 4. **jitter** keeps every sample in a sane window (delay ± jitter + slack).
 5. **no filter** — forwarding stays fast (sanity, regression guard).
 6. **`bridge get_stats`** still reports IN/OUT counters after a burst.
+7. **queue limit** — under overload, delivery is capped at the delay line's
+   depth limit (default 1000 packets, matching the kernel netem limit) and
+   excess packets are tail-dropped, so memory stays bounded while latency
+   stays bounded. Uses `UBRIDGE_DELAY_LIMIT=20` for a deterministic check.
+
+## Tuning
+
+The per-direction queue depth defaults to 1000 packets (same as netem's
+`NETEM_LIMIT_DEFAULT`). Override it without recompiling:
+
+```
+UBRIDGE_DELAY_LIMIT=2000 ubridge -H 127.0.0.1:21000
+```
+
+A packet beyond the limit is tail-dropped (excess load is shed, never buffered
+without bound).
 
 ## Running
 
