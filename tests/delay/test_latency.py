@@ -246,6 +246,31 @@ def main():
             rx.close()
             assert c.code("bridge stop d6") == "100"
             assert c.code("bridge delete d6") == "100"
+
+            # ---- 8. composition: delay + packet_loss (filters combine) ----
+            # Only delay was special-cased (moved to the delay line); loss and
+            # corrupt stay inline. Dropped packets never enter the delay line,
+            # survivors are delayed -- so ~50% delivered, each by ~delay.
+            l1, r1, l2, r2 = (13120, 13121, 13122, 13123)
+            assert c.code("bridge create d7") == "100"
+            assert c.code("bridge add_nio_udp d7 %d %s %d" % (l1, HOST, r1)) == "100"
+            assert c.code("bridge add_nio_udp d7 %d %s %d" % (l2, HOST, r2)) == "100"
+            assert c.code("bridge add_packet_filter d7 f0 delay 60") == "100"
+            assert c.code("bridge add_packet_filter d7 f1 packet_loss 50") == "100"
+            assert c.code("bridge start d7") == "100"
+            time.sleep(0.2)
+            tx = _udp_bound(r1)
+            rx = _udp_bound(r2)
+            t0 = _send_burst(tx, (HOST, l1), 200)
+            count, t_last = _recv_count(rx, 200, timeout=3.0)
+            drain = (t_last - t0) if t_last else float("inf")
+            r.check("combo delay+loss: ~50% delivered", 60 <= count <= 140, "%d/200" % count)
+            r.check("combo delay+loss: survivors delayed ~60ms",
+                    0.030 < drain < 0.200, "drain=%.0fms" % (drain * 1000))
+            tx.close()
+            rx.close()
+            assert c.code("bridge stop d7") == "100"
+            assert c.code("bridge delete d7") == "100"
         finally:
             c.close()
 
