@@ -196,6 +196,56 @@ def main():
             rx.close()
             assert c.code("bridge stop d4") == "100"
             assert c.code("bridge delete d4") == "100"
+
+            # ---- 7. runtime filter management (GNS3 starts, then applies) ----
+            # gns3-server does `bridge start` THEN `_ubridge_apply_filters`, and
+            # re-applies on link update — so a delay filter added/changed/removed
+            # on a RUNNING bridge must take effect immediately (the old one-shot
+            # read at start left it silently inert; the regression behind
+            # "configured 100ms but no effect").
+            l1, r1, l2, r2 = (13110, 13111, 13112, 13113)
+            assert c.code("bridge create d6") == "100"
+            assert c.code("bridge add_nio_udp d6 %d %s %d" % (l1, HOST, r1)) == "100"
+            assert c.code("bridge add_nio_udp d6 %d %s %d" % (l2, HOST, r2)) == "100"
+            assert c.code("bridge start d6") == "100"
+            time.sleep(0.2)
+            tx = _udp_bound(r1)
+            rx = _udp_bound(r2)
+            ow = _one_way(tx, (HOST, l1), rx)
+            r.check("runtime: no filter -> ~0ms", ow is not None and ow < 0.050,
+                    "%.0f ms" % (ow * 1000) if ow else "lost")
+            r.check("runtime: add delay 80 after start -> 100",
+                    c.code("bridge add_packet_filter d6 d1 delay 80") == "100")
+            time.sleep(0.2)
+            # prime the lazy delay-line creation, then measure (avoids measuring
+            # the very first packet that races the filter-becoming-visible)
+            _send_burst(tx, (HOST, l1), 2)
+            _recv_count(rx, 2, timeout=1.0)
+            ow = _one_way(tx, (HOST, l1), rx)
+            r.check("runtime: delay 80 takes effect",
+                    ow is not None and 0.050 < ow < 0.250,
+                    "%.0f ms" % (ow * 1000) if ow else "lost")
+            # change params: reset + re-add at 150
+            assert c.code("bridge reset_packet_filters d6") == "100"
+            assert c.code("bridge add_packet_filter d6 d1 delay 150") == "100"
+            time.sleep(0.2)
+            _send_burst(tx, (HOST, l1), 2)
+            _recv_count(rx, 2, timeout=1.0)
+            ow = _one_way(tx, (HOST, l1), rx)
+            r.check("runtime: change to delay 150 takes effect",
+                    ow is not None and 0.110 < ow < 0.350,
+                    "%.0f ms" % (ow * 1000) if ow else "lost")
+            # remove
+            assert c.code("bridge reset_packet_filters d6") == "100"
+            time.sleep(0.2)
+            ow = _one_way(tx, (HOST, l1), rx)
+            r.check("runtime: remove filter -> back to ~0ms",
+                    ow is not None and ow < 0.050,
+                    "%.0f ms" % (ow * 1000) if ow else "lost")
+            tx.close()
+            rx.close()
+            assert c.code("bridge stop d6") == "100"
+            assert c.code("bridge delete d6") == "100"
         finally:
             c.close()
 

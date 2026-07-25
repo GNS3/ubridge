@@ -18,6 +18,27 @@
  *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+/*
+ * A user-space port of the Linux netem qdisc's delay path (net/sched/sch_netem.c):
+ *
+ *   - dl_tabledist()      ~ netem's tabledist()    — draw delay = latency +/- jitter
+ *   - tfifo-style enqueue ~ netem's tfifo_enqueue() — time-ordered queue with an
+ *                          O(1) tail fast path (packets normally arrive in order)
+ *                          and a sorted-insert fallback for jitter reordering
+ *   - release thread      ~ netem's qdisc watchdog  — wakes at the head's
+ *                          time_to_send and sends everything already due
+ *
+ * Two things differ from in-kernel netem, both forced by ubridge being
+ * user-space and filter-driven:
+ *   - the watchdog is a pthread + cond_timedwait (no kernel qdisc scheduler);
+ *   - the queue is depth-bounded with tail-drop, default 1000 packets
+ *     (NETEM_LIMIT_DEFAULT), overridable via UBRIDGE_DELAY_LIMIT.
+ *
+ * One delay_line serves one direction of one bridge (created and destroyed
+ * inside a single bridge_nios() call): single-producer (the recv thread) /
+ * single-consumer (the release thread).
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,26 +56,28 @@
  * DL_LIMIT_DEFAULT packets under overload. */
 #define DL_LIMIT_DEFAULT 1000
 
-/* One queued packet. The list is kept ordered by release (earliest first). */
+/* One queued packet. The queue is kept ordered by time_to_send (earliest first),
+ * with a tail pointer for netem's tfifo O(1) fast path. */
 typedef struct dl_entry {
-   struct timespec release;        /* absolute time the packet becomes due */
+   struct timespec time_to_send;    /* absolute time the packet becomes due */
    size_t len;
    struct dl_entry *next;
-   unsigned char pkt[];            /* flexible array member */
+   unsigned char pkt[];             /* flexible array member */
 } dl_entry_t;
 
 struct delay_line {
-   int base_latency_ms;
-   int jitter_ms;
+   int base_latency_ms;             /* mu  — netem latency */
+   int jitter_ms;                   /* sigma — netem jitter */
    delay_send_fn send_fn;
    void *send_ctx;
-   clockid_t clock;                /* clock used for release times + cond */
+   clockid_t clock;                 /* clock used for time_to_send + cond */
    pthread_mutex_t lock;
-   pthread_cond_t cond;            /* signaled when head changes or on stop */
-   dl_entry_t *head;               /* earliest-release entry, or NULL */
-   int count;                      /* packets currently queued */
-   int limit;                      /* max queued before tail-drop (netem-like) */
-   int stop;                       /* set by delay_line_destroy */
+   pthread_cond_t cond;             /* signaled when head changes or on stop */
+   dl_entry_t *head;                /* earliest time_to_send, or NULL */
+   dl_entry_t *tail;                /* latest time_to_send, or NULL (tfifo) */
+   int count;                       /* packets currently queued */
+   int limit;                       /* max queued before tail-drop (netem-like) */
+   int stop;                        /* set by delay_line_destroy */
    pthread_t release_tid;
 };
 
@@ -64,7 +87,7 @@ static void dl_now(clockid_t clock, struct timespec *ts)
    clock_gettime(clock, ts);
 }
 
-/* *ts += ms (ms may be negative, but we clamp the caller's delay to >= 0) */
+/* *ts += ms */
 static void dl_add_ms(struct timespec *ts, int ms)
 {
    ts->tv_sec += ms / 1000;
@@ -72,13 +95,18 @@ static void dl_add_ms(struct timespec *ts, int ms)
    if (ts->tv_nsec >= 1000000000L) {
       ts->tv_sec += ts->tv_nsec / 1000000000L;
       ts->tv_nsec %= 1000000000L;
-   } else if (ts->tv_nsec < 0) {
-      ts->tv_sec -= 1 + ((-ts->tv_nsec - 1) / 1000000000L);
-      ts->tv_nsec += 1000000000L * (1 + ((-ts->tv_nsec - 1) / 1000000000L));
    }
 }
 
-/* a <= b ? */
+/* a < b ? (used by the tfifo tail fast path) */
+static int dl_lt(const struct timespec *a, const struct timespec *b)
+{
+   if (a->tv_sec != b->tv_sec)
+      return a->tv_sec < b->tv_sec;
+   return a->tv_nsec < b->tv_nsec;
+}
+
+/* a <= b ? (used by the sorted-insert fallback and the due-time check) */
 static int dl_le(const struct timespec *a, const struct timespec *b)
 {
    if (a->tv_sec != b->tv_sec)
@@ -86,7 +114,18 @@ static int dl_le(const struct timespec *a, const struct timespec *b)
    return a->tv_nsec <= b->tv_nsec;
 }
 
-/* Release thread: send packets as their release time arrives, in order. */
+/* tabledist — netem's delay+jitter draw (the dist == NULL path from
+ * sch_netem.c): uniform in [mu-sigma, mu+sigma]. This is the kernel netem
+ * behaviour when tc supplies no distribution table. */
+static long dl_tabledist(long mu, long sigma)
+{
+   if (sigma == 0)
+      return mu;
+   return (long)(random() % (2 * (unsigned long)sigma)) + mu - sigma;
+}
+
+/* Release thread (netem's watchdog): send packets as their time_to_send
+ * arrives, in order. */
 static void *delay_release_thread(void *arg)
 {
    delay_line_t *dl = arg;
@@ -101,10 +140,12 @@ static void *delay_release_thread(void *arg)
          continue;
       }
       dl_now(dl->clock, &now);
-      if (dl_le(&dl->head->release, &now)) {
+      if (dl_le(&dl->head->time_to_send, &now)) {
          /* due now: pop and send outside the lock so enqueue can proceed */
          e = dl->head;
          dl->head = e->next;
+         if (dl->head == NULL)
+            dl->tail = NULL;
          dl->count--;
          pthread_mutex_unlock(&dl->lock);
          dl->send_fn(dl->send_ctx, e->pkt, e->len);
@@ -114,7 +155,7 @@ static void *delay_release_thread(void *arg)
       }
       /* wait until the head is due; an earlier head inserted meanwhile
        * signals the cond so we re-evaluate. */
-      pthread_cond_timedwait(&dl->cond, &dl->lock, &dl->head->release);
+      pthread_cond_timedwait(&dl->cond, &dl->lock, &dl->head->time_to_send);
    }
    pthread_mutex_unlock(&dl->lock);
    return NULL;
@@ -134,7 +175,7 @@ delay_line_t *delay_line_create(int base_latency_ms, int jitter_ms,
    dl->jitter_ms = jitter_ms;
    dl->send_fn = send_fn;
    dl->send_ctx = send_ctx;
-   dl->head = NULL;
+   dl->head = dl->tail = NULL;
    dl->count = 0;
    dl->limit = DL_LIMIT_DEFAULT;
 
@@ -177,7 +218,7 @@ int delay_line_enqueue(delay_line_t *dl, const void *pkt, size_t len)
 {
    dl_entry_t *e, *prev;
    struct timespec t;
-   int delay;
+   long delay;
    int became_head = 0;
 
    if (!dl)
@@ -191,17 +232,13 @@ int delay_line_enqueue(delay_line_t *dl, const void *pkt, size_t len)
    e->len = len;
    e->next = NULL;
 
-   /* per-packet delay with jitter — same formula as the old delay_handler */
-   delay = dl->base_latency_ms;
-   if (dl->jitter_ms)
-      delay = (delay - dl->jitter_ms)
-              + random() % ((delay + dl->jitter_ms + 1) - (delay - dl->jitter_ms));
+   /* time_to_send = now + tabledist(latency, jitter) — netem's enqueue */
+   delay = dl_tabledist(dl->base_latency_ms, dl->jitter_ms);
    if (delay < 0)
       delay = 0;
-
    dl_now(dl->clock, &t);
-   dl_add_ms(&t, delay);
-   e->release = t;
+   dl_add_ms(&t, (int)delay);
+   e->time_to_send = t;
 
    pthread_mutex_lock(&dl->lock);
    if (dl->stop) {
@@ -216,16 +253,29 @@ int delay_line_enqueue(delay_line_t *dl, const void *pkt, size_t len)
       free(e);
       return -1;
    }
-   if (dl->head == NULL || dl_le(&e->release, &dl->head->release)) {
-      e->next = dl->head;
-      dl->head = e;
-      became_head = 1;
+
+   /* tfifo-style insert: O(1) tail append when in time order (the common case
+    * with constant delay), sorted insert from the head on jitter reordering. */
+   if (dl->tail == NULL || !dl_lt(&e->time_to_send, &dl->tail->time_to_send)) {
+      e->next = NULL;
+      if (dl->tail)
+         dl->tail->next = e;
+      else
+         dl->head = e;
+      dl->tail = e;
+      became_head = (dl->head == e);   /* only the first packet wakes the thread */
    } else {
-      prev = dl->head;
-      while (prev->next && !dl_le(&e->release, &prev->next->release))
-         prev = prev->next;
-      e->next = prev->next;
-      prev->next = e;
+      if (dl_le(&e->time_to_send, &dl->head->time_to_send)) {
+         e->next = dl->head;
+         dl->head = e;
+         became_head = 1;
+      } else {
+         prev = dl->head;
+         while (prev->next && !dl_le(&e->time_to_send, &prev->next->time_to_send))
+            prev = prev->next;
+         e->next = prev->next;
+         prev->next = e;
+      }
    }
    dl->count++;
    pthread_mutex_unlock(&dl->lock);
