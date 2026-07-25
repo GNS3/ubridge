@@ -4,6 +4,8 @@ import sys
 
 SUITES = [
     "test_latency",
+    "test_perf",
+    "test_boundary",
 ]
 
 

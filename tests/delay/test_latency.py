@@ -26,90 +26,21 @@ import socket
 import struct
 import time
 
-from helpers import Ubridge, Results
-
-HOST = "127.0.0.1"
-
-
-def _binary():
-    """Prefer the just-built repo binary — the delay filter needs no
-    privileges (UDP only), and the installed /usr/local/bin/ubridge may be a
-    stale pre-fix copy. Falls back to the shared resolver otherwise."""
-    repo = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "ubridge"))
-    env = os.environ.get("UBRIDGE_BINARY")
-    if env and os.path.exists(env):
-        return env
-    if os.path.exists(repo):
-        return repo
-    from helpers import _brctl
-    return _brctl.ubridge_binary()
-
-
-def _udp_bound(port):
-    """A UDP socket bound to `port` — used as a fixed-source injector (so the
-    connected NIO accepts our datagrams) or as a receiver."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind((HOST, port))
-    s.settimeout(5.0)
-    return s
+from helpers import (Ubridge, Results, HOST, ubridge_binary as _binary,
+                     bound_udp as _udp_bound, send_burst as _send_burst,
+                     recv_count as _recv_count, one_way as _one_way)
 
 
 def _build_bridge(c, name, delay_ms=None, jitter_ms=None, base=13060):
     """Create a started bridge with two connected UDP NIOs and an optional
     delay filter. Returns (L1, R1, L2, R2)."""
-    l1, r1, l2, r2 = base, base + 1, base + 2, base + 3
-
-    assert c.code("bridge create %s" % name) == "100", "create bridge"
-    assert c.code("bridge add_nio_udp %s %d %s %d" % (name, l1, HOST, r1)) == "100"
-    assert c.code("bridge add_nio_udp %s %d %s %d" % (name, l2, HOST, r2)) == "100"
     if delay_ms is not None:
-        if jitter_ms is not None:
-            cmd = "bridge add_packet_filter %s d1 delay %d %d" % (name, delay_ms, jitter_ms)
-        else:
-            cmd = "bridge add_packet_filter %s d1 delay %d" % (name, delay_ms)
-        assert c.code(cmd) == "100", "add delay filter"
-    assert c.code("bridge start %s" % name) == "100", "start bridge"
-    time.sleep(0.2)  # let the listener threads come up
-    return l1, r1, l2, r2
-
-
-def _send_burst(tx, dst, n, payload=b"x"):
-    """Send n datagrams back-to-back; return the monotonic time of the first."""
-    t0 = time.monotonic()
-    for i in range(n):
-        tx.sendto(struct.pack("!I", i) + payload, dst)
-    return t0
-
-
-def _recv_count(rx, n, timeout=5.0):
-    """Receive up to n datagrams; return (count, time_of_last_arrival)."""
-    deadline = time.monotonic() + timeout
-    count = 0
-    t_last = None
-    while count < n:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        rx.settimeout(remaining)
-        try:
-            rx.recv(2048)
-        except socket.timeout:
-            break
-        count += 1
-        t_last = time.monotonic()
-    return count, t_last
-
-
-def _one_way(tx, dst, rx, payload=b"ping"):
-    """Send one datagram from bound tx, return one-way latency (or None on loss)."""
-    t0 = time.monotonic()
-    tx.sendto(payload, dst)
-    try:
-        rx.recv(2048)
-    except socket.timeout:
-        return None
-    return time.monotonic() - t0
+        spec = "delay %d" % delay_ms if jitter_ms is None else "delay %d %d" % (delay_ms, jitter_ms)
+        filters = [spec]
+    else:
+        filters = None
+    from helpers import build_bridge
+    return build_bridge(c, name, base, filters)
 
 
 def main():

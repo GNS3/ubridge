@@ -32,6 +32,24 @@ UDP NIOs (looped back to receiver sockets under the test's control) and a
    excess packets are tail-dropped, so memory stays bounded while latency
    stays bounded. Uses `UBRIDGE_DELAY_LIMIT=20` for a deterministic check.
 
+`test_perf.py`:
+
+1. **large burst** — 400 packets @50ms drain in bounded time with little loss
+   (the serial-sleep bug took ~20s; the delay line ~50ms).
+2. **delay accuracy** — measured ~= configured across 10/100/500 ms.
+3. **no-delay baseline** — the fast path forwards a burst quickly (regression
+   guard; sized to the kernel UDP buffer).
+
+`test_boundary.py`:
+
+1. **minimum latency** (1 ms; setup rejects <= 0).
+2. **jitter > latency** — negative draws clamp to 0, no crash.
+3. **packet sizes** — 1-byte and ~60 KB packets traverse the delay line.
+4. **stop with queued packets** — tearing down a bridge mid-delay doesn't hang
+   (joins the release thread, frees the queue) and ubridge stays responsive.
+5. **limit boundary** — with `UBRIDGE_DELAY_LIMIT=10`, exactly 10 are delivered
+   whether 10 or 11 are sent (the tail-drop edge).
+
 ## Tuning
 
 The per-direction queue depth defaults to 1000 packets (same as netem's
