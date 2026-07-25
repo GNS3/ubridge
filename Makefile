@@ -46,14 +46,14 @@ CFLAGS  +=   -Wall
 BINDIR  =   /usr/local/bin
 
 ifeq ($(shell uname), Darwin)
-   LIBS =   -lpthread -lpcap
+   LIBS =   -lpthread -lpcap -lm
    SRC +=   src/nio_fusion_vmnet.c    \
 
 else ifeq ($(shell uname -o), Cygwin)
    CFLAGS += -DCYGWIN
-   LIBS =   -lpthread -lwpcap
+   LIBS =   -lpthread -lwpcap -lm
 else
-   LIBS =   -lpthread -lpcap
+   LIBS =   -lpthread -lpcap -lm
 endif
 
 # RAW Ethernet support for Linux

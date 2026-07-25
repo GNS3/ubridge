@@ -154,16 +154,26 @@ def main():
             assert c.code("bridge stop d1") == "100"
             assert c.code("bridge delete d1") == "100"
 
-            # ---- 4. jitter keeps latency in a sane window ----
+            # ---- 4. jitter is Gaussian, centred on the delay ----
+            # With jitter the per-packet delay is N(latency, jitter^2), so check
+            # the sample mean and spread rather than each sample being in a fixed
+            # band (a normal distribution legitimately throws low-tail samples).
             l1, r1, l2, r2 = _build_bridge(c, "d2", delay_ms=50, jitter_ms=30, base=13070)
             tx = _udp_bound(r1)
             rx = _udp_bound(r2)
-            bad = 0
-            for _ in range(8):
+            samples = []
+            for _ in range(20):
                 ow = _one_way(tx, (HOST, l1), rx)
-                if ow is None or not (0.010 < ow < 0.300):  # 50ms +/- 30 + slack
-                    bad += 1
-            r.check("jitter: all samples in [10,300]ms", bad == 0, "%d/8 out of band" % bad)
+                if ow is not None:
+                    samples.append(ow * 1000.0)   # ms
+            mean = sum(samples) / len(samples) if samples else -1.0
+            spread = (max(samples) - min(samples)) if samples else -1.0
+            r.check("jitter: mean ~50ms (Gaussian)", len(samples) >= 15 and 30 < mean < 80,
+                    "mean=%.0fms n=%d" % (mean, len(samples)))
+            r.check("jitter: spread present (>15ms)", spread > 15,
+                    "spread=%.0fms" % spread)
+            r.check("jitter: samples bounded (<200ms)",
+                    all(s < 200 for s in samples), "max=%.0fms" % (max(samples) if samples else -1))
             tx.close()
             rx.close()
             assert c.code("bridge stop d2") == "100"

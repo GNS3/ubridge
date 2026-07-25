@@ -41,7 +41,9 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
+#include <math.h>
 #include <time.h>
 #include <pthread.h>
 
@@ -56,6 +58,17 @@
  * DL_LIMIT_DEFAULT packets under overload. */
 #define DL_LIMIT_DEFAULT 1000
 
+/* Gaussian (normal) jitter. table[i] = round(standard-normal quantile at
+ * (i+0.5)/DL_DIST_SIZE) * DL_DIST_SCALE, so a uniform index lookup scaled by
+ * sigma/DL_DIST_SCALE yields a normal sample with std ~sigma — the same idea
+ * as the distribution table tc passes to kernel netem for `distribution normal`
+ * (net/sched/sch_netem.c tabledist(), the dist!=NULL path). Generated once. */
+#define DL_DIST_SIZE  1024
+#define DL_DIST_SCALE 4096
+
+static int16_t g_dist_table[DL_DIST_SIZE];
+static pthread_once_t g_dist_once = PTHREAD_ONCE_INIT;
+
 /* One queued packet. The queue is kept ordered by time_to_send (earliest first),
  * with a tail pointer for netem's tfifo O(1) fast path. */
 typedef struct dl_entry {
@@ -68,6 +81,8 @@ typedef struct dl_entry {
 struct delay_line {
    int base_latency_ms;             /* mu  — netem latency */
    int jitter_ms;                   /* sigma — netem jitter */
+   const int16_t *dist_table;       /* normal-distribution table (shared) */
+   int dist_size;
    delay_send_fn send_fn;
    void *send_ctx;
    clockid_t clock;                 /* clock used for time_to_send + cond */
@@ -114,13 +129,65 @@ static int dl_le(const struct timespec *a, const struct timespec *b)
    return a->tv_nsec <= b->tv_nsec;
 }
 
-/* tabledist — netem's delay+jitter draw (the dist == NULL path from
- * sch_netem.c): uniform in [mu-sigma, mu+sigma]. This is the kernel netem
- * behaviour when tc supplies no distribution table. */
-static long dl_tabledist(long mu, long sigma)
+/* Peter Acklam's rational approximation of the standard-normal quantile
+ * (inverse CDF); accurate to ~1e-9 across (0,1). */
+static double dl_norm_quantile(double p)
+{
+   static const double a[] = { -3.969683028665376e+01, 2.209460984245205e+02,
+      -2.759285104469687e+02, 1.383577518672690e+02, -3.066479806614716e+01,
+      2.506628277459239e+00 };
+   static const double b[] = { -5.447609879822406e+01, 1.615858368580409e+02,
+      -1.556989798598866e+02, 6.680131188771972e+01, -1.328068155288572e+01 };
+   static const double c[] = { -7.784894002430293e-03, -3.223964580411365e-01,
+      -2.400758277161838e+00, -2.549732539343734e+00, 4.374664141464968e+00,
+      2.938163982698783e+00 };
+   static const double d[] = { 7.784695709041462e-03, 3.224671290700398e-01,
+      2.445134137142996e+00, 3.754408661907416e+00 };
+   const double plow = 0.02425, phigh = 1.0 - plow;
+   double q, r;
+
+   if (p < plow) {
+      q = sqrt(-2.0 * log(p));
+      return (((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5]) /
+             ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1.0);
+   } else if (p <= phigh) {
+      q = p - 0.5;
+      r = q*q;
+      return (((((a[0]*r+a[1])*r+a[2])*r+a[3])*r+a[4])*r+a[5])*q /
+             (((((b[0]*r+b[1])*r+b[2])*r+b[3])*r+b[4])*r+1.0);
+   } else {
+      q = sqrt(-2.0 * log(1.0 - p));
+      return -(((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5]) /
+              ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1.0);
+   }
+}
+
+/* Fill the shared normal-distribution table once (inverse-CDF sampling). */
+static void dl_init_dist(void)
+{
+   int i;
+   for (i = 0; i < DL_DIST_SIZE; i++) {
+      double q = dl_norm_quantile((i + 0.5) / (double)DL_DIST_SIZE);
+      long v = (long)(q * DL_DIST_SCALE + (q >= 0 ? 0.5 : -0.5));  /* round */
+      if (v > 32767) v = 32767;
+      if (v < -32768) v = -32768;
+      g_dist_table[i] = (int16_t)v;
+   }
+}
+
+/* tabledist — netem's delay+jitter draw. With a distribution table (the default
+ * here) it is Gaussian (normal), matching `tc netem delay Xms Yms`; without one
+ * it falls back to kernel netem's uniform [mu-sigma, mu+sigma] (dist==NULL). */
+static long dl_tabledist(long mu, long sigma, const int16_t *dist, int dist_size)
 {
    if (sigma == 0)
       return mu;
+   if (dist != NULL && dist_size > 0) {
+      /* (table[idx]/scale) is a standard-normal sample, so sigma*that has
+       * std ~sigma and the result is N(mu, sigma^2). */
+      long t = dist[(unsigned)random() % dist_size];
+      return mu + (sigma * t) / DL_DIST_SCALE;
+   }
    return (long)(random() % (2 * (unsigned long)sigma)) + mu - sigma;
 }
 
@@ -173,6 +240,9 @@ delay_line_t *delay_line_create(int base_latency_ms, int jitter_ms,
    memset(dl, 0, sizeof(*dl));
    dl->base_latency_ms = base_latency_ms;
    dl->jitter_ms = jitter_ms;
+   pthread_once(&g_dist_once, dl_init_dist);
+   dl->dist_table = g_dist_table;
+   dl->dist_size = DL_DIST_SIZE;
    dl->send_fn = send_fn;
    dl->send_ctx = send_ctx;
    dl->head = dl->tail = NULL;
@@ -233,7 +303,7 @@ int delay_line_enqueue(delay_line_t *dl, const void *pkt, size_t len)
    e->next = NULL;
 
    /* time_to_send = now + tabledist(latency, jitter) — netem's enqueue */
-   delay = dl_tabledist(dl->base_latency_ms, dl->jitter_ms);
+   delay = dl_tabledist(dl->base_latency_ms, dl->jitter_ms, dl->dist_table, dl->dist_size);
    if (delay < 0)
       delay = 0;
    dl_now(dl->clock, &t);
