@@ -122,7 +122,11 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
             dump_packet(stdout, pkt, bytes_received);
     }
 
-    /* filter the packet if there is a filter configured */
+    int have_delay;
+
+    /* Lock the shared filter list while we walk it — the hypervisor thread
+     * mutates it via add/delete/reset_packet_filter under global_lock too. */
+    pthread_mutex_lock(&global_lock);
     if (bridge->packet_filters != NULL) {
          packet_filter_t *filter = bridge->packet_filters;
          packet_filter_t *next;
@@ -137,6 +141,9 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
              filter = next;
          }
      }
+    /* snapshot the delay config while the list is stable */
+    have_delay = packet_filter_get_delay(bridge->packet_filters, &latency_ms, &jitter_ms);
+    pthread_mutex_unlock(&global_lock);
 
     if (drop_packet == TRUE)
        continue;
@@ -144,10 +151,9 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
     /* dump the packet to a PCAP file if capture is activated */
     pcap_capture_packet(bridge->capture, pkt, bytes_received);
 
-    /* (re)sync the delay line to the currently-configured delay filter, if any.
-     * Recreate only when it appears, disappears, or its latency/jitter change;
-     * in steady state this is just one cheap scan of the (short) filter list. */
-    if (packet_filter_get_delay(bridge->packet_filters, &latency_ms, &jitter_ms)) {
+    /* (re)sync the delay line using the snapshotted config — create/destroy
+     * outside the lock so a join inside destroy doesn't block other bridges. */
+    if (have_delay) {
         if (delay_line == NULL || latency_ms != cur_latency || jitter_ms != cur_jitter) {
             delay_line_t *old = delay_line;
             delay_line = NULL;                 /* visible as NULL to a cancel-time cleanup */

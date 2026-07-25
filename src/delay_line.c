@@ -103,13 +103,16 @@ static void dl_now(clockid_t clock, struct timespec *ts)
 }
 
 /* *ts += ms */
-static void dl_add_ms(struct timespec *ts, int ms)
+static void dl_add_ms(struct timespec *ts, long ms)
 {
    ts->tv_sec += ms / 1000;
    ts->tv_nsec += (long)(ms % 1000) * 1000000L;
    if (ts->tv_nsec >= 1000000000L) {
       ts->tv_sec += ts->tv_nsec / 1000000000L;
       ts->tv_nsec %= 1000000000L;
+   } else if (ts->tv_nsec < 0) {
+      ts->tv_sec -= 1 + ((-ts->tv_nsec - 1) / 1000000000L);
+      ts->tv_nsec += 1000000000L * (1 + ((-ts->tv_nsec - 1) / 1000000000L));
    }
 }
 

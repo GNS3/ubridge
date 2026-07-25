@@ -893,6 +893,10 @@ static int cmd_add_packet_filter(hypervisor_conn_t *conn, int argc, char *argv[]
       return (-1);
    }
 
+   if (!strcmp(argv[4], "delay")) {
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "delay filter is not supported on IOL bridges");
+      return (-1);
+   }
    res = add_packet_filter(&iol_nio->packet_filters, argv[3], argv[4], argc-5, &argv[5]);
    if (!res)
       hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Filter '%s' type '%s' added to bridge '%s'", argv[3], argv[4], argv[0]);
