@@ -245,12 +245,18 @@ void *iol_bridge_listener(void *data)
 
        /* Send on the packet, minus the IOL header */
        bytes_received -= IOL_HDR_SIZE;
-       nio = bridge->port_table[port].destination_nio;
 
         /* filter the packet if there is a filter configured; snapshot the
-         * delay config under the same lock the hypervisor mutates the list with */
+         * delay config under the same lock the hypervisor mutates the list with.
+         * Re-validate destination_nio under the lock: it may have been set to
+         * NULL by cmd_delete_nio_udp while we were blocked in read(). */
        int have_delay = FALSE, lat_ms = 0, jit_ms = 0;
        pthread_mutex_lock(&global_lock);
+       nio = bridge->port_table[port].destination_nio;
+       if (nio == NULL) {
+            pthread_mutex_unlock(&global_lock);
+            continue;
+       }
        if (bridge->port_table[port].packet_filters != NULL) {
             packet_filter_t *filter = bridge->port_table[port].packet_filters;
             packet_filter_t *next;
@@ -775,8 +781,14 @@ static int create_iol_port_entry(hypervisor_conn_t *conn, iol_bridge_t *bridge, 
       pthread_cancel(iol_nio->tid);
       pthread_join(iol_nio->tid, NULL);
       iol_nio->tid = 0;
-      delay_line_destroy(iol_nio->delay_line_nio);
-      delay_line_destroy(iol_nio->delay_line_iol);
+      /* NULL the delay-line pointers before destroy — see
+       * cmd_delete_nio_udp for the rationale. */
+      delay_line_t *old_nio = iol_nio->delay_line_nio;
+      iol_nio->delay_line_nio = NULL;
+      delay_line_t *old_iol = iol_nio->delay_line_iol;
+      iol_nio->delay_line_iol = NULL;
+      delay_line_destroy(old_nio);
+      delay_line_destroy(old_iol);
       free_pcap_capture(iol_nio->capture);
       free_packet_filters(iol_nio->packet_filters);
       free_nio(iol_nio->destination_nio);
@@ -858,8 +870,16 @@ static int cmd_delete_nio_udp(hypervisor_conn_t *conn, int argc, char *argv[])
       pthread_cancel(iol_nio->tid);
       pthread_join(iol_nio->tid, NULL);
       iol_nio->tid = 0;
-      delay_line_destroy(iol_nio->delay_line_nio);
-      delay_line_destroy(iol_nio->delay_line_iol);
+      /* NULL the delay-line pointers before destroy so the IOL bridge
+       * listener (IOL -> NIO direction) sees NULL if it concurrently
+       * accesses them through port_table, and delay_line_destroy(NULL)
+       * is a safe no-op. */
+      delay_line_t *old_nio = iol_nio->delay_line_nio;
+      iol_nio->delay_line_nio = NULL;
+      delay_line_t *old_iol = iol_nio->delay_line_iol;
+      iol_nio->delay_line_iol = NULL;
+      delay_line_destroy(old_nio);
+      delay_line_destroy(old_iol);
       free_pcap_capture(iol_nio->capture);
       free_packet_filters(iol_nio->packet_filters);
       free_nio(iol_nio->destination_nio);
@@ -1060,9 +1080,15 @@ static int cmd_reset_packet_filters(hypervisor_conn_t *conn, int argc, char *arg
    }
 
    /* dropping the filters also drops any in-flight delay; tear down the lines
-    * so packets don't keep releasing against a config that no longer exists */
-   delay_line_destroy(iol_nio->delay_line_nio);
-   delay_line_destroy(iol_nio->delay_line_iol);
+    * so packets don't keep releasing against a config that no longer exists.
+    * NULL the pointers before destroy so the bridge listener sees NULL
+    * if it concurrently accesses them through port_table. */
+   delay_line_t *old_nio = iol_nio->delay_line_nio;
+   iol_nio->delay_line_nio = NULL;
+   delay_line_t *old_iol = iol_nio->delay_line_iol;
+   iol_nio->delay_line_iol = NULL;
+   delay_line_destroy(old_nio);
+   delay_line_destroy(old_iol);
    free_packet_filters(iol_nio->packet_filters);
    iol_nio->packet_filters = NULL;
 
