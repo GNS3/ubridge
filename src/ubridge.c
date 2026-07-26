@@ -80,7 +80,6 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
   unsigned char pkt[NIO_MAX_PKT_SIZE];
   int drop_packet;
   int latency_ms = 0, jitter_ms = 0;
-  int cur_latency = -1, cur_jitter = -1;   /* delay config currently applied */
   delay_line_t *delay_line = NULL;
   int rc = 0;
 
@@ -153,22 +152,23 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
 
     /* (re)sync the delay line using the snapshotted config — create/destroy
      * outside the lock so a join inside destroy doesn't block other bridges. */
-    if (have_delay) {
-        if (delay_line == NULL || latency_ms != cur_latency || jitter_ms != cur_jitter) {
-            delay_line_t *old = delay_line;
-            delay_line = NULL;                 /* visible as NULL to a cancel-time cleanup */
-            delay_line_destroy(old);
-            delay_line = delay_line_create(latency_ms, jitter_ms, delay_send_cb, tx_nio);
-            cur_latency = latency_ms;
-            cur_jitter = jitter_ms;
-            if (delay_line == NULL)
-               fprintf(stderr, "bridge '%s': could not create delay line, forwarding without delay\n", bridge->name);
-        }
-    } else if (delay_line != NULL) {
-        delay_line_t *old = delay_line;
-        delay_line = NULL;
-        delay_line_destroy(old);
-        cur_latency = cur_jitter = -1;
+    {
+       int cur_lat = -1, cur_jit = -1;
+       delay_line_config(delay_line, &cur_lat, &cur_jit);  /* current line's config, or -1 */
+       if (have_delay) {
+          if (delay_line == NULL || latency_ms != cur_lat || jitter_ms != cur_jit) {
+             delay_line_t *old = delay_line;
+             delay_line = NULL;                 /* visible as NULL to a cancel-time cleanup */
+             delay_line_destroy(old);
+             delay_line = delay_line_create(latency_ms, jitter_ms, delay_send_cb, tx_nio);
+             if (delay_line == NULL)
+                fprintf(stderr, "bridge '%s': could not create delay line, forwarding without delay\n", bridge->name);
+          }
+       } else if (delay_line != NULL) {
+          delay_line_t *old = delay_line;
+          delay_line = NULL;
+          delay_line_destroy(old);
+       }
     }
 
     if (delay_line) {
@@ -275,11 +275,6 @@ static void free_iol_bridges(iol_bridge_t *bridge)
     if (bridge->name)
        free(bridge->name);
 
-    close(bridge->iol_bridge_sock);
-    unlink(bridge->bridge_sockaddr.sun_path);
-    if ((unlock_unix_socket(bridge->sock_lock, bridge->bridge_sockaddr.sun_path)) == -1)
-       fprintf(stderr, "failed to unlock %s\n", bridge->bridge_sockaddr.sun_path);
-
     if (bridge->running) {
        pthread_cancel(bridge->bridge_tid);
        pthread_join(bridge->bridge_tid, NULL);
@@ -290,6 +285,10 @@ static void free_iol_bridges(iol_bridge_t *bridge)
               pthread_cancel(bridge->port_table[i].tid);
               pthread_join(bridge->port_table[i].tid, NULL);
               bridge->port_table[i].tid = 0;
+              /* destroy delay lines (joins their release threads) before
+               * freeing the NIO / closing the IOL socket they send through */
+              delay_line_destroy(bridge->port_table[i].delay_line_nio);
+              delay_line_destroy(bridge->port_table[i].delay_line_iol);
               free_pcap_capture(bridge->port_table[i].capture);
               free_packet_filters(bridge->port_table[i].packet_filters);
               free_nio(bridge->port_table[i].destination_nio);
@@ -297,6 +296,13 @@ static void free_iol_bridges(iol_bridge_t *bridge)
        }
        free(bridge->port_table);
     }
+
+    /* close after delay lines are torn down: their release threads sendto
+     * this socket, so they must be joined first */
+    close(bridge->iol_bridge_sock);
+    unlink(bridge->bridge_sockaddr.sun_path);
+    if ((unlock_unix_socket(bridge->sock_lock, bridge->bridge_sockaddr.sun_path)) == -1)
+       fprintf(stderr, "failed to unlock %s\n", bridge->bridge_sockaddr.sun_path);
 
     next = bridge->next;
     free(bridge);

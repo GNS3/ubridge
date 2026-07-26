@@ -359,6 +359,15 @@ int delay_line_enqueue(delay_line_t *dl, const void *pkt, size_t len)
    return 0;
 }
 
+int delay_line_config(delay_line_t *dl, int *latency_ms, int *jitter_ms)
+{
+   if (dl == NULL)
+      return 0;
+   *latency_ms = dl->base_latency_ms;
+   *jitter_ms = dl->jitter_ms;
+   return 1;
+}
+
 void delay_line_destroy(delay_line_t *dl)
 {
    dl_entry_t *e, *next;

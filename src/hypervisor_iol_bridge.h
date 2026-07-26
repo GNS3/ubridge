@@ -23,6 +23,7 @@
 
 #include <netinet/in.h>
 #include "ubridge.h"
+#include "delay_line.h"
 
 /* IOL header */
 
@@ -68,6 +69,8 @@ typedef struct
   struct sockaddr_un iol_sockaddr;
   nio_t *destination_nio;
   packet_filter_t *packet_filters;
+  delay_line_t *delay_line_nio;   /* NIO -> IOL direction delay line */
+  delay_line_t *delay_line_iol;   /* IOL -> NIO direction delay line */
   unsigned char header[IOL_HDR_SIZE];
   pcap_capture_t *capture;
   pthread_t tid;

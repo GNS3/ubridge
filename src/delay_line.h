@@ -61,6 +61,11 @@ delay_line_t *delay_line_create(int base_latency_ms, int jitter_ms,
  * failure (the caller should treat the packet as dropped). */
 int delay_line_enqueue(delay_line_t *dl, const void *pkt, size_t len);
 
+/* If dl is non-NULL, copy its configured latency/jitter (ms) into the out args
+ * and return TRUE; otherwise return FALSE. Lets a caller detect a config change
+ * without keeping a parallel copy of the values. */
+int delay_line_config(delay_line_t *dl, int *latency_ms, int *jitter_ms);
+
 /* Stop the release thread, join it, and free the delay line and any packets
  * still queued (they are dropped, not sent). Cancel-safe: may run from a
  * pthread cleanup handler. */

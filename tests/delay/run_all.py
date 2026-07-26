@@ -6,6 +6,7 @@ SUITES = [
     "test_latency",
     "test_perf",
     "test_boundary",
+    "test_iol",
 ]
 
 
