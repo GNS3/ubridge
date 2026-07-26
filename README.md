@@ -80,6 +80,7 @@ The modules that are currently defined are given below:
 - brctl : Linux bridge management
 - link : generic interface management
 - tap : persistent TAP device lifecycle (Linux only)
+- packet_filter : user-space link impairment — delay/jitter/loss/corrupt/BPF (all platforms)
 - tc : kernel netem link impairment — delay/jitter/loss/dup/corrupt (Linux only)
 - capture : kernel-side AF_PACKET capture (Linux only)
 - marker : packet-filter match signals, pushed to a UDP sink (Linux only)
@@ -87,9 +88,11 @@ The modules that are currently defined are given below:
 The Linux-only modules (`tap`, `tc`, `capture`, `marker`) support the
 **kernel data plane** (frames flowing `TAP → kernel bridge → TAP`, bypassing
 ubridge's user-space NIO relay): `tap`/`brctl` build the plumbing, `tc`
-replaces the user-space filters at the qdisc level, `capture` taps the
-interface at the kernel level, and `marker` signals filter matches off band.
-See [`doc/`](doc/) for per-module details.
+replaces `packet_filter` at the qdisc level where a kernel interface is
+available, `capture` taps the interface at the kernel level, and `marker`
+signals filter matches off band.
+See [`doc/packet_filter.md`](doc/packet_filter.md) for filter semantics and
+[`doc/`](doc/) for per-module details.
 
 ### Hypervisor module ("hypervisor")
 
