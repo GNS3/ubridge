@@ -268,12 +268,14 @@ delay_line_t *delay_line_create(int base_latency_ms, int jitter_ms,
    pthread_mutex_init(&dl->lock, NULL);
 
    /* Prefer CLOCK_MONOTONIC so wall-clock jumps (NTP, settimeofday) can't
-    * stretch or shrink the delay. Fall back to CLOCK_REALTIME where the
-    * cond clock can't be set (e.g. macOS) and match clock_gettime to it. */
-   dl->clock = CLOCK_MONOTONIC;
+    * stretch or shrink the delay. macOS has no pthread_condattr_setclock, so
+    * there the cond stays on CLOCK_REALTIME and we match clock_gettime to it. */
+   dl->clock = CLOCK_REALTIME;
    pthread_condattr_init(&attr);
-   if (pthread_condattr_setclock(&attr, CLOCK_MONOTONIC) != 0)
-      dl->clock = CLOCK_REALTIME;
+#ifndef __APPLE__
+   if (pthread_condattr_setclock(&attr, CLOCK_MONOTONIC) == 0)
+      dl->clock = CLOCK_MONOTONIC;
+#endif
    pthread_cond_init(&dl->cond, &attr);
    pthread_condattr_destroy(&attr);
 
