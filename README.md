@@ -64,9 +64,18 @@ Hypervisor mode
 The hypervisor mode of uBridge allows you to dynamically add and remove
 bridges.
 
-You can connect directly to the TCP control port with telnet.
+There are two control-channel transports:
 
-Usage: ubridge -H [<ip_address>:]<tcp_port>
+- **`-U <socket_path>` (recommended)** — a UNIX domain socket. The peer is
+  authenticated by the kernel via `SO_PEERCRED`: only the same UID that runs
+  ubridge may issue commands. Connect with a UNIX-socket client, e.g.
+  `socat - UNIX-CONNECT:<path>` or `nc -U <path>`.
+- **`-H [<ip>:]<tcp_port>`** — TCP (retained for backward compatibility and
+  remote use). For security it **defaults to loopback** (`127.0.0.1`); pass an
+  explicit IP (e.g. `-H 0.0.0.0:<port>`) to listen on other interfaces. Connect
+  with `telnet <host> <port>`.
+
+Usage: ubridge -U <socket_path>  |  ubridge -H [<ip>:]<tcp_port>
 
 The command syntax is simple: *<module>* *<function>* [arguments...]
 For example: "bridge create test" creates a bridge named "test".
@@ -752,14 +761,14 @@ This will bridge a tap0 interface to a UDP tunnel.
 Start the hypervisor:
 
 ``` {.bash}
-user@host# ./ubridge -H 2232
-Hypervisor TCP control server started (port 2232).
+user@host# ./ubridge -U /tmp/ubridge.sock
+Hypervisor control socket started (/tmp/ubridge.sock).
 ```
 
-Connect via telnet:
+Connect via a UNIX socket client:
 
 ``` {.bash}
-user@host# telnet localhost 2232
+user@host# socat - UNIX-CONNECT:/tmp/ubridge.sock
 ```
 
 ``` {.bash}

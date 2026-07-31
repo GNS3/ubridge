@@ -21,7 +21,7 @@
 #ifndef HYPERVISOR_H_
 #define HYPERVISOR_H_
 
-/* Default TCP port */
+/* Default TCP port (used by -H when no port is given) */
 #define HYPERVISOR_TCP_PORT 4242
 
 /* Maximum listening socket number */
@@ -94,6 +94,6 @@ hypervisor_module_t *hypervisor_register_module(char *name, void *opt);
 int hypervisor_register_cmd_list(hypervisor_module_t *module, hypervisor_cmd_t *cmd_list);
 int hypervisor_send_reply(hypervisor_conn_t *conn, int code, int done, char *format,...);
 int hypervisor_register_cmd_array(hypervisor_module_t *module, hypervisor_cmd_t *cmd_array);
-int run_hypervisor(char *ip_addr, int tcp_port);
+int run_hypervisor(char *ip_addr, int tcp_port, char *socket_path);
 
 #endif /* !HYPERVISOR_H_ */

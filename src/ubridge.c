@@ -288,7 +288,7 @@ int iniparser_error_handler(const char *format, ...)
   return ret;
 }
 
-static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port)
+static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port, char *hypervisor_socket_path)
 {
    if (hypervisor_mode) {
        struct sigaction act;
@@ -303,7 +303,7 @@ static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port)
        sigaction(SIGINT, &act, NULL);
        sigaction(SIGPIPE, &act, NULL);
 
-      run_hypervisor(hypervisor_ip_address, hypervisor_tcp_port);
+      run_hypervisor(hypervisor_ip_address, hypervisor_tcp_port, hypervisor_socket_path);
       free_bridges(bridge_list);
 #ifdef __linux__
       free_iol_bridges(iol_bridge_list);
@@ -371,7 +371,8 @@ static void print_usage(const char *program_name)
          "Options:\n"
          "  -h                           : Print this message and exit\n"
          "  -f <file>                    : Specify a INI configuration file (default: %s)\n"
-         "  -H [<ip_address>:]<tcp_port> : Run in hypervisor mode\n"
+         "  -H [<ip_address>:]<tcp_port> : Hypervisor mode over TCP (default bind: 127.0.0.1)\n"
+         "  -U <socket_path>             : Hypervisor mode over UNIX socket (recommended)\n"
          "  -e                           : Display all available network devices and exit\n"
          "  -d <level>                   : Debug level\n"
          "  -v                           : Print version and exit\n",
@@ -383,6 +384,7 @@ int main(int argc, char **argv)
 {
   int hypervisor_tcp_port = 0;
   char *hypervisor_ip_address = NULL;
+  char *hypervisor_socket_path = NULL;
   int opt;
   char *index;
   size_t len;
@@ -390,7 +392,7 @@ int main(int argc, char **argv)
   setvbuf(stdout, NULL, _IOLBF, 0);
   setvbuf(stderr, NULL, _IOLBF, 0);
 
-  while ((opt = getopt(argc, argv, "hved:f:H:")) != -1) {
+  while ((opt = getopt(argc, argv, "hved:f:H:U:")) != -1) {
     switch (opt) {
       case 'H':
         hypervisor_mode = 1;
@@ -409,6 +411,10 @@ int main(int argc, char **argv)
            hypervisor_ip_address[len] = '\0';
            hypervisor_tcp_port = atoi(index + 1);
         }
+        break;
+      case 'U':
+        hypervisor_mode = 1;
+        hypervisor_socket_path = optarg;
         break;
 	  case 'v':
 	    printf("%s version %s\n", NAME, VERSION);
@@ -430,6 +436,6 @@ int main(int argc, char **argv)
 	}
   }
   printf("uBridge version %s running with %s\n", VERSION, pcap_lib_version());
-  ubridge(hypervisor_ip_address, hypervisor_tcp_port);
+  ubridge(hypervisor_ip_address, hypervisor_tcp_port, hypervisor_socket_path);
   return (EXIT_SUCCESS);
 }
