@@ -27,7 +27,7 @@ no-op when no sink is set, so `mark` filters are cheap when unused.
 Registered under the `bridge` module like the other filter types:
 
 ```
-bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>] [link <id>] [pcap <path>]
+bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>] [link <id>] [dir <tx|rx>] [pcap <path>]
 ```
 
 - Matches via libpcap cBPF (`pcap_offline_filter`), exactly like the `bpf`
@@ -42,6 +42,10 @@ bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>] [link <id>] 
   every link shares the same bridge — `bridge` and `filter` are identical
   across those links, so the controller needs `link` to tell their signals (and
   pcap paths) apart. ubridge treats it as opaque and echoes it verbatim.
+- `dir <tx|rx>` is an optional direction filter. `tx` = only emit signal and
+  pcap on device-side ingress (capture node sending); `rx` = only on link-side
+  ingress (capture node receiving). When omitted (default) the filter fires on
+  both directions — backward compatible.
 - `pcap <path>` is an optional path to a pcap file (standard, `EN10MB`) that
   **accumulates every matched packet** for this filter (open once on setup,
   append one record per match, closed when the filter is deleted). This is a
@@ -50,7 +54,7 @@ bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>] [link <id>] 
   on `link` — `bridge`+`filter` collide when one bridge serves several links
   (IOU) — and reads it back for offline replay/analysis with
   tcpdump/Wireshark/PyShark.
-- Keyword pairs (`tag`, `link`, `pcap`) may appear in any order.
+- Keyword pairs (`tag`, `link`, `dir`, `pcap`) may appear in any order.
 
 ```
 bridge add_packet_filter br0 dhcp_probe mark "udp port 67" tag 11

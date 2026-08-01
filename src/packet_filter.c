@@ -400,10 +400,11 @@ struct mark_data {
    char *tag;    /* optional tag id, echoed in the signal */
    char *link;   /* optional link id, echoed in the signal for topology attribution */
    pcap_capture_t *cap;   /* optional: append matched packets to this pcap file */
+   int dir_match;         /* 0 = both dirs; PKT_DIR_TX = tx only; PKT_DIR_RX = rx only */
 };
 
 /* Setup: argv[0] = bpf expr; optional keyword pairs "tag <id>" / "link <id>" /
- * "pcap <path>" (any order, each at most once). */
+ * "pcap <path>" / "dir <tx|rx>" (any order, each at most once). */
 static int mark_setup(void **opt, int argc, char *argv[])
 {
    struct mark_data *data = *opt;
@@ -447,6 +448,15 @@ static int mark_setup(void **opt, int argc, char *argv[])
             fprintf(stderr, "mark: cannot open pcap '%s'\n", argv[i + 1]);
             return (-1);
          }
+      } else if (!strcmp(argv[i], "dir")) {
+         if (!strcmp(argv[i + 1], "tx"))
+            data->dir_match = PKT_DIR_TX;
+         else if (!strcmp(argv[i + 1], "rx"))
+            data->dir_match = PKT_DIR_RX;
+         else {
+            fprintf(stderr, "mark: invalid dir '%s' (expected tx or rx)\n", argv[i + 1]);
+            return (-1);
+         }
       } else {
          return (-1);
       }
@@ -468,9 +478,12 @@ static int mark_handler(void *pkt, size_t len, void *opt, int direction)
    pkthdr.len = len;
    if (data != NULL) {
        if (pcap_offline_filter(&data->fp, &pkthdr, pkt)) {
-          marker_emit(data->name, data->tag, data->link, len, (direction == PKT_DIR_TX) ? "tx" : "rx");
-          if (data->cap)
-             pcap_capture_packet(data->cap, pkt, len);
+          /* directional filter: skip signal+pcap if dir doesn't match */
+          if (data->dir_match == 0 || direction == data->dir_match) {
+             marker_emit(data->name, data->tag, data->link, len, (direction == PKT_DIR_TX) ? "tx" : "rx");
+             if (data->cap)
+                pcap_capture_packet(data->cap, pkt, len);
+          }
        }
    }
    return (FILTER_ACTION_PASS);
