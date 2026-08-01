@@ -56,21 +56,26 @@ For example: "bridge create test" creates a bridge named "test".
 The modules that are currently defined are given below:
 
 - hypervisor : General hypervisor management 
-- bridge : bridges management 
+- bridge : bridges management (also hosts the user-space packet filters)
 - iol_bridge : IOL (IOS on Linux) bridges management 
 - docker : Docker management 
 - brctl : Linux bridge management
 - link : generic interface management
 - tap : persistent TAP device lifecycle (kernel data plane)
-- packet_filter : user-space link impairment — delay/jitter/loss/corrupt/BPF (user-space)
 - tc : kernel netem link impairment — delay/jitter/loss/dup/corrupt (kernel data plane)
 - capture : kernel-side AF_PACKET capture (kernel data plane)
 - marker : packet-filter match signals, pushed to a UDP sink (kernel data plane)
 
+User-space link impairment (delay / jitter / loss / corrupt / BPF) is **not a
+separate module**: it is a per-bridge filter chain configured through the
+`bridge` module (`bridge add_packet_filter`). It runs inside ubridge's
+user-space relay and works on every NIO type, including UDP tunnels that have
+no kernel interface to attach a qdisc to.
+
 The `tap`, `tc`, `capture`, and `marker` modules drive the **kernel data
 plane** (frames flowing `TAP → kernel bridge → TAP`, bypassing ubridge's
-user-space NIO relay): `tap`/`brctl` build the plumbing, `tc` replaces the
-user-space `packet_filter` at the qdisc level where a kernel interface is
+user-space NIO relay): `tap`/`brctl` build the plumbing, `tc` replaces those
+user-space packet filters at the qdisc level where a kernel interface is
 available, `capture` taps the interface at the kernel level, and `marker`
 signals filter matches off band.
 See [`doc/packet_filter.md`](doc/packet_filter.md) for filter semantics and
