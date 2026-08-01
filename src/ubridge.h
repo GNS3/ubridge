@@ -25,11 +25,6 @@
 #include <errno.h>
 #include <pthread.h>
 
-#ifdef CYGWIN
-/* Needed for pcap_open() flags */
-#define HAVE_REMOTE
-#endif
-
 #include <pcap.h>
 
 #include "nio.h"

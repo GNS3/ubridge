@@ -132,7 +132,7 @@ while True:
 
 ## Implementation notes
 
-- **`mark` filter** (`src/packet_filter.c`, `#ifdef __linux__`): mirrors the
+- **`mark` filter** (`src/packet_filter.c`): mirrors the
   `bpf` filter type. The filter name is captured at create time
   (`create_mark_filter` runs after `add_packet_filter` has `strdup`'d the name),
   because the handler only ever receives `filter->data`, not the name.
@@ -140,8 +140,6 @@ while True:
   formats the line and `sendto`'s a cached UDP socket under a mutex; the socket
   is (re)opened when a sink is set. UDP `sendto` is atomic for small datagrams,
   so no per-event buffering/thread is needed.
-- Linux-only (`#ifdef __linux__` + Makefile Linux block), consistent with
-  tap/tc/capture.
 
 ## Testing
 

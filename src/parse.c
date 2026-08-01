@@ -29,13 +29,7 @@
 #include "pcap_capture.h"
 #include "pcap_filter.h"
 
-#ifdef LINUX_RAW
 #include "nio_linux_raw.h"
-#endif
-
-#ifdef __APPLE__
-#include "nio_fusion_vmnet.h"
-#endif
 
 static nio_t *create_udp_tunnel(const char *params)
 {
@@ -100,7 +94,6 @@ static nio_t *open_tap_device(const char *dev_name)
   return nio;
 }
 
-#ifdef LINUX_RAW
 static nio_t *open_linux_raw(const char *dev_name)
 {
   nio_t *nio;
@@ -111,21 +104,6 @@ static nio_t *open_linux_raw(const char *dev_name)
     fprintf(stderr, "unable to open RAW device\n");
   return nio;
 }
-#endif
-
-#ifdef __APPLE__
-static nio_t *open_fusion_vmnet(const char *vmnet_name)
-{
-  nio_t *nio;
-
-  printf("Opening Fusion VMnet %s\n", vmnet_name);
-  nio = create_nio_fusion_vmnet((char *)vmnet_name);
-  if (!nio)
-    fprintf(stderr, "unable to open Fusion VMnet interface\n");
-  return nio;
-}
-
-#endif
 
 static int getstr(dictionary *ubridge_config, const char *section, const char *entry, const char **value)
 {
@@ -206,14 +184,8 @@ int parse_config(char *filename, bridge_t **bridges)
            source_nio = open_ethernet_device(value);
         else if (getstr(ubridge_config, bridge_name, "source_tap", &value))
            source_nio = open_tap_device(value);
-#ifdef LINUX_RAW
         else if (getstr(ubridge_config, bridge_name, "source_linux_raw", &value))
            source_nio = open_linux_raw(value);
-#endif
-#ifdef __APPLE__
-        else if (getstr(ubridge_config, bridge_name, "source_fusion_vmnet", &value))
-           source_nio = open_fusion_vmnet(value);
-#endif
         else
            fprintf(stderr, "source NIO not found\n");
 
@@ -225,14 +197,8 @@ int parse_config(char *filename, bridge_t **bridges)
            destination_nio = open_ethernet_device(value);
         else if (getstr(ubridge_config, bridge_name, "destination_tap", &value))
            destination_nio = open_tap_device(value);
-#ifdef LINUX_RAW
         else if (getstr(ubridge_config, bridge_name, "destination_linux_raw", &value))
            destination_nio = open_linux_raw(value);
-#endif
-#ifdef __APPLE__
-        else if (getstr(ubridge_config, bridge_name, "destination_fusion_vmnet", &value))
-           destination_nio = open_fusion_vmnet(value);
-#endif
         else
            fprintf(stderr, "destination NIO not found\n");
 

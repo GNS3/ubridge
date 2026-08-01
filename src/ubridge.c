@@ -36,9 +36,7 @@
 #include "pcap_capture.h"
 #include "packet_filter.h"
 #include "hypervisor.h"
-#ifdef __linux__
 #include "hypervisor_iol_bridge.h"
-#endif
 
 char *config_file = CONFIG_FILE;
 pthread_mutex_t global_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -183,7 +181,6 @@ static void free_bridges(bridge_t *bridge)
   }
 }
 
-#ifdef __linux__
 static void free_iol_bridges(iol_bridge_t *bridge)
 {
   iol_bridge_t *next;
@@ -221,7 +218,6 @@ static void free_iol_bridges(iol_bridge_t *bridge)
     bridge = next;
   }
 }
-#endif
 
 static void create_threads(bridge_t *bridge)
 {
@@ -241,9 +237,7 @@ static void create_threads(bridge_t *bridge)
 void ubridge_reset()
 {
    free_bridges(bridge_list);
-#ifdef __linux__
    free_iol_bridges(iol_bridge_list);
-#endif
 }
 
 /* Generic signal handler */
@@ -256,11 +250,9 @@ void signal_gen_handler(int sig)
          if (hypervisor_mode)
             hypervisor_stopsig();
          break;
-#ifndef CYGWIN
-         /* CTRL+C has been pressed */
+         /* SIGHUP: configuration reload */
       case SIGHUP:
          break;
-#endif
       default:
          fprintf(stderr, "Unhandled signal %d\n", sig);
    }
@@ -296,18 +288,14 @@ static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port)
        memset(&act, 0, sizeof(act));
        act.sa_handler = signal_gen_handler;
        act.sa_flags = SA_RESTART;
-#ifndef CYGWIN
        sigaction(SIGHUP, &act, NULL);
-#endif
        sigaction(SIGTERM, &act, NULL);
        sigaction(SIGINT, &act, NULL);
        sigaction(SIGPIPE, &act, NULL);
 
       run_hypervisor(hypervisor_ip_address, hypervisor_tcp_port);
       free_bridges(bridge_list);
-#ifdef __linux__
       free_iol_bridges(iol_bridge_list);
-#endif
    }
    else {
       sigset_t sigset;
@@ -317,9 +305,7 @@ static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port)
       sigemptyset(&sigset);
       sigaddset(&sigset, SIGINT);
       sigaddset(&sigset, SIGTERM);
-#ifndef CYGWIN
       sigaddset(&sigset, SIGHUP);
-#endif
       pthread_sigmask(SIG_BLOCK, &sigset, NULL);
 
       while (1) {
@@ -346,11 +332,7 @@ static void display_network_devices(void)
 
    printf("Network device list:\n\n");
 
-#ifndef CYGWIN
    res = pcap_findalldevs(&device_list, pcap_errbuf);
-#else
-   res = pcap_findalldevs_ex(PCAP_SRC_IF_STRING,NULL, &device_list, pcap_errbuf);
-#endif
 
    if (res < 0) {
       fprintf(stderr, "PCAP: unable to find device list (%s)\n", pcap_errbuf);

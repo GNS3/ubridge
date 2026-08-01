@@ -36,7 +36,6 @@ enum {
     NIO_TYPE_ETHERNET,
     NIO_TYPE_TAP,
     NIO_TYPE_LINUX_RAW,
-    NIO_TYPE_FUSION_VMNET,
     NIO_TYPE_UNIX,
 };
 
@@ -62,10 +61,6 @@ typedef struct {
 
 typedef struct {
     int fd;
-} nio_fusion_vmnet_t;
-
-typedef struct {
-    int fd;
     char *local_filename;
     struct sockaddr_un remote_sock;
 } nio_unix_t;
@@ -80,7 +75,6 @@ typedef struct {
         nio_tap_t nio_tap;
         nio_ethernet_t nio_ethernet;
         nio_linux_raw_t nio_linux_raw;
-        nio_fusion_vmnet_t nio_fusion_vmnet;
         nio_unix_t nio_unix;
     } u;
 
