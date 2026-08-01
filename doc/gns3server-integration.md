@@ -29,7 +29,7 @@ the existing hypervisor text protocol; ubridge is inert until commanded.
   | `208` | Object not found (`ENODEV`) |
   | `209` | Object already running (`EALREADY`) |
 
-- **Linux only.** The new modules (`tap`/`tc`/`capture`/`marker`) plus
+- The kernel-data-plane modules (`tap`/`tc`/`capture`/`marker`) plus
   `brctl`/`link` require ubridge installed with capabilities:
   ```bash
   sudo make install     # sets cap_net_admin,cap_net_raw=ep

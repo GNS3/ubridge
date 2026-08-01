@@ -51,11 +51,6 @@
 #define HSC_ERR_NOT_FOUND   214  /* not found (generic) */
 #define HSC_ERR_UNSPECIFIED 215  /* unspecified error (generic) */
 
-/* By default, Cygwin supports only 64 FDs with select()! */
-#if defined(CYGWIN) && !defined(FD_SETSIZE)
-  #define FD_SETSIZE 1024
-#endif
-
 typedef struct hypervisor_conn hypervisor_conn_t;
 typedef struct hypervisor_cmd hypervisor_cmd_t;
 typedef struct hypervisor_module hypervisor_module_t;

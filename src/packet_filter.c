@@ -381,7 +381,6 @@ static void create_bpf_filter(packet_filter_t *filter)
 /* ======================================================================== */
 /* MARK — passive tap: emit a marker signal on match, never drop (Linux)    */
 /* ======================================================================== */
-#ifdef __linux__
 #include "marker.h"
 #include "pcap_capture.h"
 
@@ -498,7 +497,6 @@ static void create_mark_filter(packet_filter_t *filter)
     filter->handler = (void *)mark_handler;
     filter->free = (void *)mark_free;
 }
-#endif /* __linux__ */
 
 /* ======================================================================== */
 /* Generic functions for filter management                                  */
@@ -516,9 +514,7 @@ static filter_table_t lookup_table[] = {
     { "delay", create_delay_filter },
     { "corrupt", create_corrupt_filter },
     { "bpf", create_bpf_filter},
-#ifdef __linux__
     { "mark", create_mark_filter },
-#endif
 };
 
 static int create_filter(packet_filter_t *filter, char *filter_type)

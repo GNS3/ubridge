@@ -10,53 +10,26 @@ Installation
 
 ### Dependencies
 
-- pcap library (Winpcap on Windows). 
+- libpcap (the pcap library). On Debian/Ubuntu:
+
+``` {.bash}
+sudo apt-get install libpcap-dev
+```
+
 - pthread library.
 
-For Ubuntu or other Debian based Linux you need to install this package:
+### Build
 
-- libpcap-dev
-
-### Linux
-
-In the source directory
+In the source directory:
 
 ``` {.bash}
 make
 sudo make install
 ```
 
-### FreeBSD
-
-In the source directory
-
-``` {.bash}
-gmake
-sudo gmake install
-```
-
-Be sure to modify `gns3_server.conf` to point to `/usr/local/bin/ubridge`
-
-### Windows
-
-Install the dependencies:
-
-- Install Winpcap: <https://www.winpcap.org/>
-- Install Cygwin 32-bit (setup-x86.exe): <https://cygwin.com/install.html>
-- Run `setup-x86.exe -X -q -O -s <ftp://www.fruitbat.org/pub/cygwin/circa/2016/08/30/104223> -P make -P gcc-core` (install last package compatible with Windows)
-- Download and unzip Winpcap developer pack: <http://www.winpcap.org/devel.htm>
-- Copy the libraries `WpdPack\Lib\libpacket.a` and `WpdPack\Lib\libwpcap.a` to `cygwin\lib\`
-- Copy all headers from `WpdPack\Include` to `cygwin\usr\include\`
-
-Open the Cygwin terminal:
-
-``` {.bash}
-git clone https://github.com/GNS3/ubridge.git
-cd ubridge
-make
-```
-
-You should get `ubridge.exe` if everything goes well.
+`make install` copies the binary to `/usr/local/bin` and grants it the
+`cap_net_admin,cap_net_raw` capabilities via `setcap`, so it can be run by
+non-root users.
 
 Hypervisor mode
 ---------------
@@ -79,16 +52,16 @@ The modules that are currently defined are given below:
 - docker : Docker management 
 - brctl : Linux bridge management
 - link : generic interface management
-- tap : persistent TAP device lifecycle (Linux only)
-- tc : kernel netem link impairment — delay/jitter/loss/dup/corrupt (Linux only)
-- capture : kernel-side AF_PACKET capture (Linux only)
-- marker : packet-filter match signals, pushed to a UDP sink (Linux only)
+- tap : persistent TAP device lifecycle (kernel data plane)
+- tc : kernel netem link impairment — delay/jitter/loss/dup/corrupt (kernel data plane)
+- capture : kernel-side AF_PACKET capture (kernel data plane)
+- marker : packet-filter match signals, pushed to a UDP sink (kernel data plane)
 
-The Linux-only modules (`tap`, `tc`, `capture`, `marker`) support the
-**kernel data plane** (frames flowing `TAP → kernel bridge → TAP`, bypassing
-ubridge's user-space NIO relay): `tap`/`brctl` build the plumbing, `tc`
-replaces the user-space filters at the qdisc level, `capture` taps the
-interface at the kernel level, and `marker` signals filter matches off band.
+The `tap`, `tc`, `capture`, and `marker` modules drive the **kernel data
+plane** (frames flowing `TAP → kernel bridge → TAP`, bypassing ubridge's
+user-space NIO relay): `tap`/`brctl` build the plumbing, `tc` replaces the
+user-space filters at the qdisc level, `capture` taps the interface at the
+kernel level, and `marker` signals filter matches off band.
 See [`doc/`](doc/) for per-module details.
 
 ### Hypervisor module ("hypervisor")
@@ -245,8 +218,7 @@ bridge add_nio_unix br0 "/tmp/local" "/tmp/remote"
 ```
 
 - **bridge add_nio_tap** *\<bridge_name\>* *\<tap_device\>*:
-    Add an TAP NIO to a bridge. TAP devices are supported only on Linux
-    and FreeBSD and require root access.
+    Add a TAP NIO to a bridge. TAP devices require root access.
 
 ``` {.bash}
 bridge add_nio_tap br0 tap0
@@ -263,21 +235,11 @@ bridge add_nio_ethernet br0 eth0
 ```
 
 - **bridge add_nio_linux_raw** *\<bridge_name\>*
-    *\<eth_device\>*: Add a Linux RAW Ethernet NIO. It requires root
-    access and is supported only on Linux platforms.
+    *\<eth_device\>*: Add a Linux RAW Ethernet NIO. It requires root access.
 
 ``` {.bash}
 bridge add_nio_linux_raw br0 eth0
 100-NIO Linux raw added to bridge 'br0'
-```
-
-- **bridge add_nio_fusion_vmnet** *\<bridge_name\>*
-    *\<vmnet_device\>*: Add a Fusion VMnet NIO. It requires root
-    access and is supported only on Mac OS X.
-
-``` {.bash}
-bridge add_nio_fusion_vmnet br0 vmnet1
-100-NIO Fusion VMnet added to bridge 'br0'
 ```
 
 - **bridge show** *\<bridge_name\>*: Show the NIOs on a bridge.
@@ -376,7 +338,7 @@ Ethernet "EN10MB".
 
 ##### mark
 
-(Linux only) "mark" has 1 argument "*\<filter_expression\>*" (libpcap cBPF
+"mark" has 1 argument "*\<filter_expression\>*" (libpcap cBPF
 syntax, like "bpf") plus optional keyword pairs `tag <id>`, `link <id>`,
 `pcap <path>` (any order). It is a **passive tap**: on a match it emits a UDP
 marker signal to a configured sink (set via the `marker` module) and, when
@@ -790,8 +752,7 @@ Config file mode
 Usage: create a file named `ubridge.ini` in the same directory as uBridge
 and then start the executable.
 
-Signal SIGHUP (not available on Windows) can be used to reload the
-config file.
+Signal SIGHUP can be used to reload the config file.
 
 Example of content:
 
@@ -818,10 +779,10 @@ pcap_file = /tmp/bridge2.pcap
 ; or to bridge 2 interfaces
 [bridge3]
 source_tap = tap0
-destination_ethernet = vmnet2
+destination_ethernet = eth1
 ```
 
-On Linux you can use a RAW socket to bridge an Ethernet interface (a bit
+You can also use a RAW socket to bridge an Ethernet interface (a bit
 faster than with the default PCAP method).
 
 ``` {.ini}
@@ -841,35 +802,13 @@ source_unix = /tmp/local_file:/tmp/remote_file
 destination_udp = 42002:127.0.0.1:42003
 ```
 
-On Mac OS X you can use the proprietary vmnet ktext module to bridge an
-VMware Fusion vmnet interface.
-
-``` {.ini}
-; bridge VMware FUsion interface vmnet1 with an UDP tunnel
-[bridge6]
-source_fusion_vmnet = vmnet1
-destination_udp = 12000:127.0.0.1:12001
-```
-
-On Windows, interfaces must be specified with the NPF notation. You can
-display all available network devices using `ubridge.exe` -e on a command
-line.
-
-``` {.ini}
-; using a Windows NPF interface
-[bridge7]
-source_ethernet = "\Device\NPF_{BC46623A-D65B-4498-9073-96B9DC4C8CBA}"
-destination_udp = 10000:127.0.0.1:10001
-; this will filter out frames with source MAC address 00:50:56:c0:00:0a
-pcap_filter = "not ether src 00:50:56:c0:00:0a"
-```
-
 Notes
 -----
 
 -   A Bridge name (e.g. bridge4) can be anything as long it is unique in
     the same file or inside the hypervisor.
--   Capabitilies must be set on the executable (Linux only) or you must
-    have administrator rights to bridge Ethernet or TAP interfaces.
+-   Capabilities (`cap_net_admin,cap_net_raw`) must be set on the
+    executable (`make install` does this via `setcap`), or you must run
+    ubridge with administrator rights to bridge Ethernet or TAP interfaces.
 -   It is only possible to bridge two interfaces or tunnels together.
     uBridge is not a hub or a switch!
