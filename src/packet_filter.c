@@ -394,13 +394,25 @@ static void create_bpf_filter(packet_filter_t *filter)
 #include "marker.h"
 #include "pcap_capture.h"
 
+/* Which directions a mark filter fires on. This is deliberately a separate
+ * enum from the runtime PKT_DIR_* values: dir_match is zero-initialised by
+ * memset, so 0 must mean "both". But PKT_DIR_RX is also 0 — reusing it for
+ * "rx-only" would collide with "both" and silently make `dir rx` a no-op
+ * (the handler's fast-path is `dir_match == 0`). Use distinct nonzero values
+ * here and map them to PKT_DIR_* at match time. */
+enum {
+   MARK_DIR_BOTH = 0,   /* memset default — fire on both directions */
+   MARK_DIR_TX   = 1,   /* device-side ingress only (capture node sending)   */
+   MARK_DIR_RX   = 2,   /* link-side ingress only  (capture node receiving)  */
+};
+
 struct mark_data {
    struct bpf_program fp;
    char *name;   /* filter name, captured at create time (handler never sees it) */
    char *tag;    /* optional tag id, echoed in the signal */
    char *link;   /* optional link id, echoed in the signal for topology attribution */
    pcap_capture_t *cap;   /* optional: append matched packets to this pcap file */
-   int dir_match;         /* 0 = both dirs; PKT_DIR_TX = tx only; PKT_DIR_RX = rx only */
+   int dir_match;         /* MARK_DIR_BOTH (default) / _TX / _RX */
 };
 
 /* Setup: argv[0] = bpf expr; optional keyword pairs "tag <id>" / "link <id>" /
@@ -450,9 +462,9 @@ static int mark_setup(void **opt, int argc, char *argv[])
          }
       } else if (!strcmp(argv[i], "dir")) {
          if (!strcmp(argv[i + 1], "tx"))
-            data->dir_match = PKT_DIR_TX;
+            data->dir_match = MARK_DIR_TX;
          else if (!strcmp(argv[i + 1], "rx"))
-            data->dir_match = PKT_DIR_RX;
+            data->dir_match = MARK_DIR_RX;
          else {
             fprintf(stderr, "mark: invalid dir '%s' (expected tx or rx)\n", argv[i + 1]);
             return (-1);
@@ -478,8 +490,12 @@ static int mark_handler(void *pkt, size_t len, void *opt, int direction)
    pkthdr.len = len;
    if (data != NULL) {
        if (pcap_offline_filter(&data->fp, &pkthdr, pkt)) {
-          /* directional filter: skip signal+pcap if dir doesn't match */
-          if (data->dir_match == 0 || direction == data->dir_match) {
+          /* directional filter: skip signal+pcap unless the ingress direction
+           * matches the configured one (MARK_DIR_BOTH always matches). */
+          int dir_ok = (data->dir_match == MARK_DIR_BOTH
+                        || (data->dir_match == MARK_DIR_TX && direction == PKT_DIR_TX)
+                        || (data->dir_match == MARK_DIR_RX && direction == PKT_DIR_RX));
+          if (dir_ok) {
              marker_emit(data->name, data->tag, data->link, len, (direction == PKT_DIR_TX) ? "tx" : "rx");
              if (data->cap)
                 pcap_capture_packet(data->cap, pkt, len);
