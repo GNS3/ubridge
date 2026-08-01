@@ -54,27 +54,43 @@ class Client:
 
 
 class Ubridge:
-    """Context manager that starts/stops a ubridge hypervisor instance."""
+    """Context manager that starts/stops a ubridge hypervisor instance.
+
+    The control channel is an AF_UNIX socket authenticated via SO_PEERCRED.
+    `port` is kept as the constructor argument only so each test gets a unique
+    socket path — distinct ports map to distinct socket files.
+    """
 
     def __init__(self, port=13000, binary=None):
         self.port = port
+        self.sock_path = "/tmp/ubridge-test-%d.sock" % port
         self.binary = binary or ubridge_binary()
         self.proc = None
 
     def __enter__(self):
+        # Remove a stale socket left by a previous run.
+        try:
+            os.unlink(self.sock_path)
+        except FileNotFoundError:
+            pass
         self.proc = subprocess.Popen(
-            [self.binary, "-H", "127.0.0.1:%d" % self.port],
+            [self.binary, "-U", self.sock_path],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        # Wait until the control port accepts connections.
+        # Wait until the control socket accepts connections.
         for _ in range(50):
-            try:
-                socket.create_connection(("127.0.0.1", self.port), timeout=0.2).close()
-                return self
-            except OSError:
-                time.sleep(0.1)
-        raise RuntimeError("ubridge did not open control port %d" % self.port)
+            if os.path.exists(self.sock_path):
+                try:
+                    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    s.settimeout(0.2)
+                    s.connect(self.sock_path)
+                    s.close()
+                    return self
+                except OSError:
+                    pass
+            time.sleep(0.1)
+        raise RuntimeError("ubridge did not open control socket %s" % self.sock_path)
 
     def __exit__(self, *exc):
         if self.proc:
@@ -83,10 +99,18 @@ class Ubridge:
                 self.proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
+        # ubridge unlinks the socket on a clean exit, but be defensive.
+        try:
+            os.unlink(self.sock_path)
+        except FileNotFoundError:
+            pass
         return False
 
     def connect(self):
-        return Client(socket.create_connection(("127.0.0.1", self.port), timeout=5))
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(5)
+        s.connect(self.sock_path)
+        return Client(s)
 
 
 class Results:
