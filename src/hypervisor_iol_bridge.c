@@ -33,8 +33,69 @@
 #include "hypervisor_iol_bridge.h"
 #include "pcap_capture.h"
 #include "packet_filter.h"
+#include "delay_line.h"
 
 iol_bridge_t *iol_bridge_list = NULL;
+
+/* ---- delay line send callbacks (one per IOL direction) ---- */
+
+/* NIO -> IOL: prepend the port's pre-calculated IOL header and sendto the
+ * IOL instance. ctx = the port's iol_nio_t. */
+static ssize_t iol_sendto_iol_cb(void *ctx, const void *pkt, size_t len)
+{
+   iol_nio_t *iol_nio = ctx;
+   unsigned char buf[IOL_HDR_SIZE + MAX_MTU];
+
+   if (len > MAX_MTU)
+      len = MAX_MTU;
+   memcpy(buf, iol_nio->header, IOL_HDR_SIZE);
+   memcpy(buf + IOL_HDR_SIZE, pkt, len);
+   return sendto(iol_nio->iol_bridge_sock, buf, len + IOL_HDR_SIZE, 0,
+                 (struct sockaddr *)&iol_nio->iol_sockaddr, sizeof(iol_nio->iol_sockaddr));
+}
+
+/* IOL -> NIO: forward via the destination NIO and account for it. ctx = nio. */
+static ssize_t iol_nio_send_cb(void *ctx, const void *pkt, size_t len)
+{
+   nio_t *nio = ctx;
+   ssize_t sent = nio_send(nio, (void *)pkt, len);
+
+   if (sent != -1) {
+      nio->packets_out++;
+      nio->bytes_out += sent;
+   }
+   return sent;
+}
+
+/* Lazily sync *dl to the delay config (have_delay / lat / jit, snapshotted by
+ * the caller under global_lock) and, if delaying, enqueue the packet. Returns
+ * TRUE if consumed (the caller must skip its inline send). */
+static int iol_delay_route(delay_line_t **dl, int have_delay, int lat, int jit,
+                           delay_send_fn fn, void *ctx,
+                           const void *pkt, size_t len, const char *name)
+{
+   int cur_lat = -1, cur_jit = -1;
+   delay_line_config(*dl, &cur_lat, &cur_jit);   /* current line's config, or -1 */
+
+   if (have_delay) {
+      if (*dl == NULL || lat != cur_lat || jit != cur_jit) {
+         delay_line_destroy(*dl);
+         *dl = delay_line_create(lat, jit, fn, ctx);
+         if (*dl == NULL)
+            fprintf(stderr, "IOL bridge '%s': could not create delay line, forwarding without delay\n", name);
+      }
+   } else if (*dl != NULL) {
+      delay_line_destroy(*dl);
+      *dl = NULL;
+   }
+
+   if (*dl) {
+      if (delay_line_enqueue(*dl, pkt, len) != 0 && debug_level > 0)
+         printf("Packet dropped by delay line on IOL bridge '%s'\n", name);
+      return TRUE;
+   }
+   return FALSE;
+}
 
 static iol_bridge_t *find_bridge(char *bridge_name)
 {
@@ -93,7 +154,10 @@ void *iol_nio_listener(void *data)
                dump_packet(stdout, &pkt[IOL_HDR_SIZE], bytes_received);
         }
 
-        /* filter the packet if there is a filter configured */
+        /* filter the packet if there is a filter configured; snapshot the
+         * delay config under the same lock the hypervisor mutates the list with */
+        int have_delay = FALSE, lat_ms = 0, jit_ms = 0;
+        pthread_mutex_lock(&global_lock);
         if (iol_nio->packet_filters != NULL) {
              packet_filter_t *filter = iol_nio->packet_filters;
              packet_filter_t *next;
@@ -108,12 +172,20 @@ void *iol_nio_listener(void *data)
                  filter = next;
              }
          }
+        have_delay = packet_filter_get_delay(iol_nio->packet_filters, &lat_ms, &jit_ms);
+        pthread_mutex_unlock(&global_lock);
 
         if (drop_packet == TRUE)
            continue;
 
         /* Dump the packet to a PCAP file if capture is activated */
         pcap_capture_packet(iol_nio->capture, &pkt[IOL_HDR_SIZE], bytes_received);
+
+        /* route through the NIO->IOL delay line if a delay filter is set */
+        if (iol_delay_route(&iol_nio->delay_line_nio, have_delay, lat_ms, jit_ms,
+                            iol_sendto_iol_cb, iol_nio,
+                            &pkt[IOL_HDR_SIZE], bytes_received, bridge->name))
+           continue;
 
         /* Add the length of the IOU header we'll be sending */
         bytes_received += IOL_HDR_SIZE;
@@ -173,9 +245,18 @@ void *iol_bridge_listener(void *data)
 
        /* Send on the packet, minus the IOL header */
        bytes_received -= IOL_HDR_SIZE;
-       nio = bridge->port_table[port].destination_nio;
 
-        /* filter the packet if there is a filter configured */
+        /* filter the packet if there is a filter configured; snapshot the
+         * delay config under the same lock the hypervisor mutates the list with.
+         * Re-validate destination_nio under the lock: it may have been set to
+         * NULL by cmd_delete_nio_udp while we were blocked in read(). */
+       int have_delay = FALSE, lat_ms = 0, jit_ms = 0;
+       pthread_mutex_lock(&global_lock);
+       nio = bridge->port_table[port].destination_nio;
+       if (nio == NULL) {
+            pthread_mutex_unlock(&global_lock);
+            continue;
+       }
        if (bridge->port_table[port].packet_filters != NULL) {
             packet_filter_t *filter = bridge->port_table[port].packet_filters;
             packet_filter_t *next;
@@ -190,6 +271,8 @@ void *iol_bridge_listener(void *data)
                 filter = next;
             }
        }
+       have_delay = packet_filter_get_delay(bridge->port_table[port].packet_filters, &lat_ms, &jit_ms);
+       pthread_mutex_unlock(&global_lock);
 
        if (drop_packet == TRUE)
           continue;
@@ -199,6 +282,12 @@ void *iol_bridge_listener(void *data)
 
        /* Destination NIO hasn't been created yet */
        if (nio == NULL)
+          continue;
+
+       /* route through the IOL->NIO delay line if a delay filter is set */
+       if (iol_delay_route(&bridge->port_table[port].delay_line_iol, have_delay, lat_ms, jit_ms,
+                           iol_nio_send_cb, nio,
+                           &pkt[IOL_HDR_SIZE], bytes_received, bridge->name))
           continue;
 
        bytes_sent = nio->send(nio->dptr, &pkt[IOL_HDR_SIZE], bytes_received);
@@ -406,6 +495,8 @@ static int cmd_create_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
       new_bridge->port_table[i].destination_nio = NULL;
       new_bridge->port_table[i].capture = NULL;
       new_bridge->port_table[i].packet_filters = NULL;
+      new_bridge->port_table[i].delay_line_nio = NULL;
+      new_bridge->port_table[i].delay_line_iol = NULL;
    }
 
    new_bridge->next = *head;
@@ -433,11 +524,6 @@ static int cmd_delete_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
           else
              prev->next = bridge->next;
 
-          close(bridge->iol_bridge_sock);
-          unlink(bridge->bridge_sockaddr.sun_path);
-          if ((unlock_unix_socket(bridge->sock_lock, bridge->bridge_sockaddr.sun_path)) == -1)
-              fprintf(stderr, "failed to unlock %s\n", bridge->bridge_sockaddr.sun_path);
-
           if (bridge->running) {
              pthread_cancel(bridge->bridge_tid);
              pthread_join(bridge->bridge_tid, NULL);
@@ -448,6 +534,8 @@ static int cmd_delete_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
                     pthread_cancel(bridge->port_table[i].tid);
                     pthread_join(bridge->port_table[i].tid, NULL);
                     bridge->port_table[i].tid = 0;
+                    delay_line_destroy(bridge->port_table[i].delay_line_nio);
+                    delay_line_destroy(bridge->port_table[i].delay_line_iol);
                     free_pcap_capture(bridge->port_table[i].capture);
                     free_packet_filters(bridge->port_table[i].packet_filters);
                     free_nio(bridge->port_table[i].destination_nio);
@@ -455,6 +543,13 @@ static int cmd_delete_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
              }
              free(bridge->port_table);
           }
+
+          /* close after delay lines are torn down (their release threads
+           * sendto this socket) */
+          close(bridge->iol_bridge_sock);
+          unlink(bridge->bridge_sockaddr.sun_path);
+          if ((unlock_unix_socket(bridge->sock_lock, bridge->bridge_sockaddr.sun_path)) == -1)
+              fprintf(stderr, "failed to unlock %s\n", bridge->bridge_sockaddr.sun_path);
           if (bridge->name)
              free(bridge->name);
           free(bridge);
@@ -686,6 +781,14 @@ static int create_iol_port_entry(hypervisor_conn_t *conn, iol_bridge_t *bridge, 
       pthread_cancel(iol_nio->tid);
       pthread_join(iol_nio->tid, NULL);
       iol_nio->tid = 0;
+      /* NULL the delay-line pointers before destroy — see
+       * cmd_delete_nio_udp for the rationale. */
+      delay_line_t *old_nio = iol_nio->delay_line_nio;
+      iol_nio->delay_line_nio = NULL;
+      delay_line_t *old_iol = iol_nio->delay_line_iol;
+      iol_nio->delay_line_iol = NULL;
+      delay_line_destroy(old_nio);
+      delay_line_destroy(old_iol);
       free_pcap_capture(iol_nio->capture);
       free_packet_filters(iol_nio->packet_filters);
       free_nio(iol_nio->destination_nio);
@@ -767,6 +870,16 @@ static int cmd_delete_nio_udp(hypervisor_conn_t *conn, int argc, char *argv[])
       pthread_cancel(iol_nio->tid);
       pthread_join(iol_nio->tid, NULL);
       iol_nio->tid = 0;
+      /* NULL the delay-line pointers before destroy so the IOL bridge
+       * listener (IOL -> NIO direction) sees NULL if it concurrently
+       * accesses them through port_table, and delay_line_destroy(NULL)
+       * is a safe no-op. */
+      delay_line_t *old_nio = iol_nio->delay_line_nio;
+      iol_nio->delay_line_nio = NULL;
+      delay_line_t *old_iol = iol_nio->delay_line_iol;
+      iol_nio->delay_line_iol = NULL;
+      delay_line_destroy(old_nio);
+      delay_line_destroy(old_iol);
       free_pcap_capture(iol_nio->capture);
       free_packet_filters(iol_nio->packet_filters);
       free_nio(iol_nio->destination_nio);
@@ -966,6 +1079,16 @@ static int cmd_reset_packet_filters(hypervisor_conn_t *conn, int argc, char *arg
       return (-1);
    }
 
+   /* dropping the filters also drops any in-flight delay; tear down the lines
+    * so packets don't keep releasing against a config that no longer exists.
+    * NULL the pointers before destroy so the bridge listener sees NULL
+    * if it concurrently accesses them through port_table. */
+   delay_line_t *old_nio = iol_nio->delay_line_nio;
+   iol_nio->delay_line_nio = NULL;
+   delay_line_t *old_iol = iol_nio->delay_line_iol;
+   iol_nio->delay_line_iol = NULL;
+   delay_line_destroy(old_nio);
+   delay_line_destroy(old_iol);
    free_packet_filters(iol_nio->packet_filters);
    iol_nio->packet_filters = NULL;
 

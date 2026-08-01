@@ -35,6 +35,7 @@
 #include "parse.h"
 #include "pcap_capture.h"
 #include "packet_filter.h"
+#include "delay_line.h"
 #include "hypervisor.h"
 #include "hypervisor_iol_bridge.h"
 
@@ -44,11 +45,49 @@ bridge_t *bridge_list = NULL;
 int debug_level = 0;
 int hypervisor_mode = 0;
 
+/* Send callback for the delay line's release thread: forward a due packet out
+ * the transmitting NIO and account for it. (When no delay filter is present,
+ * bridge_nios sends inline instead and does this accounting itself.) */
+static ssize_t delay_send_cb(void *ctx, const void *pkt, size_t len)
+{
+   nio_t *tx_nio = ctx;
+   ssize_t bytes_sent;
+
+   bytes_sent = nio_send(tx_nio, (void *)pkt, len);
+   if (bytes_sent == -1) {
+      perror("send");
+      return -1;
+   }
+   tx_nio->packets_out++;
+   tx_nio->bytes_out += bytes_sent;
+   return bytes_sent;
+}
+
+/* pthread cleanup helper: destroy whichever delay line is currently active.
+ * bridge_nios() reassigns its local `delay_line` as filters come and go, so
+ * the handler reads it through a pointer-to-pointer — capturing the pointer's
+ * value at push time would go stale when the line is recreated. */
+static void delay_line_destroy_indir(void *arg)
+{
+   delay_line_destroy(*(delay_line_t **)arg);
+}
+
 static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
 {
   ssize_t bytes_received, bytes_sent;
   unsigned char pkt[NIO_MAX_PKT_SIZE];
   int drop_packet;
+  int latency_ms = 0, jitter_ms = 0;
+  delay_line_t *delay_line = NULL;
+  int rc = 0;
+
+  /* The delay line is managed lazily inside the loop, not created once at
+   * start: GNS3 starts the bridge first and applies packet filters only
+   * afterwards (gns3-server add_ubridge_udp_connection: `bridge start` then
+   * `_ubridge_apply_filters`), and filters can be reset/re-added at runtime.
+   * So we re-read the delay config on each packet and (re)create/destroy the
+   * line to match. delay_line always holds the current line or NULL. */
+  pthread_cleanup_push(delay_line_destroy_indir, &delay_line);
 
   while (1) {
 
@@ -59,7 +98,8 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
         perror("recv");
         if (errno == ECONNREFUSED || errno == ENETDOWN)
            continue;
-        return -1;
+        rc = -1;
+        break;
     }
 
     if (bytes_received > NIO_MAX_PKT_SIZE) {
@@ -79,7 +119,11 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
             dump_packet(stdout, pkt, bytes_received);
     }
 
-    /* filter the packet if there is a filter configured */
+    int have_delay;
+
+    /* Lock the shared filter list while we walk it — the hypervisor thread
+     * mutates it via add/delete/reset_packet_filter under global_lock too. */
+    pthread_mutex_lock(&global_lock);
     if (bridge->packet_filters != NULL) {
          packet_filter_t *filter = bridge->packet_filters;
          packet_filter_t *next;
@@ -94,12 +138,44 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
              filter = next;
          }
      }
+    /* snapshot the delay config while the list is stable */
+    have_delay = packet_filter_get_delay(bridge->packet_filters, &latency_ms, &jitter_ms);
+    pthread_mutex_unlock(&global_lock);
 
     if (drop_packet == TRUE)
        continue;
 
     /* dump the packet to a PCAP file if capture is activated */
     pcap_capture_packet(bridge->capture, pkt, bytes_received);
+
+    /* (re)sync the delay line using the snapshotted config — create/destroy
+     * outside the lock so a join inside destroy doesn't block other bridges. */
+    {
+       int cur_lat = -1, cur_jit = -1;
+       delay_line_config(delay_line, &cur_lat, &cur_jit);  /* current line's config, or -1 */
+       if (have_delay) {
+          if (delay_line == NULL || latency_ms != cur_lat || jitter_ms != cur_jit) {
+             delay_line_t *old = delay_line;
+             delay_line = NULL;                 /* visible as NULL to a cancel-time cleanup */
+             delay_line_destroy(old);
+             delay_line = delay_line_create(latency_ms, jitter_ms, delay_send_cb, tx_nio);
+             if (delay_line == NULL)
+                fprintf(stderr, "bridge '%s': could not create delay line, forwarding without delay\n", bridge->name);
+          }
+       } else if (delay_line != NULL) {
+          delay_line_t *old = delay_line;
+          delay_line = NULL;
+          delay_line_destroy(old);
+       }
+    }
+
+    if (delay_line) {
+        /* hand the packet to the release thread; never block the recv loop.
+         * On enqueue failure (out of memory or queue full) the packet is dropped. */
+        if (delay_line_enqueue(delay_line, pkt, bytes_received) != 0 && debug_level > 0)
+           printf("Packet dropped by delay line on bridge '%s'\n", bridge->name);
+        continue;
+    }
 
     /* send what we received to the transmitting NIO */
     bytes_sent = nio_send(tx_nio, pkt, bytes_received);
@@ -115,13 +191,19 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
         if (tx_nio->type == NIO_TYPE_TAP && errno == EIO)
             continue;
 
-        return -1;
+        rc = -1;
+        break;
     }
 
     tx_nio->packets_out++;
     tx_nio->bytes_out += bytes_sent;
   }
-  return 0;
+
+  /* runs delay_line_destroy (no-op when no delay filter), joining the release
+   * thread and freeing any queued packets. On pthread_cancel the cleanup
+   * stack runs it instead and this line is never reached. */
+  pthread_cleanup_pop(1);
+  return rc;
 }
 
 /* Source NIO thread */
@@ -190,11 +272,6 @@ static void free_iol_bridges(iol_bridge_t *bridge)
     if (bridge->name)
        free(bridge->name);
 
-    close(bridge->iol_bridge_sock);
-    unlink(bridge->bridge_sockaddr.sun_path);
-    if ((unlock_unix_socket(bridge->sock_lock, bridge->bridge_sockaddr.sun_path)) == -1)
-       fprintf(stderr, "failed to unlock %s\n", bridge->bridge_sockaddr.sun_path);
-
     if (bridge->running) {
        pthread_cancel(bridge->bridge_tid);
        pthread_join(bridge->bridge_tid, NULL);
@@ -205,6 +282,10 @@ static void free_iol_bridges(iol_bridge_t *bridge)
               pthread_cancel(bridge->port_table[i].tid);
               pthread_join(bridge->port_table[i].tid, NULL);
               bridge->port_table[i].tid = 0;
+              /* destroy delay lines (joins their release threads) before
+               * freeing the NIO / closing the IOL socket they send through */
+              delay_line_destroy(bridge->port_table[i].delay_line_nio);
+              delay_line_destroy(bridge->port_table[i].delay_line_iol);
               free_pcap_capture(bridge->port_table[i].capture);
               free_packet_filters(bridge->port_table[i].packet_filters);
               free_nio(bridge->port_table[i].destination_nio);
@@ -212,6 +293,13 @@ static void free_iol_bridges(iol_bridge_t *bridge)
        }
        free(bridge->port_table);
     }
+
+    /* close after delay lines are torn down: their release threads sendto
+     * this socket, so they must be joined first */
+    close(bridge->iol_bridge_sock);
+    unlink(bridge->bridge_sockaddr.sun_path);
+    if ((unlock_unix_socket(bridge->sock_lock, bridge->bridge_sockaddr.sun_path)) == -1)
+       fprintf(stderr, "failed to unlock %s\n", bridge->bridge_sockaddr.sun_path);
 
     next = bridge->next;
     free(bridge);

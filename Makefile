@@ -29,6 +29,7 @@ SRC     =   src/ubridge.c               \
             src/nio_tap.c               \
             src/parse.c                 \
             src/packet_filter.c         \
+            src/delay_line.c            \
             src/pcap_capture.c          \
             src/pcap_filter.c           \
             src/hypervisor.c            \
@@ -44,7 +45,7 @@ CFLAGS  +=   -Wall
 
 BINDIR  =   /usr/local/bin
 
-LIBS =   -lpthread -lpcap
+LIBS =   -lpthread -lpcap -lm
 
 # Linux-only: RAW Ethernet + netlink-backed hypervisor modules
 SRC += src/nio_linux_raw.c             \
