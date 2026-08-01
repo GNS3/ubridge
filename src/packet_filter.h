@@ -40,12 +40,20 @@ enum {
    FILTER_ACTION_DUPLICATE,
 };
 
+/* Ingress direction of a packet at the filter call site, relative to the
+ * capture node (the node identified by the marker `node=`). Only the relay
+ * loop knows which NIO a packet came in on, so it passes this to the handler. */
+enum {
+   PKT_DIR_RX = 0,   /* link-side ingress   — capture node is receiving */
+   PKT_DIR_TX = 1,   /* device-side ingress — capture node is sending    */
+};
+
 typedef struct packet_filter {
    u_int type;
    char *name;
    void *data;
    int (*setup)(void **opt, int argc, char *argv[]);
-   int (*handler)(void *pkt, size_t len, void *opt);
+   int (*handler)(void *pkt, size_t len, void *opt, int direction);
    void (*free)(void **opt);
    struct packet_filter *next;
 } packet_filter_t;

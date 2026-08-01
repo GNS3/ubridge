@@ -125,10 +125,11 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
      * mutates it via add/delete/reset_packet_filter under global_lock too. */
     pthread_mutex_lock(&global_lock);
     if (bridge->packet_filters != NULL) {
+         int pkt_dir = (rx_nio == bridge->source_nio) ? PKT_DIR_TX : PKT_DIR_RX;
          packet_filter_t *filter = bridge->packet_filters;
          packet_filter_t *next;
          while (filter != NULL) {
-             if (filter->handler(pkt, bytes_received, filter->data) == FILTER_ACTION_DROP) {
+             if (filter->handler(pkt, bytes_received, filter->data, pkt_dir) == FILTER_ACTION_DROP) {
                  if (debug_level > 0)
                     printf("Packet dropped by packet filter '%s' on bridge '%s'\n", filter->name, bridge->name);
                  drop_packet = TRUE;

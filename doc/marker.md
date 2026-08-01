@@ -100,12 +100,21 @@ marker status
 One UDP datagram per match, line-based:
 
 ```
-MARK <sec.usec> node=<id> filter=<name> link=<link> tag=<tag> len=<n>
+MARK <sec.usec> node=<id> filter=<name> link=<link> tag=<tag> len=<n> dir=<tx|rx>
 ```
 
-`node`/`link`/`tag` are `-` when unset. The controller parses the line and
-dispatches by `node` / `link` / `filter` / `tag` (`link` disambiguates signals
-that share a bridge+filter across multiple links).
+`node`/`link`/`tag` are `-` when unset. `dir` is the packet direction relative
+to the capture node (`node`):
+
+- `tx` — the packet entered on the **device-side NIO** (the capture node is
+  *sending*): generic bridge = `source_nio`, IOL = the IOL instance side.
+- `rx` — the packet entered on the **link-side NIO** (the capture node is
+  *receiving*): generic bridge = `destination_nio`, IOL = the NIO side.
+
+The controller pairs `node` + `dir` to draw an arrow on the topology link
+(`tx` → capture→far, `rx` → far→capture). `dir` is **additive**: the line is
+still parsed as space-separated `key=value` tokens, so an older controller that
+ignores `dir` degrades to direction-less highlighting without error.
 
 ## Status codes
 
@@ -127,7 +136,7 @@ s.bind(("0.0.0.0", 9000))
 while True:
     data, _ = s.recvfrom(4096)
     kv = dict(t.split(b"=",1) for t in data.split() if b"=" in t)
-    # {'filter': b'dhcp_probe', 'tag': b'11', 'node': b'qemu-r1', 'len': b'342'}
+    # {'filter': b'dhcp_probe', 'tag': b'11', 'node': b'qemu-r1', 'len': b'342', 'dir': b'tx'}
 ```
 
 ## Implementation notes
@@ -140,6 +149,13 @@ while True:
   formats the line and `sendto`'s a cached UDP socket under a mutex; the socket
   is (re)opened when a sink is set. UDP `sendto` is atomic for small datagrams,
   so no per-event buffering/thread is needed.
+- **Direction (`dir=tx|rx`)**: only the relay loop knows which NIO a packet
+  came in on, so `bridge_nios()` / the IOL listeners pass an ingress direction
+  (`PKT_DIR_TX`/`PKT_DIR_RX`) to each `filter->handler`. The `mark` handler
+  maps it to `"tx"`/`"rx"` and hands the string to `marker_emit`, which — like
+  `tag`/`link` — just echoes it. Generic bridge: ingress on `source_nio` ⇒ `tx`,
+  `destination_nio` ⇒ `rx`; IOL: from the IOL instance ⇒ `tx`, from the port
+  NIO ⇒ `rx`.
 
 ## Testing
 

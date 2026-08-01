@@ -121,7 +121,7 @@ void marker_set_node(const char *node_id)
 }
 
 /* Emit one marker signal (UDP, fire-and-forget). No-op if no sink. */
-void marker_emit(const char *filter_name, const char *tag, const char *link, size_t len)
+void marker_emit(const char *filter_name, const char *tag, const char *link, size_t len, const char *dir)
 {
     char line[256];
     struct timeval tv;
@@ -137,13 +137,14 @@ void marker_emit(const char *filter_name, const char *tag, const char *link, siz
     node = g_node[0] ? g_node : "-";
     gettimeofday(&tv, NULL);
     n = snprintf(line, sizeof(line),
-                 "MARK %lu.%06lu node=%s filter=%s link=%s tag=%s len=%zu\n",
+                 "MARK %lu.%06lu node=%s filter=%s link=%s tag=%s len=%zu dir=%s\n",
                  (unsigned long)tv.tv_sec, (unsigned long)tv.tv_usec,
                  node,
                  filter_name ? filter_name : "-",
                  link ? link : "-",
                  tag ? tag : "-",
-                 len);
+                 len,
+                 dir ? dir : "-");
     if (n > 0)
         sendto(g_fd, line, strlen(line), 0, (struct sockaddr *)&g_sink, g_sink_len);
     g_emitted++;

@@ -55,7 +55,7 @@ static int frequency_drop_setup(void **opt, int argc, char *argv[])
 }
 
 /* Packet handler: drop 1 out of n packets */
-static int frequency_drop_handler(void *pkt, size_t len, void *opt)
+static int frequency_drop_handler(void *pkt, size_t len, void *opt, int direction)
 {
    struct frequency_drop_data *data = opt;
 
@@ -123,7 +123,7 @@ static int packet_loss_setup(void **opt, int argc, char *argv[])
 }
 
 /* Packet handler: randomly drop packet */
-static int packet_loss_handler(void *pkt, size_t len, void *opt)
+static int packet_loss_handler(void *pkt, size_t len, void *opt, int direction)
 {
    struct packet_loss_data *data = opt;
 
@@ -189,7 +189,7 @@ static int delay_setup(void **opt, int argc, char *argv[])
  * direction to ~1000/latency pps and collapsed links under load — see
  * GNS3/ubridge#114. The latency/jitter values are read back via
  * packet_filter_get_delay(). */
-static int delay_handler(void *pkt, size_t len, void *opt)
+static int delay_handler(void *pkt, size_t len, void *opt, int direction)
 {
    (void)pkt;
    (void)len;
@@ -283,7 +283,7 @@ static void corrupt_packet(char *pkt, size_t len, void *opt)
 }
 
 /* Packet handler: randomly corrupt packets */
-static int corrupt_handler(void *pkt, size_t len, void *opt)
+static int corrupt_handler(void *pkt, size_t len, void *opt, int direction)
 {
    struct corrupt_data *data = opt;
    int length;
@@ -354,7 +354,7 @@ static int bpf_setup(void **opt, int argc, char *argv[])
 }
 
 /* Packet handler: apply BPF filter */
-static int bpf_handler(void *pkt, size_t len, void *opt)
+static int bpf_handler(void *pkt, size_t len, void *opt, int direction)
 {
    struct bpf_data *data = opt;
    struct pcap_pkthdr pkthdr;
@@ -458,7 +458,7 @@ static int mark_setup(void **opt, int argc, char *argv[])
 
 /* Packet handler: on match, emit a marker signal and (optionally) append the
  * packet to the pcap file; always PASS (passive tap). */
-static int mark_handler(void *pkt, size_t len, void *opt)
+static int mark_handler(void *pkt, size_t len, void *opt, int direction)
 {
    struct mark_data *data = opt;
    struct pcap_pkthdr pkthdr;
@@ -468,7 +468,7 @@ static int mark_handler(void *pkt, size_t len, void *opt)
    pkthdr.len = len;
    if (data != NULL) {
        if (pcap_offline_filter(&data->fp, &pkthdr, pkt)) {
-          marker_emit(data->name, data->tag, data->link, len);
+          marker_emit(data->name, data->tag, data->link, len, (direction == PKT_DIR_TX) ? "tx" : "rx");
           if (data->cap)
              pcap_capture_packet(data->cap, pkt, len);
        }
