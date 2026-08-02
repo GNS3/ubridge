@@ -206,14 +206,18 @@ or, equivalently, after launch:
 ```
 marker sink <host> <port>
 marker node <node_id>
+marker pause | resume
 ```
 gns3server picks the UDP `<port>` (opens one listener for all ubridges) and a
-unique `<node_id>` per ubridge. (`marker off` clears the sink; `marker status`
-reports `enabled/sink/node/emitted`.)
+unique `<node_id>` per ubridge. `marker off` clears the sink (closes the UDP
+socket); `marker pause` / `marker resume` flip a global gate that
+suppresses / re-enables **all** signal emission while keeping the sink open
+(resume is instant; sink + `emitted` retained). `marker status` reports
+`enabled/paused/sink/node/emitted`.
 
 **Per-link filter** — when the user configures BPF on a link:
 ```
-bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>] [link <id>] [pcap <path>]
+bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>] [link <id>] [dir <tx|rx>] [pcap <path>]
 ```
 - `<bridge>`: the ubridge bridge for this GNS3 link.
 - `<name>`: filter name (gns3server-chosen; echoed in signals, used as pcap identity).
@@ -227,17 +231,30 @@ bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>] [link <id>] 
   pcap (standard, `EN10MB`). **gns3server should name it to encode identity**,
   keyed on `link` (not `bridge`+`filter`, which collide when one bridge serves
   several links), e.g. `<project>/markers/<node_id>_<link>_<filter>.pcap`.
-- `tag`/`link`/`pcap` keyword pairs may appear in any order; each is normally given
-  once (a repeat silently overwrites the earlier value — last one wins).
+- `dir <tx|rx>`: optional direction filter. `tx` = only signal/capture on
+  device-side ingress (capture node sending); `rx` = only on link-side ingress
+  (receiving). Omit = both directions. Echoed in the signal as `dir=`.
+- `tag`/`link`/`dir`/`pcap` keyword pairs may appear in any order; each is normally
+  given once (a repeat silently overwrites the earlier value — last one wins).
 
 **Disable / change** — `bridge delete_packet_filter <bridge> <name>` (closes and
 flushes the pcap; file persists). To change the BPF, delete then re-add.
+
+**Pause / resume** — two independent levers (no delete/re-add needed):
+- *Per filter*: `bridge enable_packet_filter <bridge> <name> on|off` (IOL per
+  port: `iol_bridge enable_packet_filter <bridge> <bay> <unit> <name> on|off`).
+  A paused (`off`) filter is bypassed — no signal, no pcap — but traffic is
+  still relayed (a paused `mark` is a no-op tap, not a drop). Works for any
+  filter type. **This is what gns3server drives from the marker spec's `enabled`
+  field** (issue `off` right after `add_packet_filter` when `enabled=false`).
+- *Global*: `marker pause` / `marker resume` (§3.2) suppresses all signals
+  regardless of per-filter state — use for a project-wide "mute markers" toggle.
 
 ### 3.3 What gns3server receives (real-time)
 
 One UDP datagram per match, line-based ASCII:
 ```
-MARK <sec.usec> node=<id> filter=<name> link=<link> tag=<tag> len=<n>\n
+MARK <sec.usec> node=<id> filter=<name> link=<link> tag=<tag> len=<n> dir=<tx|rx>\n
 ```
 | Field | Meaning | When unset |
 |-------|---------|------------|
@@ -248,6 +265,7 @@ MARK <sec.usec> node=<id> filter=<name> link=<link> tag=<tag> len=<n>\n
 | `link=<link>` | the link id from `mark … link <id>` | `link=-` |
 | `tag=<tag>` | the tag id from `mark … tag <id>` | `tag=-` |
 | `len=<n>` | matched packet length in bytes | — |
+| `dir=<tx\|rx>` | ingress direction relative to the capture node | `dir=-` |
 
 Parse (Python):
 ```python
@@ -315,8 +333,10 @@ into one pcap (classic pcap would lose per-packet link identity).
 
 - `bridge delete_packet_filter` or bridge stop → the filter's pcap is closed and
   flushed; the file persists on disk for replay.
-- `marker off` → stops signals (pcap capture, if any, continues until the filter
-  is deleted).
+- `marker off` → stops signals and closes the sink socket (pcap capture, if any,
+  continues until the filter is deleted). `marker pause` is the lighter mute: it
+  stops signals but keeps the sink, so `marker resume` is instant — prefer it for
+  transient UI toggles.
 - ubridge exit → all pcaps closed.
 
 ---
@@ -335,7 +355,9 @@ tc reset <if>
 capture start_kernel <if> <pcap> [dlt]                               capture stop_kernel
 # marker
 marker sink <host> <port>          marker node <id>                  marker off                     marker status
+marker pause                      marker resume
 # mark filter (under bridge)
-bridge add_packet_filter <br> <name> mark <bpf> [tag <id>] [link <id>] [pcap <path>]
+bridge add_packet_filter <br> <name> mark <bpf> [tag <id>] [link <id>] [dir <tx|rx>] [pcap <path>]
 bridge delete_packet_filter <br> <name>
+bridge enable_packet_filter <br> <name> on|off          # pause/resume one filter (any type)
 ```
