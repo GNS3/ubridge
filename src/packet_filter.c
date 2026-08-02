@@ -203,7 +203,7 @@ int packet_filter_get_delay(packet_filter_t *packet_filters, int *latency_ms, in
    packet_filter_t *filter = packet_filters;
 
    while (filter != NULL) {
-      if (filter->type == FILTER_TYPE_DELAY && filter->data != NULL) {
+      if (filter->type == FILTER_TYPE_DELAY && filter->data != NULL && filter->enabled) {
          struct delay_data *data = filter->data;
          *latency_ms = data->latency;
          *jitter_ms = data->jitter;
@@ -600,6 +600,7 @@ int add_packet_filter(packet_filter_t **packet_filters, char *filter_name, char 
       return (-1);
    opt = &new_filter->data;
    new_filter->next = NULL;
+   new_filter->enabled = TRUE;   /* running by default; pause via enable_packet_filter */
 
    if ((create_filter(new_filter, filter_type)) == FALSE) {
       fprintf(stderr,"Filter type '%s' doesn't exist\n", filter_type);
@@ -658,4 +659,14 @@ int delete_packet_filter(packet_filter_t **packet_filters, char *filter_name)
       }
    }
    return (-1);
+}
+
+int set_packet_filter_enabled(packet_filter_t *packet_filters, char *filter_name, int enabled)
+{
+   packet_filter_t *filter = find_packet_filter(packet_filters, filter_name);
+
+   if (filter == NULL)
+      return (FALSE);
+   filter->enabled = enabled ? TRUE : FALSE;
+   return (TRUE);
 }

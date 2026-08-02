@@ -129,6 +129,10 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
          packet_filter_t *filter = bridge->packet_filters;
          packet_filter_t *next;
          while (filter != NULL) {
+             if (!filter->enabled) {   /* paused: bypass this filter */
+                 filter = filter->next;
+                 continue;
+             }
              if (filter->handler(pkt, bytes_received, filter->data, pkt_dir) == FILTER_ACTION_DROP) {
                  if (debug_level > 0)
                     printf("Packet dropped by packet filter '%s' on bridge '%s'\n", filter->name, bridge->name);

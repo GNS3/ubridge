@@ -46,6 +46,7 @@ void marker_set_node(const char *node_id);
 
 typedef struct {
     int  enabled;            /* sink configured? */
+    int  paused;             /* emission paused via `marker pause`? */
     char sink[72];           /* "host:port" for display, "" if unset */
     char node[64];           /* node id echoed in signals, "" if unset */
     unsigned long emitted;   /* signals sent since start */

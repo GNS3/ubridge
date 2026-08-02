@@ -5,6 +5,7 @@ import sys
 SUITES = [
     "test_basic",
     "test_dir_filter",
+    "test_pause",
 ]
 
 

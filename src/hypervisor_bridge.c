@@ -611,6 +611,39 @@ static int cmd_reset_packet_filters(hypervisor_conn_t *conn, int argc, char *arg
    return (0);
 }
 
+/* bridge enable_packet_filter <bridge> <name> <on|off> — pause/resume a filter.
+ * A paused filter is bypassed by the relay loop (no handler call). Runs under
+ * the dispatcher's global_lock, so the enabled flip is seen atomically by the
+ * relay threads' (locked) filter walk. */
+static int cmd_enable_packet_filter(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+   bridge_t *bridge;
+   int enabled, res;
+
+   bridge = find_bridge(argv[0]);
+   if (bridge == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
+      return (-1);
+   }
+
+   if (!strcmp(argv[2], "on"))
+      enabled = TRUE;
+   else if (!strcmp(argv[2], "off"))
+      enabled = FALSE;
+   else {
+      hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "expected 'on' or 'off', got '%s'", argv[2]);
+      return (-1);
+   }
+
+   res = set_packet_filter_enabled(bridge->packet_filters, argv[1], enabled);
+   if (res)
+      hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Filter '%s' %s on bridge '%s'",
+                            argv[1], enabled ? "enabled" : "paused", argv[0]);
+   else
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "Filter '%s' not found on bridge '%s'", argv[1], argv[0]);
+   return (0);
+}
+
 static int cmd_set_pcap_filter_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
 {
    bridge_t *bridge;
@@ -671,6 +704,7 @@ static hypervisor_cmd_t bridge_cmd_array[] = {
    { "add_packet_filter", 2, 10, cmd_add_packet_filter, NULL },
    { "delete_packet_filter", 2, 2, cmd_delete_packet_filter, NULL },
    { "reset_packet_filters", 1, 1, cmd_reset_packet_filters, NULL },
+   { "enable_packet_filter", 3, 3, cmd_enable_packet_filter, NULL },
    { "set_pcap_filter", 1, 2, cmd_set_pcap_filter_bridge, NULL },
    { "list", 0, 0, cmd_list_bridges, NULL },
    { NULL, -1, -1, NULL, NULL },

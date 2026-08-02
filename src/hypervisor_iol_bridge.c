@@ -162,6 +162,10 @@ void *iol_nio_listener(void *data)
              packet_filter_t *filter = iol_nio->packet_filters;
              packet_filter_t *next;
              while (filter != NULL) {
+                 if (!filter->enabled) {   /* paused: bypass this filter */
+                     filter = filter->next;
+                     continue;
+                 }
                  if (filter->handler(&pkt[IOL_HDR_SIZE], bytes_received, filter->data, PKT_DIR_RX) == FILTER_ACTION_DROP) {
                      if (debug_level > 0)
                         printf("Packet dropped by packet filter '%s' from destination NIO on IOL bridge '%s'\n", filter->name, bridge->name);
@@ -261,6 +265,10 @@ void *iol_bridge_listener(void *data)
             packet_filter_t *filter = bridge->port_table[port].packet_filters;
             packet_filter_t *next;
             while (filter != NULL) {
+                if (!filter->enabled) {   /* paused: bypass this filter */
+                    filter = filter->next;
+                    continue;
+                }
                 if (filter->handler(&pkt[IOL_HDR_SIZE], bytes_received, filter->data, PKT_DIR_TX) == FILTER_ACTION_DROP) {
                     if (debug_level > 0)
                        printf("Packet dropped by packet filter '%s' from IOL instance on IOL bridge '%s'\n", filter->name, bridge->name);
@@ -1096,6 +1104,55 @@ static int cmd_reset_packet_filters(hypervisor_conn_t *conn, int argc, char *arg
    return (0);
 }
 
+/* iol_bridge enable_packet_filter <bridge> <bay> <unit> <name> <on|off> —
+ * pause/resume a filter on an IOL port. Runs under the dispatcher's global_lock,
+ * which the IOL listeners also hold during their filter walk. */
+static int cmd_enable_packet_filter(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+   iol_bridge_t *bridge;
+   iol_nio_t *iol_nio;
+   unsigned char port_bay, port_unit, port_key;
+   int enabled, res;
+
+   bridge = find_bridge(argv[0]);
+   if (bridge == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
+      return (-1);
+   }
+
+   port_bay = atoi(argv[1]);
+   port_unit = atoi(argv[2]);
+   port_key = port_bay + port_unit * 16;
+   if (port_key > MAX_PORTS) {
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Port number %d exceeding %d on bridge '%s'", port_key, MAX_PORTS, bridge->name);
+      return (-1);
+   }
+
+   iol_nio = &bridge->port_table[port_key];
+   if (iol_nio == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "port %d/%d doesn't exist", port_bay, port_unit);
+      return (-1);
+   }
+
+   if (!strcmp(argv[4], "on"))
+      enabled = TRUE;
+   else if (!strcmp(argv[4], "off"))
+      enabled = FALSE;
+   else {
+      hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "expected 'on' or 'off', got '%s'", argv[4]);
+      return (-1);
+   }
+
+   res = set_packet_filter_enabled(iol_nio->packet_filters, argv[3], enabled);
+   if (res)
+      hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Filter '%s' %s on IOL bridge '%s' port %d/%d",
+                            argv[3], enabled ? "enabled" : "paused", argv[0], port_bay, port_unit);
+   else
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "Filter '%s' not found on IOL bridge '%s' port %d/%d",
+                            argv[3], argv[0], port_bay, port_unit);
+   return (0);
+}
+
 /* Bridge commands */
 static hypervisor_cmd_t iol_bridge_cmd_array[] = {
    { "create", 2, 2, cmd_create_bridge, NULL },
@@ -1112,6 +1169,7 @@ static hypervisor_cmd_t iol_bridge_cmd_array[] = {
    { "add_packet_filter", 4, 15, cmd_add_packet_filter, NULL },
    { "delete_packet_filter", 4, 4, cmd_delete_packet_filter, NULL },
    { "reset_packet_filters", 3, 3, cmd_reset_packet_filters, NULL },
+   { "enable_packet_filter", 5, 5, cmd_enable_packet_filter, NULL },
    { "list", 0, 0, cmd_list_bridges, NULL },
    { NULL, -1, -1, NULL, NULL },
 };

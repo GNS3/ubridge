@@ -51,6 +51,7 @@ enum {
 typedef struct packet_filter {
    u_int type;
    char *name;
+   int enabled;   /* FALSE = paused: the relay loop bypasses this filter */
    void *data;
    int (*setup)(void **opt, int argc, char *argv[]);
    int (*handler)(void *pkt, size_t len, void *opt, int direction);
@@ -62,6 +63,11 @@ int add_packet_filter(packet_filter_t **packet_filters, char *filter_name, char 
 packet_filter_t *find_packet_filter(packet_filter_t *packet_filters, char *filter_name);
 int delete_packet_filter(packet_filter_t **packet_filters, char *filter_name);
 void free_packet_filters(packet_filter_t *filter);
+
+/* Pause/resume a filter by name. `enabled` TRUE resumes, FALSE pauses. Returns
+ * TRUE if the filter was found (and updated), FALSE otherwise. A paused filter
+ * is bypassed by the relay loop (no handler call, no marker emit / pcap). */
+int set_packet_filter_enabled(packet_filter_t *packet_filters, char *filter_name, int enabled);
 
 /* If a delay filter is present, copy its latency/jitter (ms) into the out
  * args and return TRUE; otherwise return FALSE. The delay filter no longer

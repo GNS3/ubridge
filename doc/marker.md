@@ -79,8 +79,10 @@ bridge add_packet_filter br0 dhcp mark "udp port 67" tag 11 link 3 pcap /tmp/dhc
 ```
 marker sink <host> <port>   # set the UDP sink (gns3server)
 marker node <id>            # node id echoed in signals
-marker off                  # clear the sink
-marker status               # enabled / sink / node / emitted count
+marker off                  # clear the sink (closes the UDP socket)
+marker pause                # suppress all signals, keep the sink open
+marker resume               # re-enable emission after `marker pause`
+marker status               # enabled / paused / sink / node / emitted count
 ```
 
 Configuration can also be injected at launch via environment variables (so the
@@ -95,9 +97,32 @@ marker sink 127.0.0.1 9000
 marker node qemu-r1
 100-marker node set to qemu-r1
 marker status
-101 enabled=1 sink=127.0.0.1:9000 node=qemu-r1 emitted=3
+101 enabled=1 paused=0 sink=127.0.0.1:9000 node=qemu-r1 emitted=3
 100-OK
 ```
+
+## Pause / resume
+
+There are two independent levers for stopping signal emission:
+
+- **Per-filter** (`bridge` module) — pause or resume one filter:
+  ```
+  bridge enable_packet_filter <bridge> <name> on|off
+  ```
+  A paused (`off`) filter is **bypassed by the relay loop**: no `marker` signal
+  and no pcap record for it, but the packet is still relayed (a paused `mark`
+  filter is a no-op tap, not a drop). IOL bridges use the per-port form
+  `iol_bridge enable_packet_filter <bridge> <bay> <unit> <name> on|off`.
+  Works for any filter type, not just `mark`.
+
+- **Global** (`marker` module) — `marker pause` / `marker resume` flip a gate
+  inside `marker_emit()` that suppresses **all** signals, regardless of
+  per-filter state. Unlike `marker off`, the sink socket stays open, so resume
+  is instant and `emitted`/sink config are retained. Global pause overrides
+  per-filter: a paused marker emits nothing even if every filter is enabled.
+
+State of both levers is reported by `marker status` (`paused=`) and the
+per-filter flag lives on the filter itself.
 
 ## Signal format
 
