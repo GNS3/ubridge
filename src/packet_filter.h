@@ -64,6 +64,11 @@ packet_filter_t *find_packet_filter(packet_filter_t *packet_filters, char *filte
 int delete_packet_filter(packet_filter_t **packet_filters, char *filter_name);
 void free_packet_filters(packet_filter_t *filter);
 
+/* Drop every impairment filter (drop/loss/delay/corrupt/bpf) but preserve any
+ * `mark` observability tap, relinking surviving mark nodes back into *filters.
+ * Use for reset_packet_filters; full teardown still calls free_packet_filters. */
+void reset_impairment_filters(packet_filter_t **filters);
+
 /* Pause/resume a filter by name. `enabled` TRUE resumes, FALSE pauses. Returns
  * TRUE if the filter was found (and updated), FALSE otherwise. A paused filter
  * is bypassed by the relay loop (no handler call, no marker emit / pcap). */

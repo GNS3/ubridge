@@ -623,19 +623,61 @@ int add_packet_filter(packet_filter_t **packet_filters, char *filter_name, char 
    return (new_filter->setup(opt, argc, argv));
 }
 
+/* Free a single filter node: its name, its type-specific data (via ->free),
+ * then the node itself. Does not touch ->next (the caller unlinks). */
+static void free_filter_node(packet_filter_t *filter)
+{
+   if (filter->name)
+      free(filter->name);
+   if (filter->free)
+      filter->free(&filter->data);
+   free(filter);
+}
+
 void free_packet_filters(packet_filter_t *filter)
 {
   packet_filter_t *next;
 
   while (filter != NULL) {
-    if (filter->name)
-       free(filter->name);
-    if (filter->free)
-       filter->free(&filter->data);
     next = filter->next;
-    free(filter);
+    free_filter_node(filter);
     filter = next;
   }
+}
+
+/* Impairment reset that preserves observability taps.
+ *
+ * `mark` filters are passive taps — they never drop/alter traffic and hold an
+ * open pcap. reset_packet_filters is driven by impairment reapply (the caller
+ * tears down + re-adds drop/loss/delay/corrupt/bpf on filter changes); letting
+ * it also tear down a mark filter would close+flush that pcap and force a
+ * reopen on re-add, interrupting the capture. So this drops every filter
+ * EXCEPT mark, relinking any surviving mark nodes back into the list head.
+ *
+ * Full teardown (bridge delete / port teardown / exit) calls free_packet_filters,
+ * which frees mark too — do not use this there. */
+void reset_impairment_filters(packet_filter_t **filters)
+{
+   packet_filter_t *keep_head = NULL, *keep_tail = NULL;
+   packet_filter_t *filter = *filters;
+
+   while (filter != NULL) {
+      packet_filter_t *next = filter->next;
+
+      if (filter->type == FILTER_TYPE_MARK) {
+         filter->next = NULL;
+         if (keep_tail != NULL)
+            keep_tail->next = filter;
+         else
+            keep_head = filter;
+         keep_tail = filter;
+      } else {
+         free_filter_node(filter);
+      }
+      filter = next;
+   }
+
+   *filters = keep_head;
 }
 
 int delete_packet_filter(packet_filter_t **packet_filters, char *filter_name)

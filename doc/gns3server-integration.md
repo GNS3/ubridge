@@ -239,6 +239,10 @@ bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>] [link <id>] 
 
 **Disable / change** — `bridge delete_packet_filter <bridge> <name>` (closes and
 flushes the pcap; file persists). To change the BPF, delete then re-add.
+`bridge reset_packet_filters` does NOT remove `mark` filters — it drops only
+impairment filters (drop/loss/delay/corrupt/bpf), so a marker's pcap stays open
+across impairment reapply. Only an explicit `delete_packet_filter` (or bridge
+stop/delete) closes a `mark` pcap.
 
 **Pause / resume** — two independent levers (no delete/re-add needed):
 - *Per filter*: `bridge enable_packet_filter <bridge> <name> on|off` (IOL per
@@ -332,7 +336,9 @@ into one pcap (classic pcap would lose per-packet link identity).
 ## 6. Lifecycle / teardown
 
 - `bridge delete_packet_filter` or bridge stop → the filter's pcap is closed and
-  flushed; the file persists on disk for replay.
+  flushed; the file persists on disk for replay. `bridge reset_packet_filters`
+  does NOT close a `mark` pcap — it preserves `mark` (drops only impairment
+  filters), so an impairment reapply never interrupts the capture.
 - `marker off` → stops signals and closes the sink socket (pcap capture, if any,
   continues until the filter is deleted). `marker pause` is the lighter mute: it
   stops signals but keeps the sink, so `marker resume` is instant — prefer it for

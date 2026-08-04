@@ -604,8 +604,9 @@ static int cmd_reset_packet_filters(hypervisor_conn_t *conn, int argc, char *arg
       return (-1);
    }
 
-   free_packet_filters(bridge->packet_filters);
-   bridge->packet_filters = NULL;
+   /* impairment reset: drop drop/loss/delay/corrupt/bpf but preserve any `mark`
+    * observability tap, which holds an open pcap that must survive the reapply. */
+   reset_impairment_filters(&bridge->packet_filters);
 
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
    return (0);

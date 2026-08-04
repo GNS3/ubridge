@@ -1097,8 +1097,9 @@ static int cmd_reset_packet_filters(hypervisor_conn_t *conn, int argc, char *arg
    iol_nio->delay_line_iol = NULL;
    delay_line_destroy(old_nio);
    delay_line_destroy(old_iol);
-   free_packet_filters(iol_nio->packet_filters);
-   iol_nio->packet_filters = NULL;
+   /* impairment reset: preserve any `mark` observability tap (open pcap); the
+    * delay lines above are torn down regardless, since the delay filter is dropped. */
+   reset_impairment_filters(&iol_nio->packet_filters);
 
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
    return (0);

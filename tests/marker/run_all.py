@@ -6,6 +6,7 @@ SUITES = [
     "test_basic",
     "test_dir_filter",
     "test_pause",
+    "test_reset_preserves_mark",
 ]
 
 

@@ -393,7 +393,10 @@ bridge delete_packet_filter br0 "my_filter1"
 ```
 
 **bridge reset_packet_filters** *\<bridge_name\>*: Delete all
-    packet filters configured on a bridge.
+    impairment filters (drop/loss/delay/corrupt/bpf) configured on a bridge.
+    `mark` filters are preserved — they are passive observability taps holding
+    an open pcap that must survive impairment reapply. (Bridge delete / stop
+    still tears down `mark`.)
 
 ``` {.bash}
 bridge reset_packet_filters br0
