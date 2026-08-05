@@ -4,7 +4,7 @@ name: Test uBridge
 # master. Splits into two jobs by privilege:
 #
 #   * userspace — marker / delay / packet_filter / iol. Pure UDP + libpcap, no caps.
-#   * kernel    — brctl / link / tap / tc / capture. Need CAP_NET_ADMIN.
+#   * kernel    — brctl / link / tap / tc / capture / nio_raw. Need CAP_NET_ADMIN.
 #
 # The ubuntu-latest runner is a real Azure VM (not a container), so file
 # capabilities (setcap), dummy/tap/veth interfaces and network namespaces
@@ -65,7 +65,7 @@ jobs:
   # and also touch kernel state directly, so the whole process runs as root.
   # ---------------------------------------------------------------------
   kernel:
-    name: Kernel (brctl, link, tap, tc, capture)
+    name: Kernel (brctl, link, tap, tc, capture, nio_raw)
     runs-on: ubuntu-latest
 
     steps:
@@ -101,6 +101,9 @@ jobs:
 
       - name: capture suite
         run: cd tests/capture && sudo python3 run_all.py
+
+      - name: nio_raw suite
+        run: cd tests/nio_raw && sudo python3 run_all.py
 
       - name: Remove ubtest fixture
         if: always()
