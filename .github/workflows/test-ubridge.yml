@@ -3,7 +3,7 @@ name: Test uBridge
 # Runs the black-box regression suites under tests/ on every PR targeting
 # master. Splits into two jobs by privilege:
 #
-#   * userspace — marker / delay / packet_filter. Pure UDP + libpcap, no caps.
+#   * userspace — marker / delay / packet_filter / iol. Pure UDP + libpcap, no caps.
 #   * kernel    — brctl / link / tap / tc / capture. Need CAP_NET_ADMIN.
 #
 # The ubuntu-latest runner is a real Azure VM (not a container), so file
@@ -25,7 +25,7 @@ jobs:
   # friction. Run right after `make`, against the in-repo ./ubridge.
   # ---------------------------------------------------------------------
   userspace:
-    name: Userspace (marker, delay, packet_filter)
+    name: Userspace (marker, delay, packet_filter, iol)
     runs-on: ubuntu-latest
 
     steps:
@@ -46,6 +46,9 @@ jobs:
 
       - name: packet_filter suite
         run: cd tests/packet_filter && python3 run_all.py
+
+      - name: iol suite
+        run: cd tests/iol && python3 run_all.py
 
   # ---------------------------------------------------------------------
   # Kernel suites — CAP_NET_ADMIN via file capabilities.
