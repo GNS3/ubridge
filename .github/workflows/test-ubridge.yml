@@ -3,8 +3,8 @@ name: Test uBridge
 # Runs the black-box regression suites under tests/ on every PR targeting
 # master. Splits into two jobs by privilege:
 #
-#   * userspace — marker / delay / link. Pure UDP + libpcap, no caps.
-#   * kernel    — brctl / tap / tc / capture. Need CAP_NET_ADMIN.
+#   * userspace — marker / delay. Pure UDP + libpcap, no caps.
+#   * kernel    — brctl / link / tap / tc / capture. Need CAP_NET_ADMIN.
 #
 # The ubuntu-latest runner is a real Azure VM (not a container), so file
 # capabilities (setcap), dummy/tap/veth interfaces and network namespaces
@@ -25,7 +25,7 @@ jobs:
   # friction. Run right after `make`, against the in-repo ./ubridge.
   # ---------------------------------------------------------------------
   userspace:
-    name: Userspace (marker, delay, link)
+    name: Userspace (marker, delay)
     runs-on: ubuntu-latest
 
     steps:
@@ -44,15 +44,13 @@ jobs:
       - name: delay suite
         run: cd tests/delay && python3 run_all.py
 
-      - name: link suite
-        run: cd tests/link && python3 run_all.py
-
   # ---------------------------------------------------------------------
   # Kernel suites — CAP_NET_ADMIN via file capabilities.
   #
-  # brctl runs as the UNPRIVILEGED runner user against the installed
-  # binary, which carries cap_net_admin,cap_net_raw=ep via `make install`.
-  # It MUST NOT run as root: test_no_privs asserts the un-capped ./ubridge
+  # brctl and link run as the UNPRIVILEGED runner user against the installed
+  # binary, which carries cap_net_admin,cap_net_raw=ep via `make install`
+  # (the link README lists the exact same prerequisites as brctl). brctl
+  # MUST NOT run as root: test_no_privs asserts the un-capped ./ubridge
   # refuses privileged ops, and a root-launched ./ubridge would have caps.
   # The ubtest dummy fixture is pre-created with sudo (ensure_ubtest only
   # auto-creates when euid == 0).
@@ -61,7 +59,7 @@ jobs:
   # and also touch kernel state directly, so the whole process runs as root.
   # ---------------------------------------------------------------------
   kernel:
-    name: Kernel (brctl, tap, tc, capture)
+    name: Kernel (brctl, link, tap, tc, capture)
     runs-on: ubuntu-latest
 
     steps:
@@ -85,6 +83,9 @@ jobs:
 
       - name: brctl suite (unprivileged user + capped binary)
         run: cd tests/brctl && python3 run_all.py
+
+      - name: link suite (unprivileged user + capped binary)
+        run: cd tests/link && python3 run_all.py
 
       - name: tap suite
         run: cd tests/tap && sudo python3 run_all.py
