@@ -35,10 +35,9 @@
 #include "parse.h"
 #include "pcap_capture.h"
 #include "packet_filter.h"
+#include "delay_line.h"
 #include "hypervisor.h"
-#ifdef __linux__
 #include "hypervisor_iol_bridge.h"
-#endif
 
 char *config_file = CONFIG_FILE;
 pthread_mutex_t global_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -46,11 +45,49 @@ bridge_t *bridge_list = NULL;
 int debug_level = 0;
 int hypervisor_mode = 0;
 
+/* Send callback for the delay line's release thread: forward a due packet out
+ * the transmitting NIO and account for it. (When no delay filter is present,
+ * bridge_nios sends inline instead and does this accounting itself.) */
+static ssize_t delay_send_cb(void *ctx, const void *pkt, size_t len)
+{
+   nio_t *tx_nio = ctx;
+   ssize_t bytes_sent;
+
+   bytes_sent = nio_send(tx_nio, (void *)pkt, len);
+   if (bytes_sent == -1) {
+      perror("send");
+      return -1;
+   }
+   tx_nio->packets_out++;
+   tx_nio->bytes_out += bytes_sent;
+   return bytes_sent;
+}
+
+/* pthread cleanup helper: destroy whichever delay line is currently active.
+ * bridge_nios() reassigns its local `delay_line` as filters come and go, so
+ * the handler reads it through a pointer-to-pointer — capturing the pointer's
+ * value at push time would go stale when the line is recreated. */
+static void delay_line_destroy_indir(void *arg)
+{
+   delay_line_destroy(*(delay_line_t **)arg);
+}
+
 static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
 {
   ssize_t bytes_received, bytes_sent;
   unsigned char pkt[NIO_MAX_PKT_SIZE];
   int drop_packet;
+  int latency_ms = 0, jitter_ms = 0;
+  delay_line_t *delay_line = NULL;
+  int rc = 0;
+
+  /* The delay line is managed lazily inside the loop, not created once at
+   * start: GNS3 starts the bridge first and applies packet filters only
+   * afterwards (gns3-server add_ubridge_udp_connection: `bridge start` then
+   * `_ubridge_apply_filters`), and filters can be reset/re-added at runtime.
+   * So we re-read the delay config on each packet and (re)create/destroy the
+   * line to match. delay_line always holds the current line or NULL. */
+  pthread_cleanup_push(delay_line_destroy_indir, &delay_line);
 
   while (1) {
 
@@ -61,7 +98,8 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
         perror("recv");
         if (errno == ECONNREFUSED || errno == ENETDOWN)
            continue;
-        return -1;
+        rc = -1;
+        break;
     }
 
     if (bytes_received > NIO_MAX_PKT_SIZE) {
@@ -81,12 +119,21 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
             dump_packet(stdout, pkt, bytes_received);
     }
 
-    /* filter the packet if there is a filter configured */
+    int have_delay;
+
+    /* Lock the shared filter list while we walk it — the hypervisor thread
+     * mutates it via add/delete/reset_packet_filter under global_lock too. */
+    pthread_mutex_lock(&global_lock);
     if (bridge->packet_filters != NULL) {
+         int pkt_dir = (rx_nio == bridge->source_nio) ? PKT_DIR_TX : PKT_DIR_RX;
          packet_filter_t *filter = bridge->packet_filters;
          packet_filter_t *next;
          while (filter != NULL) {
-             if (filter->handler(pkt, bytes_received, filter->data) == FILTER_ACTION_DROP) {
+             if (!filter->enabled) {   /* paused: bypass this filter */
+                 filter = filter->next;
+                 continue;
+             }
+             if (filter->handler(pkt, bytes_received, filter->data, pkt_dir) == FILTER_ACTION_DROP) {
                  if (debug_level > 0)
                     printf("Packet dropped by packet filter '%s' on bridge '%s'\n", filter->name, bridge->name);
                  drop_packet = TRUE;
@@ -96,12 +143,44 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
              filter = next;
          }
      }
+    /* snapshot the delay config while the list is stable */
+    have_delay = packet_filter_get_delay(bridge->packet_filters, &latency_ms, &jitter_ms);
+    pthread_mutex_unlock(&global_lock);
 
     if (drop_packet == TRUE)
        continue;
 
     /* dump the packet to a PCAP file if capture is activated */
     pcap_capture_packet(bridge->capture, pkt, bytes_received);
+
+    /* (re)sync the delay line using the snapshotted config — create/destroy
+     * outside the lock so a join inside destroy doesn't block other bridges. */
+    {
+       int cur_lat = -1, cur_jit = -1;
+       delay_line_config(delay_line, &cur_lat, &cur_jit);  /* current line's config, or -1 */
+       if (have_delay) {
+          if (delay_line == NULL || latency_ms != cur_lat || jitter_ms != cur_jit) {
+             delay_line_t *old = delay_line;
+             delay_line = NULL;                 /* visible as NULL to a cancel-time cleanup */
+             delay_line_destroy(old);
+             delay_line = delay_line_create(latency_ms, jitter_ms, delay_send_cb, tx_nio);
+             if (delay_line == NULL)
+                fprintf(stderr, "bridge '%s': could not create delay line, forwarding without delay\n", bridge->name);
+          }
+       } else if (delay_line != NULL) {
+          delay_line_t *old = delay_line;
+          delay_line = NULL;
+          delay_line_destroy(old);
+       }
+    }
+
+    if (delay_line) {
+        /* hand the packet to the release thread; never block the recv loop.
+         * On enqueue failure (out of memory or queue full) the packet is dropped. */
+        if (delay_line_enqueue(delay_line, pkt, bytes_received) != 0 && debug_level > 0)
+           printf("Packet dropped by delay line on bridge '%s'\n", bridge->name);
+        continue;
+    }
 
     /* send what we received to the transmitting NIO */
     bytes_sent = nio_send(tx_nio, pkt, bytes_received);
@@ -117,13 +196,19 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
         if (tx_nio->type == NIO_TYPE_TAP && errno == EIO)
             continue;
 
-        return -1;
+        rc = -1;
+        break;
     }
 
     tx_nio->packets_out++;
     tx_nio->bytes_out += bytes_sent;
   }
-  return 0;
+
+  /* runs delay_line_destroy (no-op when no delay filter), joining the release
+   * thread and freeing any queued packets. On pthread_cancel the cleanup
+   * stack runs it instead and this line is never reached. */
+  pthread_cleanup_pop(1);
+  return rc;
 }
 
 /* Source NIO thread */
@@ -183,7 +268,6 @@ static void free_bridges(bridge_t *bridge)
   }
 }
 
-#ifdef __linux__
 static void free_iol_bridges(iol_bridge_t *bridge)
 {
   iol_bridge_t *next;
@@ -192,11 +276,6 @@ static void free_iol_bridges(iol_bridge_t *bridge)
   while (bridge != NULL) {
     if (bridge->name)
        free(bridge->name);
-
-    close(bridge->iol_bridge_sock);
-    unlink(bridge->bridge_sockaddr.sun_path);
-    if ((unlock_unix_socket(bridge->sock_lock, bridge->bridge_sockaddr.sun_path)) == -1)
-       fprintf(stderr, "failed to unlock %s\n", bridge->bridge_sockaddr.sun_path);
 
     if (bridge->running) {
        pthread_cancel(bridge->bridge_tid);
@@ -208,6 +287,10 @@ static void free_iol_bridges(iol_bridge_t *bridge)
               pthread_cancel(bridge->port_table[i].tid);
               pthread_join(bridge->port_table[i].tid, NULL);
               bridge->port_table[i].tid = 0;
+              /* destroy delay lines (joins their release threads) before
+               * freeing the NIO / closing the IOL socket they send through */
+              delay_line_destroy(bridge->port_table[i].delay_line_nio);
+              delay_line_destroy(bridge->port_table[i].delay_line_iol);
               free_pcap_capture(bridge->port_table[i].capture);
               free_packet_filters(bridge->port_table[i].packet_filters);
               free_nio(bridge->port_table[i].destination_nio);
@@ -216,12 +299,18 @@ static void free_iol_bridges(iol_bridge_t *bridge)
        free(bridge->port_table);
     }
 
+    /* close after delay lines are torn down: their release threads sendto
+     * this socket, so they must be joined first */
+    close(bridge->iol_bridge_sock);
+    unlink(bridge->bridge_sockaddr.sun_path);
+    if ((unlock_unix_socket(bridge->sock_lock, bridge->bridge_sockaddr.sun_path)) == -1)
+       fprintf(stderr, "failed to unlock %s\n", bridge->bridge_sockaddr.sun_path);
+
     next = bridge->next;
     free(bridge);
     bridge = next;
   }
 }
-#endif
 
 static void create_threads(bridge_t *bridge)
 {
@@ -241,9 +330,7 @@ static void create_threads(bridge_t *bridge)
 void ubridge_reset()
 {
    free_bridges(bridge_list);
-#ifdef __linux__
    free_iol_bridges(iol_bridge_list);
-#endif
 }
 
 /* Generic signal handler */
@@ -256,11 +343,9 @@ void signal_gen_handler(int sig)
          if (hypervisor_mode)
             hypervisor_stopsig();
          break;
-#ifndef CYGWIN
-         /* CTRL+C has been pressed */
+         /* SIGHUP: configuration reload */
       case SIGHUP:
          break;
-#endif
       default:
          fprintf(stderr, "Unhandled signal %d\n", sig);
    }
@@ -288,7 +373,7 @@ int iniparser_error_handler(const char *format, ...)
   return ret;
 }
 
-static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port)
+static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port, char *hypervisor_socket_path)
 {
    if (hypervisor_mode) {
        struct sigaction act;
@@ -296,18 +381,14 @@ static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port)
        memset(&act, 0, sizeof(act));
        act.sa_handler = signal_gen_handler;
        act.sa_flags = SA_RESTART;
-#ifndef CYGWIN
        sigaction(SIGHUP, &act, NULL);
-#endif
        sigaction(SIGTERM, &act, NULL);
        sigaction(SIGINT, &act, NULL);
        sigaction(SIGPIPE, &act, NULL);
 
-      run_hypervisor(hypervisor_ip_address, hypervisor_tcp_port);
+      run_hypervisor(hypervisor_ip_address, hypervisor_tcp_port, hypervisor_socket_path);
       free_bridges(bridge_list);
-#ifdef __linux__
       free_iol_bridges(iol_bridge_list);
-#endif
    }
    else {
       sigset_t sigset;
@@ -317,9 +398,7 @@ static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port)
       sigemptyset(&sigset);
       sigaddset(&sigset, SIGINT);
       sigaddset(&sigset, SIGTERM);
-#ifndef CYGWIN
       sigaddset(&sigset, SIGHUP);
-#endif
       pthread_sigmask(SIG_BLOCK, &sigset, NULL);
 
       while (1) {
@@ -346,11 +425,7 @@ static void display_network_devices(void)
 
    printf("Network device list:\n\n");
 
-#ifndef CYGWIN
    res = pcap_findalldevs(&device_list, pcap_errbuf);
-#else
-   res = pcap_findalldevs_ex(PCAP_SRC_IF_STRING,NULL, &device_list, pcap_errbuf);
-#endif
 
    if (res < 0) {
       fprintf(stderr, "PCAP: unable to find device list (%s)\n", pcap_errbuf);
@@ -371,7 +446,8 @@ static void print_usage(const char *program_name)
          "Options:\n"
          "  -h                           : Print this message and exit\n"
          "  -f <file>                    : Specify a INI configuration file (default: %s)\n"
-         "  -H [<ip_address>:]<tcp_port> : Run in hypervisor mode\n"
+         "  -H [<ip_address>:]<tcp_port> : Hypervisor mode over TCP (default bind: 127.0.0.1)\n"
+         "  -U <socket_path>             : Hypervisor mode over UNIX socket (recommended)\n"
          "  -e                           : Display all available network devices and exit\n"
          "  -d <level>                   : Debug level\n"
          "  -v                           : Print version and exit\n",
@@ -383,6 +459,7 @@ int main(int argc, char **argv)
 {
   int hypervisor_tcp_port = 0;
   char *hypervisor_ip_address = NULL;
+  char *hypervisor_socket_path = NULL;
   int opt;
   char *index;
   size_t len;
@@ -390,7 +467,7 @@ int main(int argc, char **argv)
   setvbuf(stdout, NULL, _IOLBF, 0);
   setvbuf(stderr, NULL, _IOLBF, 0);
 
-  while ((opt = getopt(argc, argv, "hved:f:H:")) != -1) {
+  while ((opt = getopt(argc, argv, "hved:f:H:U:")) != -1) {
     switch (opt) {
       case 'H':
         hypervisor_mode = 1;
@@ -409,6 +486,10 @@ int main(int argc, char **argv)
            hypervisor_ip_address[len] = '\0';
            hypervisor_tcp_port = atoi(index + 1);
         }
+        break;
+      case 'U':
+        hypervisor_mode = 1;
+        hypervisor_socket_path = optarg;
         break;
 	  case 'v':
 	    printf("%s version %s\n", NAME, VERSION);
@@ -430,6 +511,6 @@ int main(int argc, char **argv)
 	}
   }
   printf("uBridge version %s running with %s\n", VERSION, pcap_lib_version());
-  ubridge(hypervisor_ip_address, hypervisor_tcp_port);
+  ubridge(hypervisor_ip_address, hypervisor_tcp_port, hypervisor_socket_path);
   return (EXIT_SUCCESS);
 }

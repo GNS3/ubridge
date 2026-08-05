@@ -40,12 +40,21 @@ enum {
    FILTER_ACTION_DUPLICATE,
 };
 
+/* Ingress direction of a packet at the filter call site, relative to the
+ * capture node (the node identified by the marker `node=`). Only the relay
+ * loop knows which NIO a packet came in on, so it passes this to the handler. */
+enum {
+   PKT_DIR_RX = 0,   /* link-side ingress   — capture node is receiving */
+   PKT_DIR_TX = 1,   /* device-side ingress — capture node is sending    */
+};
+
 typedef struct packet_filter {
    u_int type;
    char *name;
+   int enabled;   /* FALSE = paused: the relay loop bypasses this filter */
    void *data;
    int (*setup)(void **opt, int argc, char *argv[]);
-   int (*handler)(void *pkt, size_t len, void *opt);
+   int (*handler)(void *pkt, size_t len, void *opt, int direction);
    void (*free)(void **opt);
    struct packet_filter *next;
 } packet_filter_t;
@@ -54,5 +63,21 @@ int add_packet_filter(packet_filter_t **packet_filters, char *filter_name, char 
 packet_filter_t *find_packet_filter(packet_filter_t *packet_filters, char *filter_name);
 int delete_packet_filter(packet_filter_t **packet_filters, char *filter_name);
 void free_packet_filters(packet_filter_t *filter);
+
+/* Drop every impairment filter (drop/loss/delay/corrupt/bpf) but preserve any
+ * `mark` observability tap, relinking surviving mark nodes back into *filters.
+ * Use for reset_packet_filters; full teardown still calls free_packet_filters. */
+void reset_impairment_filters(packet_filter_t **filters);
+
+/* Pause/resume a filter by name. `enabled` TRUE resumes, FALSE pauses. Returns
+ * TRUE if the filter was found (and updated), FALSE otherwise. A paused filter
+ * is bypassed by the relay loop (no handler call, no marker emit / pcap). */
+int set_packet_filter_enabled(packet_filter_t *packet_filters, char *filter_name, int enabled);
+
+/* If a delay filter is present, copy its latency/jitter (ms) into the out
+ * args and return TRUE; otherwise return FALSE. The delay filter no longer
+ * applies its latency inline (see packet_filter.c) — bridge_nios() reads the
+ * configured value via this accessor to drive a real delay line. */
+int packet_filter_get_delay(packet_filter_t *packet_filters, int *latency_ms, int *jitter_ms);
 
 #endif /* !FILTER_H_ */

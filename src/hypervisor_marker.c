@@ -46,6 +46,7 @@ static int             g_fd = -1;                 /* cached UDP socket, -1 if no
 static struct sockaddr_storage g_sink;            /* resolved sink address */
 static socklen_t       g_sink_len = 0;
 static int             g_enabled = 0;             /* sink configured? */
+static int             g_paused = 0;              /* emission paused (`marker pause`)? */
 static char            g_sink_display[72] = "";   /* "host:port" for status */
 static char            g_node[64] = "";           /* node id echoed in signals */
 static unsigned long   g_emitted = 0;
@@ -121,7 +122,7 @@ void marker_set_node(const char *node_id)
 }
 
 /* Emit one marker signal (UDP, fire-and-forget). No-op if no sink. */
-void marker_emit(const char *filter_name, const char *tag, const char *link, size_t len)
+void marker_emit(const char *filter_name, const char *tag, const char *link, size_t len, const char *dir)
 {
     char line[256];
     struct timeval tv;
@@ -129,7 +130,7 @@ void marker_emit(const char *filter_name, const char *tag, const char *link, siz
     int n;
 
     pthread_mutex_lock(&g_lock);
-    if (!g_enabled || g_fd < 0) {
+    if (!g_enabled || g_fd < 0 || g_paused) {
         pthread_mutex_unlock(&g_lock);
         return;
     }
@@ -137,13 +138,14 @@ void marker_emit(const char *filter_name, const char *tag, const char *link, siz
     node = g_node[0] ? g_node : "-";
     gettimeofday(&tv, NULL);
     n = snprintf(line, sizeof(line),
-                 "MARK %lu.%06lu node=%s filter=%s link=%s tag=%s len=%zu\n",
+                 "MARK %lu.%06lu node=%s filter=%s link=%s tag=%s len=%zu dir=%s\n",
                  (unsigned long)tv.tv_sec, (unsigned long)tv.tv_usec,
                  node,
                  filter_name ? filter_name : "-",
                  link ? link : "-",
                  tag ? tag : "-",
-                 len);
+                 len,
+                 dir ? dir : "-");
     if (n > 0)
         sendto(g_fd, line, strlen(line), 0, (struct sockaddr *)&g_sink, g_sink_len);
     g_emitted++;
@@ -156,6 +158,7 @@ int marker_status(marker_status_t *out)
         return -EINVAL;
     pthread_mutex_lock(&g_lock);
     out->enabled = g_enabled;
+    out->paused = g_paused;
     snprintf(out->sink, sizeof(out->sink), "%s", g_sink_display);
     snprintf(out->node, sizeof(out->node), "%s", g_node);
     out->emitted = g_emitted;
@@ -209,9 +212,31 @@ static int cmd_status(hypervisor_conn_t *conn, int argc, char *argv[])
 {
     marker_status_t s;
     marker_status(&s);
-    hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "enabled=%d sink=%s node=%s emitted=%lu",
-                          s.enabled, s.enabled ? s.sink : "(none)", s.node[0] ? s.node : "(none)", s.emitted);
+    hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "enabled=%d paused=%d sink=%s node=%s emitted=%lu",
+                          s.enabled, s.paused, s.enabled ? s.sink : "(none)", s.node[0] ? s.node : "(none)", s.emitted);
     hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
+    return 0;
+}
+
+/* marker pause — suppress signal emission without clearing the sink (the UDP
+ * socket stays open, so resume is instant). Per-filter `enabled` is unaffected;
+ * this is a global gate checked in marker_emit(). */
+static int cmd_pause(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    pthread_mutex_lock(&g_lock);
+    g_paused = 1;
+    pthread_mutex_unlock(&g_lock);
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "marker paused (sink retained)");
+    return 0;
+}
+
+/* marker resume — re-enable signal emission after `marker pause`. */
+static int cmd_resume(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    pthread_mutex_lock(&g_lock);
+    g_paused = 0;
+    pthread_mutex_unlock(&g_lock);
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "marker resumed");
     return 0;
 }
 
@@ -219,6 +244,8 @@ static hypervisor_cmd_t marker_cmd_array[] = {
    { "sink",   2, 2, cmd_sink,   NULL },   /* <host> <port> */
    { "node",   1, 1, cmd_node,   NULL },
    { "off",    0, 0, cmd_off,    NULL },
+   { "pause",  0, 0, cmd_pause,  NULL },
+   { "resume", 0, 0, cmd_resume, NULL },
    { "status", 0, 0, cmd_status, NULL },
    { NULL, -1, -1, NULL, NULL },
 };

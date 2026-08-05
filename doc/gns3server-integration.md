@@ -12,8 +12,9 @@ the existing hypervisor text protocol; ubridge is inert until commanded.
 
 ## 0. Protocol basics (recap)
 
-- One TCP control connection per ubridge (already used by gns3server). Line-based
-  text: `<module> <command> [args...]`, newline-terminated.
+- One control connection per ubridge — **AF_UNIX** (`-U`, recommended) or TCP
+  (`-H`); see *Control channel: AF_UNIX + SO_PEERCRED* below. Line-based text:
+  `<module> <command> [args...]`, newline-terminated.
 - Replies: `NNN<sep>message` where `<sep>` is `-` for the final line, space for
   intermediate lines.
 - Status codes:
@@ -29,11 +30,104 @@ the existing hypervisor text protocol; ubridge is inert until commanded.
   | `208` | Object not found (`ENODEV`) |
   | `209` | Object already running (`EALREADY`) |
 
-- **Linux only.** The new modules (`tap`/`tc`/`capture`/`marker`) plus
+- The kernel-data-plane modules (`tap`/`tc`/`capture`/`marker`) plus
   `brctl`/`link` require ubridge installed with capabilities:
   ```bash
   sudo make install     # sets cap_net_admin,cap_net_raw=ep
   ```
+
+---
+
+## Control channel: AF_UNIX + SO_PEERCRED
+
+The control channel gains a secure **AF_UNIX** transport (`-U <socket_path>`)
+authenticated by the kernel via `SO_PEERCRED`. The TCP listener (`-H`) is
+**retained** for backward compatibility, remote use, and non-Linux builds — but
+now **defaults to loopback** (`127.0.0.1`) instead of all interfaces, so a bare
+`-H <port>` is reachable only locally. gns3server should move to `-U` on Linux;
+`-H` keeps working during the transition.
+
+**Why.** The old TCP control port listened (by default on `0.0.0.0`) with no
+authentication. Any process that could reach it could issue bridge/NIO commands
+and, given ubridge's `CAP_NET_ADMIN/CAP_NET_RAW`, take kernel L2 control of the
+host. AF_UNIX lets the kernel authenticate the peer: `SO_PEERCRED` exposes the
+connector's UID, and ubridge accepts only its own UID. gns3server's compute
+process spawns ubridge locally and shares its UID, so the legitimate controller
+always matches; any other local user is rejected. **No token, no handshake, no
+protocol change.** The TCP path keeps the same remote exposure closed by its
+loopback default rather than by removing TCP entirely.
+
+**To adopt the secure `-U` transport** (recommended on Linux; `-H` remains
+available, so this can land gradually) — all inside the existing connection
+encapsulation; framing is untouched:
+
+| # | Where | Change |
+|---|-------|--------|
+| 1 | `Hypervisor._build_command` | `-H host:port` → `-U socket_path` |
+| 2 | `UBridgeHypervisor.connect()` | `open_connection` → `open_unix_connection` |
+| 3 | `Hypervisor.__init__` | allocate a socket path instead of a TCP port |
+| 4 | `host`/`port` across the class chain | two constructors + properties (see details) |
+| 5 | `{host}:{port}` log strings | ubridge_hypervisor.py **and** base_node.py (see details) |
+| 6 | node stop / project close | unlink the socket file (ubridge also unlinks on exit) |
+
+Details for the trickier rows:
+
+- **#1 location.** `_build_command` is on the `Hypervisor` class (hypervisor.py,
+  ~L246-256; the `-H`/`host:port` line at ~L252-253) — **not** on `base_node`.
+  base_node.py has no such method.
+- **#3 socket naming + timing.** The ubridge PID is **not** known in `__init__`
+  — ubridge is forked later in `start()` (hypervisor.py ~L167), so a name built
+  from the ubridge pid can't be constructed in `__init__`. Allocate the path in
+  `__init__` using **compute-pid + seq** (or just `<seq>`). Note
+  `Hypervisor._instance_count` (~L51) exists but is **not** auto-incremented —
+  add `Hypervisor._instance_count += 1`. Stale/residual protection comes from
+  ubridge unlinking on start + `SO_PEERCRED`, not from encoding the ubridge pid
+  in the name.
+- **#4 two-layer.** `host`/`port` live in **two** constructors and their
+  properties: parent `UBridgeHypervisor.__init__(host, port, …)` (~L43) with
+  `host`/`port` properties (~L135-173), and child
+  `Hypervisor.__init__(…, host, port=None)` (~L53). `send()`'s error paths
+  (~L208) read `self._host`/`self._port`; after the switch those fields'
+  semantics change, so the properties must return the path or be removed — don't
+  treat them as dead code to delete blindly.
+- **#5 log lines.** Beyond `ubridge_hypervisor.py` (~L80/82/208/235/247/258),
+  `base_node.py` (~L931, L935) also logs `self._ubridge_hypervisor.host:port` —
+  point those at the socket path too.
+
+**Do not change / watch out for:**
+
+- **Framing is unchanged.** `send()` (`command + "\n"`, read until `100-`/`2xx-`)
+  works as-is; `open_unix_connection` returns the same `(reader, writer)`.
+- **No authentication code needed.** `SO_PEERCRED` is implicit — compute forks
+  ubridge, same UID, auto-pass. Do **not** add an `auth` command or shared secret.
+- **Leave `port_manager` alone.** It allocates console/aux/wrap ports and the
+  **UDP data-plane** tunnels. Only the control channel moves to a socket.
+- **Keep the socket path short.** `sun_path` is at most 107 bytes;
+  `<project working_dir>/<uuid>/<node_uuid>.sock` will overflow and `bind` fails
+  silently. Use a short sequence under a private runtime dir, e.g.
+  `/run/user/<uid>/gns3/ubridge-<seq>.sock` (see #3 for the pid/timing caveat).
+- **Use a 0700 owner-private directory** for the socket. The 0600 socket file +
+  directory perms are a filesystem-level second gate on top of `SO_PEERCRED`.
+- **Keep `Server.host` config.** It's still used for data-plane UDP binding and
+  controller reporting; only the control-connection `host` goes away.
+
+**Deployment:**
+
+- **Not breaking for `-H` users.** TCP still works; the only behavior change is
+  that `ubridge -H <port>` now binds `127.0.0.1` instead of `0.0.0.0` (pass
+  `0.0.0.0:<port>` explicitly to restore the old bind). Switching gns3server to
+  `-U` can land gradually; to detect `-U` support, reuse the `hypervisor version`
+  reply that `connect()` already sends (ubridge_hypervisor.py ~L86) — no new
+  protocol.
+- Run against the **new** ubridge build (`sudo make install` refreshes
+  `/usr/local/bin/ubridge`); the old binary does not understand `-U`.
+- The gns3server Linux-only fork may drop the TCP path entirely (send only `-U`,
+  `open_unix_connection` only). Do **not** push that aggressive stance to
+  upstream gns3server, which stays cross-platform.
+
+See `tests/verify_unix_socket_auth.sh` for an end-to-end check (same-UID accept,
+cross-UID reject, the `-U` instance exposes no TCP listener, and TCP `-H` binds
+loopback).
 
 ---
 
@@ -106,20 +200,24 @@ no-op with no sink; no `mark` filter = no work).
 
 **Real-time mode** — at ubridge launch, inject (zero extra round-trips):
 ```bash
-UBRIDGE_MARKER_SINK=<gns3server_ip>:<port>  UBRIDGE_MARKER_NODE=<node_id>  ubridge -H ...
+UBRIDGE_MARKER_SINK=<gns3server_ip>:<port>  UBRIDGE_MARKER_NODE=<node_id>  ubridge -U <socket_path>
 ```
 or, equivalently, after launch:
 ```
 marker sink <host> <port>
 marker node <node_id>
+marker pause | resume
 ```
 gns3server picks the UDP `<port>` (opens one listener for all ubridges) and a
-unique `<node_id>` per ubridge. (`marker off` clears the sink; `marker status`
-reports `enabled/sink/node/emitted`.)
+unique `<node_id>` per ubridge. `marker off` clears the sink (closes the UDP
+socket); `marker pause` / `marker resume` flip a global gate that
+suppresses / re-enables **all** signal emission while keeping the sink open
+(resume is instant; sink + `emitted` retained). `marker status` reports
+`enabled/paused/sink/node/emitted`.
 
 **Per-link filter** — when the user configures BPF on a link:
 ```
-bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>] [link <id>] [pcap <path>]
+bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>] [link <id>] [dir <tx|rx>] [pcap <path>]
 ```
 - `<bridge>`: the ubridge bridge for this GNS3 link.
 - `<name>`: filter name (gns3server-chosen; echoed in signals, used as pcap identity).
@@ -133,17 +231,34 @@ bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>] [link <id>] 
   pcap (standard, `EN10MB`). **gns3server should name it to encode identity**,
   keyed on `link` (not `bridge`+`filter`, which collide when one bridge serves
   several links), e.g. `<project>/markers/<node_id>_<link>_<filter>.pcap`.
-- `tag`/`link`/`pcap` keyword pairs may appear in any order; each is normally given
-  once (a repeat silently overwrites the earlier value — last one wins).
+- `dir <tx|rx>`: optional direction filter. `tx` = only signal/capture on
+  device-side ingress (capture node sending); `rx` = only on link-side ingress
+  (receiving). Omit = both directions. Echoed in the signal as `dir=`.
+- `tag`/`link`/`dir`/`pcap` keyword pairs may appear in any order; each is normally
+  given once (a repeat silently overwrites the earlier value — last one wins).
 
 **Disable / change** — `bridge delete_packet_filter <bridge> <name>` (closes and
 flushes the pcap; file persists). To change the BPF, delete then re-add.
+`bridge reset_packet_filters` does NOT remove `mark` filters — it drops only
+impairment filters (drop/loss/delay/corrupt/bpf), so a marker's pcap stays open
+across impairment reapply. Only an explicit `delete_packet_filter` (or bridge
+stop/delete) closes a `mark` pcap.
+
+**Pause / resume** — two independent levers (no delete/re-add needed):
+- *Per filter*: `bridge enable_packet_filter <bridge> <name> on|off` (IOL per
+  port: `iol_bridge enable_packet_filter <bridge> <bay> <unit> <name> on|off`).
+  A paused (`off`) filter is bypassed — no signal, no pcap — but traffic is
+  still relayed (a paused `mark` is a no-op tap, not a drop). Works for any
+  filter type. **This is what gns3server drives from the marker spec's `enabled`
+  field** (issue `off` right after `add_packet_filter` when `enabled=false`).
+- *Global*: `marker pause` / `marker resume` (§3.2) suppresses all signals
+  regardless of per-filter state — use for a project-wide "mute markers" toggle.
 
 ### 3.3 What gns3server receives (real-time)
 
 One UDP datagram per match, line-based ASCII:
 ```
-MARK <sec.usec> node=<id> filter=<name> link=<link> tag=<tag> len=<n>\n
+MARK <sec.usec> node=<id> filter=<name> link=<link> tag=<tag> len=<n> dir=<tx|rx>\n
 ```
 | Field | Meaning | When unset |
 |-------|---------|------------|
@@ -154,6 +269,7 @@ MARK <sec.usec> node=<id> filter=<name> link=<link> tag=<tag> len=<n>\n
 | `link=<link>` | the link id from `mark … link <id>` | `link=-` |
 | `tag=<tag>` | the tag id from `mark … tag <id>` | `tag=-` |
 | `len=<n>` | matched packet length in bytes | — |
+| `dir=<tx\|rx>` | ingress direction relative to the capture node | `dir=-` |
 
 Parse (Python):
 ```python
@@ -220,9 +336,13 @@ into one pcap (classic pcap would lose per-packet link identity).
 ## 6. Lifecycle / teardown
 
 - `bridge delete_packet_filter` or bridge stop → the filter's pcap is closed and
-  flushed; the file persists on disk for replay.
-- `marker off` → stops signals (pcap capture, if any, continues until the filter
-  is deleted).
+  flushed; the file persists on disk for replay. `bridge reset_packet_filters`
+  does NOT close a `mark` pcap — it preserves `mark` (drops only impairment
+  filters), so an impairment reapply never interrupts the capture.
+- `marker off` → stops signals and closes the sink socket (pcap capture, if any,
+  continues until the filter is deleted). `marker pause` is the lighter mute: it
+  stops signals but keeps the sink, so `marker resume` is instant — prefer it for
+  transient UI toggles.
 - ubridge exit → all pcaps closed.
 
 ---
@@ -241,7 +361,9 @@ tc reset <if>
 capture start_kernel <if> <pcap> [dlt]                               capture stop_kernel
 # marker
 marker sink <host> <port>          marker node <id>                  marker off                     marker status
+marker pause                      marker resume
 # mark filter (under bridge)
-bridge add_packet_filter <br> <name> mark <bpf> [tag <id>] [link <id>] [pcap <path>]
+bridge add_packet_filter <br> <name> mark <bpf> [tag <id>] [link <id>] [dir <tx|rx>] [pcap <path>]
 bridge delete_packet_filter <br> <name>
+bridge enable_packet_filter <br> <name> on|off          # pause/resume one filter (any type)
 ```

@@ -20,13 +20,17 @@
 
 /* Hypervisor code mostly borrowed from Dynamips. */
 
+#define _GNU_SOURCE   /* struct ucred / SO_PEERCRED for peer credential checks */
+
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdarg.h>
 #include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <netdb.h>
+#include <sys/stat.h>   /* umask */
+#include <sys/un.h>     /* AF_UNIX control socket */
+#include <netdb.h>      /* TCP control socket (getaddrinfo) */
 #include <stdio.h>
 #include <signal.h>
 #include <errno.h>
@@ -36,7 +40,6 @@
 #include "hypervisor.h"
 #include "hypervisor_parser.h"
 #include "hypervisor_bridge.h"
-#ifdef __linux__
 #include "hypervisor_docker.h"
 #include "hypervisor_iol_bridge.h"
 #include "hypervisor_brctl.h"
@@ -45,7 +48,6 @@
 #include "hypervisor_tc.h"
 #include "hypervisor_capture.h"
 #include "marker.h"
-#endif
 #include "ubridge.h"
 
 static hypervisor_module_t *module_list = NULL;
@@ -54,7 +56,12 @@ static volatile int hypervisor_running = 0;
 /* Hypervisor connection list */
 static hypervisor_conn_t *hypervisor_conn_list = NULL;
 
-/* Listen on the specified port */
+/* Listen on the specified TCP port.
+ *
+ * For security the default bind address is loopback (127.0.0.1), not all
+ * interfaces: a bare `-H <port>` is reachable only locally. Pass an explicit
+ * IP (e.g. `-H 0.0.0.0:<port>`) to listen on other interfaces. Returns the
+ * number of listening fds (<= max_fd), or -1 on error. */
 static int ip_listen(char *ip_addr, int port, int sock_type, int max_fd, int fd_array[])
 {
    struct addrinfo hints, *res, *res0;
@@ -71,7 +78,7 @@ static int ip_listen(char *ip_addr, int port, int sock_type, int max_fd, int fd_
    hints.ai_flags = AI_PASSIVE;
 
    snprintf(port_str, sizeof(port_str), "%d", port);
-   addr = (ip_addr && strlen(ip_addr)) ? ip_addr : NULL;
+   addr = (ip_addr && strlen(ip_addr)) ? ip_addr : "127.0.0.1";
 
    if ((error = getaddrinfo(addr, port_str, &hints, &res0)) != 0) {
       fprintf(stderr, "ip_listen: %s", gai_strerror(error));
@@ -103,6 +110,76 @@ static int ip_listen(char *ip_addr, int port, int sock_type, int max_fd, int fd_
    }
    freeaddrinfo(res0);
    return(nsock);
+}
+
+/* Create and listen on a UNIX domain socket at the given path.
+ *
+ * The control channel is AF_UNIX so the peer can be authenticated with
+ * SO_PEERCRED (see peer_allowed) instead of exposing an unauthenticated
+ * TCP port. The socket file is created with restrictive permissions
+ * (umask 0077); a stale file left by a previous, crashed run is removed
+ * first. Returns the listening fd, or -1 on error. */
+static int unix_listen(const char *path)
+{
+   struct sockaddr_un addr;
+   mode_t old_umask;
+   int fd;
+
+   if (strlen(path) >= sizeof(addr.sun_path)) {
+      fprintf(stderr, "unix_listen: socket path too long (max %zu chars): %s\n",
+              sizeof(addr.sun_path) - 1, path);
+      return (-1);
+   }
+
+   if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
+      perror("unix_listen: socket");
+      return (-1);
+   }
+
+   /* Remove a stale socket file from a previous run */
+   unlink(path);
+
+   memset(&addr, 0, sizeof(addr));
+   addr.sun_family = AF_UNIX;
+   strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+
+   /* Tighten the mode of the newly-created socket file, then restore the
+      process umask so later files (logs, ...) keep their normal mode. */
+   old_umask = umask(0077);
+   if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+      perror("unix_listen: bind");
+      umask(old_umask);
+      close(fd);
+      return (-1);
+   }
+   umask(old_umask);
+
+   if (listen(fd, 5) < 0) {
+      perror("unix_listen: listen");
+      close(fd);
+      return (-1);
+   }
+
+   return (fd);
+}
+
+/* Authenticate the connecting peer via the kernel.
+ *
+ * SO_PEERCRED yields the effective UID of the process that called connect().
+ * Only the same UID that runs ubridge may issue commands: ubridge is spawned
+ * by (and inherits the UID of) the gns3-server compute process, so the
+ * legitimate controller always matches, while any other local user is
+ * rejected. When ubridge itself runs as root, getuid() is 0 and root still
+ * matches. Requires AF_UNIX. */
+static int peer_allowed(int fd)
+{
+   struct ucred cred;
+   socklen_t len = sizeof(cred);
+
+   if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &len) != 0)
+      return (FALSE);
+
+   return (cred.uid == getuid());
 }
 
 /* Send a reply */
@@ -492,18 +569,16 @@ int hypervisor_stopsig(void)
    return(0);
 }
 
-int run_hypervisor(char *ip_addr, int tcp_port)
+int run_hypervisor(char *ip_addr, int tcp_port, char *socket_path)
 {
    int fd_array[HYPERVISOR_MAX_FD];
-   struct sockaddr_storage remote_addr;
-   socklen_t remote_len;
    struct timeval tv;
    int i,res,clnt,fd_count,fd_max;
+   int use_unix;
    fd_set fds;
 
    hypervisor_init();
    hypervisor_bridge_init();
-#ifdef __linux__
    hypervisor_docker_init();
    hypervisor_iol_bridge_init();
    hypervisor_brctl_init();
@@ -512,24 +587,37 @@ int run_hypervisor(char *ip_addr, int tcp_port)
    hypervisor_tc_init();
    hypervisor_capture_init();
    hypervisor_marker_init();
-#endif
 
    signal(SIGPIPE, SIG_IGN);
 
-   if (!tcp_port)
-      tcp_port = HYPERVISOR_TCP_PORT;
+   /* Pick the transport: AF_UNIX (-U, authenticated via SO_PEERCRED) is the
+      secure default; TCP (-H) is retained for backward compatibility / remote
+      use and defaults to loopback. */
+   use_unix = (socket_path != NULL);
 
-   fd_count = ip_listen(ip_addr, tcp_port, SOCK_STREAM, HYPERVISOR_MAX_FD, fd_array);
+   if (use_unix) {
+      fd_array[0] = unix_listen(socket_path);
+      if (fd_array[0] < 0) {
+         fprintf(stderr, "Hypervisor: unable to create control socket.\n");
+         return (-1);
+      }
+      fd_count = 1;
+      printf("Hypervisor control socket started (%s).\n", socket_path);
+   } else {
+      if (!tcp_port)
+         tcp_port = HYPERVISOR_TCP_PORT;
 
-   if (fd_count <= 0) {
-      fprintf(stderr,"Hypervisor: unable to create TCP sockets.\n");
-      return (-1);
+      fd_count = ip_listen(ip_addr, tcp_port, SOCK_STREAM, HYPERVISOR_MAX_FD, fd_array);
+      if (fd_count <= 0) {
+         fprintf(stderr,"Hypervisor: unable to create TCP sockets.\n");
+         return (-1);
+      }
+
+      if (ip_addr != NULL)
+         printf("Hypervisor TCP control server started (IP %s port %d).\n", ip_addr, tcp_port);
+      else
+         printf("Hypervisor TCP control server started (127.0.0.1 port %d).\n", tcp_port);
    }
-
-   if (ip_addr != NULL)
-       printf("Hypervisor TCP control server started (IP %s port %d).\n", ip_addr, tcp_port);
-   else
-       printf("Hypervisor TCP control server started (port %d).\n", tcp_port);
 
    hypervisor_running = TRUE;
    while (hypervisor_running) {
@@ -553,7 +641,7 @@ int run_hypervisor(char *ip_addr, int tcp_port)
          if (errno == EINTR)
             continue;
          else
-            perror("hypervisor_tcp_server: select");
+            perror("hypervisor: select");
       }
 
       /* Accept connections on signaled sockets */
@@ -564,17 +652,23 @@ int run_hypervisor(char *ip_addr, int tcp_port)
          if (!FD_ISSET(fd_array[i], &fds))
             continue;
 
-         remote_len = sizeof(remote_addr);
-         clnt = accept(fd_array[i], (struct sockaddr *)&remote_addr, &remote_len);
+         clnt = accept(fd_array[i], NULL, NULL);
 
          if (clnt < 0) {
-            perror("hypervisor_tcp_server: accept");
+            perror("hypervisor: accept");
+            continue;
+         }
+
+         /* Authenticate AF_UNIX peers via SO_PEERCRED (same UID only). TCP has
+            no equivalent and relies on the loopback default above. */
+         if (use_unix && !peer_allowed(clnt)) {
+            close(clnt);
             continue;
          }
 
          /* create a new connection and start a thread to handle it */
          if (!hypervisor_create_conn(clnt)) {
-            fprintf(stderr, "hypervisor_tcp_server: unable to create new connection for FD %d\n", clnt);
+            fprintf(stderr, "hypervisor: unable to create new connection for FD %d\n", clnt);
             close(clnt);
          }
       }
@@ -591,6 +685,10 @@ int run_hypervisor(char *ip_addr, int tcp_port)
          close(fd_array[i]);
       }
    }
+
+   /* Remove the AF_UNIX socket file (no-op for TCP) */
+   if (use_unix)
+      unlink(socket_path);
 
    /* Close all remote client connections */
    printf("Hypervisor: closing remote client connections.\n");

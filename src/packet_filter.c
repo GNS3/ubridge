@@ -19,7 +19,6 @@
  */
 
 #include <string.h>
-#include <time.h>
 #include <pcap.h>
 #include "packet_filter.h"
 #include "pcap_filter.h"
@@ -56,7 +55,7 @@ static int frequency_drop_setup(void **opt, int argc, char *argv[])
 }
 
 /* Packet handler: drop 1 out of n packets */
-static int frequency_drop_handler(void *pkt, size_t len, void *opt)
+static int frequency_drop_handler(void *pkt, size_t len, void *opt, int direction)
 {
    struct frequency_drop_data *data = opt;
 
@@ -124,7 +123,7 @@ static int packet_loss_setup(void **opt, int argc, char *argv[])
 }
 
 /* Packet handler: randomly drop packet */
-static int packet_loss_handler(void *pkt, size_t len, void *opt)
+static int packet_loss_handler(void *pkt, size_t len, void *opt, int direction)
 {
    struct packet_loss_data *data = opt;
 
@@ -184,24 +183,35 @@ static int delay_setup(void **opt, int argc, char *argv[])
    return (0);
 }
 
-/* Packet handler: add delay (latency and optionally jitter) */
-static int delay_handler(void *pkt, size_t len, void *opt)
+/* Packet handler: no-op. The configured latency is applied as a real delay
+ * line by bridge_nios() (see src/delay_line.c) so that delaying a packet
+ * never blocks the bridge thread. The old inline nanosleep() serialized each
+ * direction to ~1000/latency pps and collapsed links under load — see
+ * GNS3/ubridge#114. The latency/jitter values are read back via
+ * packet_filter_get_delay(). */
+static int delay_handler(void *pkt, size_t len, void *opt, int direction)
 {
-   struct delay_data *data = opt;
-   struct timespec ts;
-   int delay;
-
-   if (data != NULL) {
-      delay = data->latency;
-      if (data->jitter)
-         delay = (delay - data->jitter) + random() % ((delay + data->jitter + 1) - (delay - data->jitter));
-      if (delay < 0)
-          delay = 0;
-      ts.tv_sec = delay / 1000;
-      ts.tv_nsec = (delay % 1000) * 1000000;
-      nanosleep(&ts, NULL);
-   }
+   (void)pkt;
+   (void)len;
+   (void)opt;
    return (FILTER_ACTION_PASS);
+}
+
+/* Read the configured delay (ms) back out of the first delay filter, if any. */
+int packet_filter_get_delay(packet_filter_t *packet_filters, int *latency_ms, int *jitter_ms)
+{
+   packet_filter_t *filter = packet_filters;
+
+   while (filter != NULL) {
+      if (filter->type == FILTER_TYPE_DELAY && filter->data != NULL && filter->enabled) {
+         struct delay_data *data = filter->data;
+         *latency_ms = data->latency;
+         *jitter_ms = data->jitter;
+         return (TRUE);
+      }
+      filter = filter->next;
+   }
+   return (FALSE);
 }
 
 /* Free resources used by filter */
@@ -273,7 +283,7 @@ static void corrupt_packet(char *pkt, size_t len, void *opt)
 }
 
 /* Packet handler: randomly corrupt packets */
-static int corrupt_handler(void *pkt, size_t len, void *opt)
+static int corrupt_handler(void *pkt, size_t len, void *opt, int direction)
 {
    struct corrupt_data *data = opt;
    int length;
@@ -344,7 +354,7 @@ static int bpf_setup(void **opt, int argc, char *argv[])
 }
 
 /* Packet handler: apply BPF filter */
-static int bpf_handler(void *pkt, size_t len, void *opt)
+static int bpf_handler(void *pkt, size_t len, void *opt, int direction)
 {
    struct bpf_data *data = opt;
    struct pcap_pkthdr pkthdr;
@@ -381,9 +391,20 @@ static void create_bpf_filter(packet_filter_t *filter)
 /* ======================================================================== */
 /* MARK — passive tap: emit a marker signal on match, never drop (Linux)    */
 /* ======================================================================== */
-#ifdef __linux__
 #include "marker.h"
 #include "pcap_capture.h"
+
+/* Which directions a mark filter fires on. This is deliberately a separate
+ * enum from the runtime PKT_DIR_* values: dir_match is zero-initialised by
+ * memset, so 0 must mean "both". But PKT_DIR_RX is also 0 — reusing it for
+ * "rx-only" would collide with "both" and silently make `dir rx` a no-op
+ * (the handler's fast-path is `dir_match == 0`). Use distinct nonzero values
+ * here and map them to PKT_DIR_* at match time. */
+enum {
+   MARK_DIR_BOTH = 0,   /* memset default — fire on both directions */
+   MARK_DIR_TX   = 1,   /* device-side ingress only (capture node sending)   */
+   MARK_DIR_RX   = 2,   /* link-side ingress only  (capture node receiving)  */
+};
 
 struct mark_data {
    struct bpf_program fp;
@@ -391,10 +412,11 @@ struct mark_data {
    char *tag;    /* optional tag id, echoed in the signal */
    char *link;   /* optional link id, echoed in the signal for topology attribution */
    pcap_capture_t *cap;   /* optional: append matched packets to this pcap file */
+   int dir_match;         /* MARK_DIR_BOTH (default) / _TX / _RX */
 };
 
 /* Setup: argv[0] = bpf expr; optional keyword pairs "tag <id>" / "link <id>" /
- * "pcap <path>" (any order, each at most once). */
+ * "pcap <path>" / "dir <tx|rx>" (any order, each at most once). */
 static int mark_setup(void **opt, int argc, char *argv[])
 {
    struct mark_data *data = *opt;
@@ -438,6 +460,15 @@ static int mark_setup(void **opt, int argc, char *argv[])
             fprintf(stderr, "mark: cannot open pcap '%s'\n", argv[i + 1]);
             return (-1);
          }
+      } else if (!strcmp(argv[i], "dir")) {
+         if (!strcmp(argv[i + 1], "tx"))
+            data->dir_match = MARK_DIR_TX;
+         else if (!strcmp(argv[i + 1], "rx"))
+            data->dir_match = MARK_DIR_RX;
+         else {
+            fprintf(stderr, "mark: invalid dir '%s' (expected tx or rx)\n", argv[i + 1]);
+            return (-1);
+         }
       } else {
          return (-1);
       }
@@ -449,7 +480,7 @@ static int mark_setup(void **opt, int argc, char *argv[])
 
 /* Packet handler: on match, emit a marker signal and (optionally) append the
  * packet to the pcap file; always PASS (passive tap). */
-static int mark_handler(void *pkt, size_t len, void *opt)
+static int mark_handler(void *pkt, size_t len, void *opt, int direction)
 {
    struct mark_data *data = opt;
    struct pcap_pkthdr pkthdr;
@@ -459,9 +490,16 @@ static int mark_handler(void *pkt, size_t len, void *opt)
    pkthdr.len = len;
    if (data != NULL) {
        if (pcap_offline_filter(&data->fp, &pkthdr, pkt)) {
-          marker_emit(data->name, data->tag, data->link, len);
-          if (data->cap)
-             pcap_capture_packet(data->cap, pkt, len);
+          /* directional filter: skip signal+pcap unless the ingress direction
+           * matches the configured one (MARK_DIR_BOTH always matches). */
+          int dir_ok = (data->dir_match == MARK_DIR_BOTH
+                        || (data->dir_match == MARK_DIR_TX && direction == PKT_DIR_TX)
+                        || (data->dir_match == MARK_DIR_RX && direction == PKT_DIR_RX));
+          if (dir_ok) {
+             marker_emit(data->name, data->tag, data->link, len, (direction == PKT_DIR_TX) ? "tx" : "rx");
+             if (data->cap)
+                pcap_capture_packet(data->cap, pkt, len);
+          }
        }
    }
    return (FILTER_ACTION_PASS);
@@ -498,7 +536,6 @@ static void create_mark_filter(packet_filter_t *filter)
     filter->handler = (void *)mark_handler;
     filter->free = (void *)mark_free;
 }
-#endif /* __linux__ */
 
 /* ======================================================================== */
 /* Generic functions for filter management                                  */
@@ -516,9 +553,7 @@ static filter_table_t lookup_table[] = {
     { "delay", create_delay_filter },
     { "corrupt", create_corrupt_filter },
     { "bpf", create_bpf_filter},
-#ifdef __linux__
     { "mark", create_mark_filter },
-#endif
 };
 
 static int create_filter(packet_filter_t *filter, char *filter_type)
@@ -565,6 +600,7 @@ int add_packet_filter(packet_filter_t **packet_filters, char *filter_name, char 
       return (-1);
    opt = &new_filter->data;
    new_filter->next = NULL;
+   new_filter->enabled = TRUE;   /* running by default; pause via enable_packet_filter */
 
    if ((create_filter(new_filter, filter_type)) == FALSE) {
       fprintf(stderr,"Filter type '%s' doesn't exist\n", filter_type);
@@ -587,19 +623,61 @@ int add_packet_filter(packet_filter_t **packet_filters, char *filter_name, char 
    return (new_filter->setup(opt, argc, argv));
 }
 
+/* Free a single filter node: its name, its type-specific data (via ->free),
+ * then the node itself. Does not touch ->next (the caller unlinks). */
+static void free_filter_node(packet_filter_t *filter)
+{
+   if (filter->name)
+      free(filter->name);
+   if (filter->free)
+      filter->free(&filter->data);
+   free(filter);
+}
+
 void free_packet_filters(packet_filter_t *filter)
 {
   packet_filter_t *next;
 
   while (filter != NULL) {
-    if (filter->name)
-       free(filter->name);
-    if (filter->free)
-       filter->free(&filter->data);
     next = filter->next;
-    free(filter);
+    free_filter_node(filter);
     filter = next;
   }
+}
+
+/* Impairment reset that preserves observability taps.
+ *
+ * `mark` filters are passive taps — they never drop/alter traffic and hold an
+ * open pcap. reset_packet_filters is driven by impairment reapply (the caller
+ * tears down + re-adds drop/loss/delay/corrupt/bpf on filter changes); letting
+ * it also tear down a mark filter would close+flush that pcap and force a
+ * reopen on re-add, interrupting the capture. So this drops every filter
+ * EXCEPT mark, relinking any surviving mark nodes back into the list head.
+ *
+ * Full teardown (bridge delete / port teardown / exit) calls free_packet_filters,
+ * which frees mark too — do not use this there. */
+void reset_impairment_filters(packet_filter_t **filters)
+{
+   packet_filter_t *keep_head = NULL, *keep_tail = NULL;
+   packet_filter_t *filter = *filters;
+
+   while (filter != NULL) {
+      packet_filter_t *next = filter->next;
+
+      if (filter->type == FILTER_TYPE_MARK) {
+         filter->next = NULL;
+         if (keep_tail != NULL)
+            keep_tail->next = filter;
+         else
+            keep_head = filter;
+         keep_tail = filter;
+      } else {
+         free_filter_node(filter);
+      }
+      filter = next;
+   }
+
+   *filters = keep_head;
 }
 
 int delete_packet_filter(packet_filter_t **packet_filters, char *filter_name)
@@ -623,4 +701,14 @@ int delete_packet_filter(packet_filter_t **packet_filters, char *filter_name)
       }
    }
    return (-1);
+}
+
+int set_packet_filter_enabled(packet_filter_t *packet_filters, char *filter_name, int enabled)
+{
+   packet_filter_t *filter = find_packet_filter(packet_filters, filter_name);
+
+   if (filter == NULL)
+      return (FALSE);
+   filter->enabled = enabled ? TRUE : FALSE;
+   return (TRUE);
 }

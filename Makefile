@@ -29,6 +29,7 @@ SRC     =   src/ubridge.c               \
             src/nio_tap.c               \
             src/parse.c                 \
             src/packet_filter.c         \
+            src/delay_line.c            \
             src/pcap_capture.c          \
             src/pcap_filter.c           \
             src/hypervisor.c            \
@@ -44,31 +45,19 @@ CFLAGS  +=   -Wall
 
 BINDIR  =   /usr/local/bin
 
-ifeq ($(shell uname), Darwin)
-   LIBS =   -lpthread -lpcap
-   SRC +=   src/nio_fusion_vmnet.c    \
+LIBS =   -lpthread -lpcap -lm
 
-else ifeq ($(shell uname -o), Cygwin)
-   CFLAGS += -DCYGWIN
-   LIBS =   -lpthread -lwpcap
-else
-   LIBS =   -lpthread -lpcap
-endif
-
-# RAW Ethernet support for Linux
-ifeq ($(shell uname), Linux)
-    CFLAGS += -DLINUX_RAW
-    SRC += src/nio_linux_raw.c             \
-           src/hypervisor_docker.c         \
-           src/hypervisor_iol_bridge.c     \
-           src/hypervisor_brctl.c   \
-           src/hypervisor_link.c   \
-           src/hypervisor_tap.c   \
-           src/hypervisor_tc.c   \
-           src/hypervisor_capture.c   \
-           src/hypervisor_marker.c   \
-           src/netlink/nl.c
-endif
+# Linux-only: RAW Ethernet + netlink-backed hypervisor modules
+SRC += src/nio_linux_raw.c             \
+       src/hypervisor_docker.c         \
+       src/hypervisor_iol_bridge.c     \
+       src/hypervisor_brctl.c          \
+       src/hypervisor_link.c           \
+       src/hypervisor_tap.c            \
+       src/hypervisor_tc.c             \
+       src/hypervisor_capture.c        \
+       src/hypervisor_marker.c         \
+       src/netlink/nl.c
 
 ifeq ($(SYSTEM_INIPARSER),1)
     CFLAGS += -DUSE_SYSTEM_INIPARSER
@@ -92,18 +81,7 @@ clean:
 
 all	: $(NAME)
 
-ifeq ($(shell uname), Darwin)
-install : $(NAME)
-	cp $(NAME) $(BINDIR)
-	chown root:admin $(BINDIR)/$(NAME)
-	chmod 4750 $(BINDIR)/$(NAME)
-else ifeq ($(shell uname), FreeBSD)
-install : $(NAME)
-	cp $(NAME) $(DESTDIR)$(BINDIR)
-	chmod 4750 $(DESTDIR)$(BINDIR)/$(NAME)
-else
 install : $(NAME)
 	chmod +x $(NAME)
 	cp -p $(NAME) $(BINDIR)
 	setcap cap_net_admin,cap_net_raw=ep $(BINDIR)/$(NAME)
-endif

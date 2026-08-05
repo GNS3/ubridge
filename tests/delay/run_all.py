@@ -1,12 +1,12 @@
-"""Run the whole marker test suite in sequence, exit non-zero if any fail."""
+"""Run the whole delay test suite in sequence, exit non-zero if any fail."""
 import importlib
 import sys
 
 SUITES = [
-    "test_basic",
-    "test_dir_filter",
-    "test_pause",
-    "test_reset_preserves_mark",
+    "test_latency",
+    "test_perf",
+    "test_boundary",
+    "test_iol",
 ]
 
 

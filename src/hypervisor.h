@@ -21,7 +21,7 @@
 #ifndef HYPERVISOR_H_
 #define HYPERVISOR_H_
 
-/* Default TCP port */
+/* Default TCP port (used by -H when no port is given) */
 #define HYPERVISOR_TCP_PORT 4242
 
 /* Maximum listening socket number */
@@ -50,11 +50,6 @@
 #define HSC_ERR_RENAME      213  /* unable to rename object */
 #define HSC_ERR_NOT_FOUND   214  /* not found (generic) */
 #define HSC_ERR_UNSPECIFIED 215  /* unspecified error (generic) */
-
-/* By default, Cygwin supports only 64 FDs with select()! */
-#if defined(CYGWIN) && !defined(FD_SETSIZE)
-  #define FD_SETSIZE 1024
-#endif
 
 typedef struct hypervisor_conn hypervisor_conn_t;
 typedef struct hypervisor_cmd hypervisor_cmd_t;
@@ -94,6 +89,6 @@ hypervisor_module_t *hypervisor_register_module(char *name, void *opt);
 int hypervisor_register_cmd_list(hypervisor_module_t *module, hypervisor_cmd_t *cmd_list);
 int hypervisor_send_reply(hypervisor_conn_t *conn, int code, int done, char *format,...);
 int hypervisor_register_cmd_array(hypervisor_module_t *module, hypervisor_cmd_t *cmd_array);
-int run_hypervisor(char *ip_addr, int tcp_port);
+int run_hypervisor(char *ip_addr, int tcp_port, char *socket_path);
 
 #endif /* !HYPERVISOR_H_ */
