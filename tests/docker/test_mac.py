@@ -5,7 +5,7 @@ a strict regex. Verified by reading /sys/class/net/<if>/address. Error paths:
 bad MAC format -> 206, interface name too long -> 206, missing interface ->
 206 (ioctl fails). Run under sudo (or `unshare -Urn`).
 """
-from helpers import (Ubridge, Results, ubridge_binary, iface_exists, iface_mac,
+from helpers import (Ubridge, Results, ubridge_binary, iface_exists, wait_mac,
                      ip_link_del, IFNAMSIZ)
 
 PORT = 13201
@@ -22,13 +22,13 @@ def main():
             assert c.code("docker create_veth %s %s" % (A, B)) == "100"
             mac = "00:11:22:33:44:55"
             r.check("set_mac_addr ok", c.code("docker set_mac_addr %s %s" % (A, mac)) == "100")
-            got = iface_mac(A)
+            got = wait_mac(A, mac.lower())
             r.check("MAC applied", got == mac.lower(), "got=%s want=%s" % (got, mac))
 
             # a different MAC replaces the previous one
             mac2 = "de:ad:be:ef:00:01"
             r.check("set_mac_addr replaces", c.code("docker set_mac_addr %s %s" % (A, mac2)) == "100")
-            got2 = iface_mac(A)
+            got2 = wait_mac(A, mac2.lower())
             r.check("MAC replaced", got2 == mac2.lower(), "got=%s want=%s" % (got2, mac2))
 
             # ---- error paths ----

@@ -58,6 +58,21 @@ def iface_mac(name):
     return m.group(1).lower() if m else None
 
 
+def wait_mac(name, want, timeout=2.0):
+    """Poll the MAC until it equals `want` (lowercase) or `timeout` elapses.
+
+    A read right after SIOCSIFHWADDR can briefly return the previous MAC (netlink
+    dump lag on a just-configured veth); this absorbs that transient so the MAC
+    check is stable. Returns the final reading (caller asserts)."""
+    import time
+    deadline = time.monotonic() + timeout
+    got = iface_mac(name)
+    while got != want and time.monotonic() < deadline:
+        time.sleep(0.05)
+        got = iface_mac(name)
+    return got
+
+
 def ip_link_del(name):
     """Delete an interface (best-effort cleanup)."""
     sh("ip", "link", "del", name)
