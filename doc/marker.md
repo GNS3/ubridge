@@ -27,7 +27,7 @@ no-op when no sink is set, so `mark` filters are cheap when unused.
 Registered under the `bridge` module like the other filter types:
 
 ```
-bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>] [link <id>] [dir <tx|rx>] [pcap <path>]
+bridge add_packet_filter <bridge> <name> mark <bpf_expr> [linktype <dlt>] [tag <id>] [link <id>] [dir <tx|rx>] [pcap <path>]
 ```
 
 - Matches via libpcap cBPF (`pcap_offline_filter`), exactly like the `bpf`
@@ -46,15 +46,26 @@ bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>] [link <id>] 
   pcap on device-side ingress (capture node sending); `rx` = only on link-side
   ingress (capture node receiving). When omitted (default) the filter fires on
   both directions — backward compatible.
-- `pcap <path>` is an optional path to a pcap file (standard, `EN10MB`) that
+- `pcap <path>` is an optional path to a pcap file (standard pcap) that
   **accumulates every matched packet** for this filter (open once on setup,
   append one record per match, closed when the filter is deleted). This is a
-  BPF-filtered capture: only matches land in the file. gns3server names the
+  BPF-filtered capture: only matches land in the file. The file header's
+  data-link type follows `linktype` (default `EN10MB`). gns3server names the
   path per link (e.g. `<project>/markers/<node>_<link>_<filter>.pcap`), keyed
   on `link` — `bridge`+`filter` collide when one bridge serves several links
   (IOU) — and reads it back for offline replay/analysis with
   tcpdump/Wireshark/PyShark.
-- Keyword pairs (`tag`, `link`, `dir`, `pcap`) may appear in any order.
+- `linktype <dlt>` sets the **data-link type** the BPF is compiled against and
+  written into the pcap header (when `pcap` is given). Defaults to `EN10MB`
+  (Ethernet). **Required for serial links**: Frame Relay / PPP / HDLC frames
+  have a different header layout, so an Ethernet-compiled BPF matches at the
+  wrong offsets and the pcap is mis-parsed by Wireshark (garbled protocols).
+  Value is any name `pcap_datalink_name_to_val(3)` accepts; common ones:
+  `C_HDLC` (Cisco HDLC), `PPP`, `FRELAY` (Frame Relay), `ATM_RFC1483`. An
+  unknown name falls back to `EN10MB` with a warning. Mirrors the `bpf` filter
+  type's link-layer argument.
+- Keyword pairs (`linktype`, `tag`, `link`, `dir`, `pcap`) may appear in any
+  order.
 
 ```
 bridge add_packet_filter br0 dhcp_probe mark "udp port 67" tag 11
@@ -66,6 +77,9 @@ bridge add_packet_filter br0 icmp_l3 mark "icmp" link 3 pcap /tmp/icmp_l3.pcap
 
 # all at once (real-time signal + per-link + on-disk capture):
 bridge add_packet_filter br0 dhcp mark "udp port 67" tag 11 link 3 pcap /tmp/dhcp.pcap
+
+# serial link (Cisco HDLC): linktype fixes BPF offsets + the pcap header
+bridge add_packet_filter br0 s0 mark "ip" linktype C_HDLC link 3 pcap /tmp/s0.pcap
 ```
 
 > The `pcap` option writes a **standard pcap** (same writer as
@@ -188,10 +202,13 @@ while True:
 
 ## Testing
 
-`tests/marker/` stands up a UDP listener as the sink, injects an IP frame into
-a UDP-NIO bridge with a `mark "ip" tag 7` filter, and asserts the signal arrives
-with the right node/filter/tag/len, that the frame was still relayed (passive),
-and that `marker off` stops the signals.
+`tests/marker/` stands up a UDP listener as the sink, injects frames into a
+UDP-NIO bridge and asserts: the signal arrives with the right node/filter/tag/
+len, the frame was still relayed (passive), `marker off` stops signals,
+direction filtering, pause/resume, and — in `test_linktype.py` — that `linktype`
+actually shifts BPF offsets (a Cisco-HDLC frame matches `ip` only under
+`linktype C_HDLC`, not the default `EN10MB`) and writes the right DLT into the
+pcap header.
 
 > Note: ubridge's UDP NIO `connect()`s to the configured remote, so it only
 > accepts packets whose source is that remote — the test binds the injector to
@@ -200,5 +217,5 @@ and that `marker off` stops the signals.
 **Pure user-space (UDP + libpcap cBPF) — no `CAP_NET_ADMIN` needed, no sudo:**
 
 ```bash
-cd tests/marker && python3 run_all.py   # 13/13 PASS
+cd tests/marker && python3 run_all.py   # 61/61 PASS
 ```

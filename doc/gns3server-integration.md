@@ -217,24 +217,32 @@ suppresses / re-enables **all** signal emission while keeping the sink open
 
 **Per-link filter** — when the user configures BPF on a link:
 ```
-bridge add_packet_filter <bridge> <name> mark <bpf_expr> [tag <id>] [link <id>] [dir <tx|rx>] [pcap <path>]
+bridge add_packet_filter <bridge> <name> mark <bpf_expr> [linktype <dlt>] [tag <id>] [link <id>] [dir <tx|rx>] [pcap <path>]
 ```
 - `<bridge>`: the ubridge bridge for this GNS3 link.
 - `<name>`: filter name (gns3server-chosen; echoed in signals, used as pcap identity).
 - `<bpf_expr>`: libpcap cBPF syntax (same as the `bpf` filter type).
+- `linktype <dlt>`: optional data-link type for the BPF compile **and** the pcap
+  header; defaults to `EN10MB`. **Pass it for serial links** (Frame Relay / PPP
+  / HDLC), whose header layout differs from Ethernet — otherwise the BPF matches
+  at wrong offsets and Wireshark mis-parses the pcap. gns3server should derive it
+  from the GNS3 link's data-link type — `HDLC`→`C_HDLC`, `PPP`→`PPP`, `Frame
+  Relay`→`FRELAY`, ATM→`ATM_RFC1483`; Ethernet links omit it. See
+  [`marker.md`](marker.md) for the accepted names and the DLT/LINKTYPE caveat.
 - `tag <id>`: optional correlation id echoed in the signal.
 - `link <id>`: optional link id echoed in the signal, for per-link attribution.
   Needed when one ubridge bridge serves several GNS3 links (e.g. IOU's per-node
   bridge): there `bridge` and `filter` are identical across links, so `link` is
   the only way to tell signals — and pcap files — apart.
 - `pcap <path>`: optional; if given, every matched packet is appended to that
-  pcap (standard, `EN10MB`). **gns3server should name it to encode identity**,
+  pcap (standard pcap; header linktype follows `linktype`, default `EN10MB`).
+  **gns3server should name it to encode identity**,
   keyed on `link` (not `bridge`+`filter`, which collide when one bridge serves
   several links), e.g. `<project>/markers/<node_id>_<link>_<filter>.pcap`.
 - `dir <tx|rx>`: optional direction filter. `tx` = only signal/capture on
   device-side ingress (capture node sending); `rx` = only on link-side ingress
   (receiving). Omit = both directions. Echoed in the signal as `dir=`.
-- `tag`/`link`/`dir`/`pcap` keyword pairs may appear in any order; each is normally
+- `linktype`/`tag`/`link`/`dir`/`pcap` keyword pairs may appear in any order; each is normally
   given once (a repeat silently overwrites the earlier value — last one wins).
 
 **Disable / change** — `bridge delete_packet_filter <bridge> <name>` (closes and
@@ -282,7 +290,7 @@ kv = dict(t.split(b"=",1) for t in data.split() if b"=" in t)
 
 ### 3.4 What gns3server reads (replay)
 
-Each `pcap <path>` is a **standard pcap (`EN10MB`)** containing that filter's
+Each `pcap <path>` is a **standard pcap** (header linktype = the filter's `linktype`, default `EN10MB`) containing that filter's
 matched packets in match order, each timestamped. Read with tcpdump / tshark /
 Wireshark / PyShark natively. **The link identity is the file path** (pcap records
 carry no per-packet metadata) — gns3server tracks `path ↔ (node, link, filter)`.
@@ -363,7 +371,7 @@ capture start_kernel <if> <pcap> [dlt]                               capture sto
 marker sink <host> <port>          marker node <id>                  marker off                     marker status
 marker pause                      marker resume
 # mark filter (under bridge)
-bridge add_packet_filter <br> <name> mark <bpf> [tag <id>] [link <id>] [dir <tx|rx>] [pcap <path>]
+bridge add_packet_filter <br> <name> mark <bpf> [linktype <dlt>] [tag <id>] [link <id>] [dir <tx|rx>] [pcap <path>]
 bridge delete_packet_filter <br> <name>
 bridge enable_packet_filter <br> <name> on|off          # pause/resume one filter (any type)
 ```
