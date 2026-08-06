@@ -416,12 +416,17 @@ struct mark_data {
 };
 
 /* Setup: argv[0] = bpf expr; optional keyword pairs "tag <id>" / "link <id>" /
- * "pcap <path>" / "dir <tx|rx>" (any order, each at most once). */
+ * "pcap <path>" / "dir <tx|rx>" / "linktype <dlt-name>" (any order, each at
+ * most once). linktype defaults to EN10MB and is applied to both the BPF
+ * compile (so field offsets match the link layer) and the pcap file header;
+ * see pcap_datalink_name_to_val(3) for accepted names (e.g. C_HDLC, PPP,
+ * FRELAY, ATM_RFC1483). */
 static int mark_setup(void **opt, int argc, char *argv[])
 {
    struct mark_data *data = *opt;
    pcap_t *pcap_dev;
    char *filter;
+   const char *linktype_str = "EN10MB";   /* default link layer for offsets + pcap header */
    int link_type, i;
 
    if (argc < 1)
@@ -435,7 +440,23 @@ static int mark_setup(void **opt, int argc, char *argv[])
    }
 
    filter = argv[0];
-   link_type = DLT_EN10MB;
+
+   /* First pass: pick up an optional "linktype <name>" pair before compiling,
+    * since the DLT fixes the BPF field offsets (14-byte Ethernet header vs
+    * 4-byte HDLC/PPP etc.). The pair may sit anywhere among the keyword/value
+    * arguments, so scan for it explicitly first. */
+   for (i = 1; i + 1 < argc; i += 2) {
+      if (!strcmp(argv[i], "linktype")) {
+         linktype_str = argv[i + 1];
+         break;   /* each keyword at most once; first occurrence wins */
+      }
+   }
+   if ((link_type = pcap_datalink_name_to_val(linktype_str)) == -1) {
+      fprintf(stderr, "mark: unknown linktype '%s', assuming Ethernet.\n", linktype_str);
+      link_type = DLT_EN10MB;
+      linktype_str = "EN10MB";
+   }
+
    pcap_dev = pcap_open_dead(link_type, 65535);
    if (pcap_compile(pcap_dev, &data->fp, filter, 1, PCAP_NETMASK_UNKNOWN) < 0) {
        fprintf(stderr, "Cannot compile mark filter '%s': %s\n", filter, pcap_geterr(pcap_dev));
@@ -444,9 +465,12 @@ static int mark_setup(void **opt, int argc, char *argv[])
    }
    pcap_close(pcap_dev);
 
-   /* optional keyword/value pairs: tag <id>, link <id>, pcap <path> */
+   /* optional keyword/value pairs: tag <id>, link <id>, pcap <path>, dir.
+    * "linktype <name>" was already consumed in the first pass above. */
    for (i = 1; i + 1 < argc; i += 2) {
-      if (!strcmp(argv[i], "tag")) {
+      if (!strcmp(argv[i], "linktype")) {
+         continue;   /* already applied to the BPF compile and pcap header */
+      } else if (!strcmp(argv[i], "tag")) {
          free(data->tag);
          data->tag = strdup(argv[i + 1]);
       } else if (!strcmp(argv[i], "link")) {
@@ -455,7 +479,7 @@ static int mark_setup(void **opt, int argc, char *argv[])
       } else if (!strcmp(argv[i], "pcap")) {
          if (data->cap)
             free_pcap_capture(data->cap);
-         data->cap = create_pcap_capture(argv[i + 1], "EN10MB");
+         data->cap = create_pcap_capture(argv[i + 1], linktype_str);
          if (!data->cap) {
             fprintf(stderr, "mark: cannot open pcap '%s'\n", argv[i + 1]);
             return (-1);
