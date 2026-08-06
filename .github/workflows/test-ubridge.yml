@@ -1,0 +1,113 @@
+name: Test uBridge
+
+# Runs the black-box regression suites under tests/ on every PR targeting
+# master. Splits into two jobs by privilege:
+#
+#   * userspace — marker / delay / packet_filter / iol. Pure UDP + libpcap, no caps.
+#   * kernel    — brctl / link / tap / tc / capture / nio_raw / docker. Need CAP_NET_ADMIN.
+#
+# The ubuntu-latest runner is a real Azure VM (not a container), so file
+# capabilities (setcap), dummy/tap/veth interfaces and network namespaces
+# are all available with passwordless sudo. No `container: --privileged`
+# is required.
+#
+# Each tests/<module>/run_all.py exits non-zero if any suite fails, so the
+# scripts gate CI directly — no pytest dependency.
+
+on:
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Userspace suites — the riskiest user-space logic and zero privilege
+  # friction. Run right after `make`, against the in-repo ./ubridge.
+  # ---------------------------------------------------------------------
+  userspace:
+    name: Userspace (marker, delay, packet_filter, iol)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+      - name: Build ubridge
+        run: make
+
+      - name: marker suite
+        run: cd tests/marker && python3 run_all.py
+
+      - name: delay suite
+        run: cd tests/delay && python3 run_all.py
+
+      - name: packet_filter suite
+        run: cd tests/packet_filter && python3 run_all.py
+
+      - name: iol suite
+        run: cd tests/iol && python3 run_all.py
+
+  # ---------------------------------------------------------------------
+  # Kernel suites — CAP_NET_ADMIN via file capabilities.
+  #
+  # brctl and link run as the UNPRIVILEGED runner user against the installed
+  # binary, which carries cap_net_admin,cap_net_raw=ep via `make install`
+  # (the link README lists the exact same prerequisites as brctl). brctl
+  # MUST NOT run as root: test_no_privs asserts the un-capped ./ubridge
+  # refuses privileged ops, and a root-launched ./ubridge would have caps.
+  # The ubtest dummy fixture is pre-created with sudo (ensure_ubtest only
+  # auto-creates when euid == 0).
+  #
+  # tap / tc / capture are documented "run under sudo" — they drive ubridge
+  # and also touch kernel state directly, so the whole process runs as root.
+  # ---------------------------------------------------------------------
+  kernel:
+    name: Kernel (brctl, link, tap, tc, capture, nio_raw, docker)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev iproute2
+
+      - name: Build ubridge
+        run: make
+
+      - name: Install with CAP_NET_ADMIN (file capabilities)
+        run: sudo make install
+
+      - name: Confirm file capabilities
+        run: getcap /usr/local/bin/ubridge
+
+      - name: Create the ubtest dummy fixture
+        run: sudo ip link add ubtest type dummy
+
+      - name: brctl suite (unprivileged user + capped binary)
+        run: cd tests/brctl && python3 run_all.py
+
+      - name: link suite (unprivileged user + capped binary)
+        run: cd tests/link && python3 run_all.py
+
+      - name: tap suite
+        run: cd tests/tap && sudo python3 run_all.py
+
+      - name: tc suite
+        run: cd tests/tc && sudo python3 run_all.py
+
+      - name: capture suite
+        run: cd tests/capture && sudo python3 run_all.py
+
+      - name: nio_raw suite
+        run: cd tests/nio_raw && sudo python3 run_all.py
+
+      - name: docker suite
+        run: cd tests/docker && sudo python3 run_all.py
+
+      - name: Remove ubtest fixture
+        if: always()
+        run: sudo ip link del ubtest || true
