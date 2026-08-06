@@ -784,11 +784,16 @@ static int create_iol_port_entry(hypervisor_conn_t *conn, iol_bridge_t *bridge, 
    /* channel number */
    iol_nio->header[IOL_CHANNEL] = 0;
 
-   /* stop any previous NIO thread */
+   /* stop any previous NIO thread. Guard the cancel on tid, not on
+    * destination_nio: after iol_bridge stop (or if the port was never
+    * started) the listener is joined and tid == 0, while destination_nio is
+    * retained so the port can be restarted — pthread_cancel(0) segfaults. */
    if (iol_nio->destination_nio != NULL) {
-      pthread_cancel(iol_nio->tid);
-      pthread_join(iol_nio->tid, NULL);
-      iol_nio->tid = 0;
+      if (iol_nio->tid != 0) {
+         pthread_cancel(iol_nio->tid);
+         pthread_join(iol_nio->tid, NULL);
+         iol_nio->tid = 0;
+      }
       /* NULL the delay-line pointers before destroy — see
        * cmd_delete_nio_udp for the rationale. */
       delay_line_t *old_nio = iol_nio->delay_line_nio;
@@ -873,11 +878,16 @@ static int cmd_delete_nio_udp(hypervisor_conn_t *conn, int argc, char *argv[])
       return (-1);
    }
 
-   /* stop any previous NIO thread */
+   /* stop any previous NIO thread. Guard the cancel on tid, not on
+    * destination_nio: after iol_bridge stop (or if the port was never
+    * started) the listener is joined and tid == 0, while destination_nio is
+    * retained so the port can be restarted — pthread_cancel(0) segfaults. */
    if (iol_nio->destination_nio != NULL) {
-      pthread_cancel(iol_nio->tid);
-      pthread_join(iol_nio->tid, NULL);
-      iol_nio->tid = 0;
+      if (iol_nio->tid != 0) {
+         pthread_cancel(iol_nio->tid);
+         pthread_join(iol_nio->tid, NULL);
+         iol_nio->tid = 0;
+      }
       /* NULL the delay-line pointers before destroy so the IOL bridge
        * listener (IOL -> NIO direction) sees NULL if it concurrently
        * accesses them through port_table, and delay_line_destroy(NULL)
