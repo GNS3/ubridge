@@ -225,10 +225,12 @@ bridge add_packet_filter <bridge> <name> mark <bpf_expr> [linktype <dlt>] [tag <
 - `linktype <dlt>`: optional data-link type for the BPF compile **and** the pcap
   header; defaults to `EN10MB`. **Pass it for serial links** (Frame Relay / PPP
   / HDLC), whose header layout differs from Ethernet — otherwise the BPF matches
-  at wrong offsets and Wireshark mis-parses the pcap. gns3server should derive it
-  from the GNS3 link's data-link type — `HDLC`→`C_HDLC`, `PPP`→`PPP`, `Frame
-  Relay`→`FRELAY`, ATM→`ATM_RFC1483`; Ethernet links omit it. See
-  [`marker.md`](marker.md) for the accepted names and the DLT/LINKTYPE caveat.
+  at wrong offsets and Wireshark mis-parses the pcap. gns3server should pass the
+  serial port's `data_link_types` value with the `DLT_` prefix stripped — they
+  are exactly what ubridge accepts: Cisco HDLC→`C_HDLC`, Cisco PPP→`PPP_SERIAL`
+  (DLT 50, HDLC-framed — **not** `PPP`/DLT 9, which is raw/unframed), Frame
+  Relay→`FRELAY`; Ethernet links omit it. See [`marker.md`](marker.md) for the
+  accepted names and the DLT/LINKTYPE caveat.
 - `tag <id>`: optional correlation id echoed in the signal.
 - `link <id>`: optional link id echoed in the signal, for per-link attribution.
   Needed when one ubridge bridge serves several GNS3 links (e.g. IOU's per-node

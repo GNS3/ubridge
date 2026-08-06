@@ -60,10 +60,11 @@ bridge add_packet_filter <bridge> <name> mark <bpf_expr> [linktype <dlt>] [tag <
   (Ethernet). **Required for serial links**: Frame Relay / PPP / HDLC frames
   have a different header layout, so an Ethernet-compiled BPF matches at the
   wrong offsets and the pcap is mis-parsed by Wireshark (garbled protocols).
-  Value is any name `pcap_datalink_name_to_val(3)` accepts; common ones:
-  `C_HDLC` (Cisco HDLC), `PPP`, `FRELAY` (Frame Relay), `ATM_RFC1483`. An
-  unknown name falls back to `EN10MB` with a warning. Mirrors the `bpf` filter
-  type's link-layer argument.
+  Value is any name `pcap_datalink_name_to_val(3)` accepts; common serial ones:
+  `C_HDLC` (Cisco HDLC), `PPP_SERIAL` (Cisco PPP — HDLC-framed, DLT 50; **not**
+  `PPP`, which is raw/unframed, DLT 9), `FRELAY` (Frame Relay), `ATM_RFC1483`.
+  An unknown name falls back to `EN10MB` with a warning. Mirrors the `bpf`
+  filter type's link-layer argument.
 - Keyword pairs (`linktype`, `tag`, `link`, `dir`, `pcap`) may appear in any
   order.
 

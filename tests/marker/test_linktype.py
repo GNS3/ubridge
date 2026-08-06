@@ -29,7 +29,6 @@ REPO_UBRIDGE = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__f
 # stores LINKTYPE, which equals the DLT for these layers — except ATM_RFC1483,
 # which is DLT 11 but LINKTYPE 100 in the file (libpcap maps it on write).
 DLT_EN10MB = 1
-DLT_PPP = 9
 DLT_CHDLC = 104
 DLT_FRELAY = 107
 
@@ -129,7 +128,7 @@ def main():
                 c.send("bridge start br0")
 
                 # --- A. accepted linktype names ---------------------------------
-                for lt in ("C_HDLC", "PPP", "FRELAY", "ATM_RFC1483"):
+                for lt in ("C_HDLC", "PPP_SERIAL", "FRELAY", "ATM_RFC1483"):
                     r.check("accept linktype %s" % lt,
                             add_mark("fa", "ip", "linktype", lt).startswith("100-"))
                     c.send("bridge delete_packet_filter br0 fa")
@@ -158,9 +157,9 @@ def main():
                 # create_pcap_capture() writes the header at add time; deleting the
                 # filter flushes it. Header is written even with no matched packet.
                 # pcap stores LINKTYPE (== DLT except ATM_RFC1483: DLT 11 / LINK 100).
-                file_linktype = {"C_HDLC": DLT_CHDLC, "PPP": DLT_PPP, "FRELAY": DLT_FRELAY,
+                file_linktype = {"C_HDLC": DLT_CHDLC, "PPP_SERIAL": 50, "FRELAY": DLT_FRELAY,
                                  "ATM_RFC1483": 100, "EN10MB": DLT_EN10MB}
-                for lt in ("C_HDLC", "PPP", "FRELAY", "ATM_RFC1483", "EN10MB"):
+                for lt in ("C_HDLC", "PPP_SERIAL", "FRELAY", "ATM_RFC1483", "EN10MB"):
                     PCAP = "/tmp/ubmark_linktype.pcap"
                     if os.path.exists(PCAP):
                         os.remove(PCAP)
