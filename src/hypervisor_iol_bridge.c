@@ -37,6 +37,19 @@
 
 iol_bridge_t *iol_bridge_list = NULL;
 
+/* Serializes IOL delay-line pointer access between the relay listeners
+ * (iol_delay_route) and command handlers that destroy delay lines
+ * (cmd_delete_nio_udp / create_iol_port_entry / cmd_reset_packet_filters).
+ *
+ * Deliberately a separate mutex from global_lock: those command handlers
+ * cancel+join the NIO listener while running under global_lock (the hypervisor
+ * dispatcher holds it around every command). If iol_delay_route took
+ * global_lock, the listener could be blocked on it at cancel time and never
+ * reach a cancellation point, deadlocking the join. The destroy path takes
+ * iol_delay_lock only around the delay-line teardown — after the cancel+join —
+ * so the two never contend during a join. */
+static pthread_mutex_t iol_delay_lock = PTHREAD_MUTEX_INITIALIZER;
+
 /* ---- delay line send callbacks (one per IOL direction) ---- */
 
 /* NIO -> IOL: prepend the port's pre-calculated IOL header and sendto the
@@ -68,13 +81,20 @@ static ssize_t iol_nio_send_cb(void *ctx, const void *pkt, size_t len)
 }
 
 /* Lazily sync *dl to the delay config (have_delay / lat / jit, snapshotted by
- * the caller under global_lock) and, if delaying, enqueue the packet. Returns
- * TRUE if consumed (the caller must skip its inline send). */
+ * the caller) and, if delaying, enqueue the packet. Returns TRUE if consumed
+ * (the caller must skip its inline send).
+ *
+ * *dl lives in the shared port_table and is destroyed by command handlers, so
+ * the whole read/create/destroy/enqueue is serialized against them with
+ * iol_delay_lock (see the note on why not global_lock above). */
 static int iol_delay_route(delay_line_t **dl, int have_delay, int lat, int jit,
                            delay_send_fn fn, void *ctx,
                            const void *pkt, size_t len, const char *name)
 {
    int cur_lat = -1, cur_jit = -1;
+   int consumed = FALSE;
+
+   pthread_mutex_lock(&iol_delay_lock);
    delay_line_config(*dl, &cur_lat, &cur_jit);   /* current line's config, or -1 */
 
    if (have_delay) {
@@ -92,9 +112,10 @@ static int iol_delay_route(delay_line_t **dl, int have_delay, int lat, int jit,
    if (*dl) {
       if (delay_line_enqueue(*dl, pkt, len) != 0 && debug_level > 0)
          printf("Packet dropped by delay line on IOL bridge '%s'\n", name);
-      return TRUE;
+      consumed = TRUE;
    }
-   return FALSE;
+   pthread_mutex_unlock(&iol_delay_lock);
+   return consumed;
 }
 
 static iol_bridge_t *find_bridge(char *bridge_name)
@@ -794,14 +815,18 @@ static int create_iol_port_entry(hypervisor_conn_t *conn, iol_bridge_t *bridge, 
          pthread_join(iol_nio->tid, NULL);
          iol_nio->tid = 0;
       }
-      /* NULL the delay-line pointers before destroy — see
-       * cmd_delete_nio_udp for the rationale. */
+      /* Tear down the delay lines under iol_delay_lock, serialized against the
+       * listeners' iol_delay_route. The cancel+join above already stopped this
+       * port's NIO listener, but the IOL bridge listener (bridge_tid) is still
+       * live and may be in iol_delay_route on delay_line_iol. */
+      pthread_mutex_lock(&iol_delay_lock);
       delay_line_t *old_nio = iol_nio->delay_line_nio;
       iol_nio->delay_line_nio = NULL;
       delay_line_t *old_iol = iol_nio->delay_line_iol;
       iol_nio->delay_line_iol = NULL;
       delay_line_destroy(old_nio);
       delay_line_destroy(old_iol);
+      pthread_mutex_unlock(&iol_delay_lock);
       free_pcap_capture(iol_nio->capture);
       free_packet_filters(iol_nio->packet_filters);
       free_nio(iol_nio->destination_nio);
@@ -888,16 +913,18 @@ static int cmd_delete_nio_udp(hypervisor_conn_t *conn, int argc, char *argv[])
          pthread_join(iol_nio->tid, NULL);
          iol_nio->tid = 0;
       }
-      /* NULL the delay-line pointers before destroy so the IOL bridge
-       * listener (IOL -> NIO direction) sees NULL if it concurrently
-       * accesses them through port_table, and delay_line_destroy(NULL)
-       * is a safe no-op. */
+      /* Tear down the delay lines under iol_delay_lock, serialized against the
+       * listeners' iol_delay_route. The cancel+join above already stopped this
+       * port's NIO listener, but the IOL bridge listener (bridge_tid) is still
+       * live and may be in iol_delay_route on delay_line_iol. */
+      pthread_mutex_lock(&iol_delay_lock);
       delay_line_t *old_nio = iol_nio->delay_line_nio;
       iol_nio->delay_line_nio = NULL;
       delay_line_t *old_iol = iol_nio->delay_line_iol;
       iol_nio->delay_line_iol = NULL;
       delay_line_destroy(old_nio);
       delay_line_destroy(old_iol);
+      pthread_mutex_unlock(&iol_delay_lock);
       free_pcap_capture(iol_nio->capture);
       free_packet_filters(iol_nio->packet_filters);
       free_nio(iol_nio->destination_nio);
@@ -1097,16 +1124,19 @@ static int cmd_reset_packet_filters(hypervisor_conn_t *conn, int argc, char *arg
       return (-1);
    }
 
-   /* dropping the filters also drops any in-flight delay; tear down the lines
-    * so packets don't keep releasing against a config that no longer exists.
-    * NULL the pointers before destroy so the bridge listener sees NULL
-    * if it concurrently accesses them through port_table. */
+   /* Dropping the filters also drops any in-flight delay. Tear down the lines
+    * under iol_delay_lock (serialized against the listeners' iol_delay_route);
+    * this handler stops neither listener, so both may be mid-route. The filter
+    * list free below is covered by global_lock, which the dispatcher already
+    * holds around this command. */
+   pthread_mutex_lock(&iol_delay_lock);
    delay_line_t *old_nio = iol_nio->delay_line_nio;
    iol_nio->delay_line_nio = NULL;
    delay_line_t *old_iol = iol_nio->delay_line_iol;
    iol_nio->delay_line_iol = NULL;
    delay_line_destroy(old_nio);
    delay_line_destroy(old_iol);
+   pthread_mutex_unlock(&iol_delay_lock);
    /* impairment reset: preserve any `mark` observability tap (open pcap); the
     * delay lines above are torn down regardless, since the delay filter is dropped. */
    reset_impairment_filters(&iol_nio->packet_filters);
