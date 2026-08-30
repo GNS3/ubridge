@@ -48,13 +48,14 @@ pcap_capture_t *create_pcap_capture(const char *filename, const char *pcap_linkt
    int link_type;
    pcap_capture_t *capture;
 
-   if (!(capture = malloc(sizeof(*capture)))) {
+   if (!(capture = calloc(1, sizeof(*capture)))) {
       fprintf(stderr,"not enough memory to setup pcap capture\n");
       return (NULL);
    }
 
    if (pthread_mutex_init(&capture->lock, NULL)) {
       fprintf(stderr,"pthread_mutex_init failure (file %s)\n", filename);
+      free(capture);
       return (NULL);
    }
 
@@ -66,23 +67,19 @@ pcap_capture_t *create_pcap_capture(const char *filename, const char *pcap_linkt
    /* Open a dead pcap descriptor */
    if (!(capture->fd = pcap_open_dead(link_type, 65535))) {
       fprintf(stderr, "pcap_open_dead failure\n");
-      goto pcap_open_err;
+      free_pcap_capture(capture);
+      return (NULL);
    }
 
    /* Open the output file */
    if (!(capture->dumper = pcap_dump_open(capture->fd, filename))) {
       fprintf(stderr,"pcap_dump_open failure (file %s)\n", filename);
-      goto pcap_dump_err;
+      free_pcap_capture(capture);
+      return (NULL);
    }
 
    printf("Capturing to file '%s'\n", filename);
    return (capture);
-
-   pcap_dump_err:
-      pcap_close(capture->fd);
-   pcap_open_err:
-      pthread_mutex_destroy(&capture->lock);
-   return (NULL);
 }
 
 /* Packet handler: write packets to a file in CAP format */
