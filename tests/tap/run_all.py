@@ -4,6 +4,7 @@ import sys
 
 SUITES = [
     "test_basic",
+    "test_carrier",
 ]
 
 

@@ -426,6 +426,7 @@ static int cmd_add_nio_unix(hypervisor_conn_t *conn, int argc, char *argv[])
 
 static int cmd_add_nio_tap(hypervisor_conn_t *conn, int argc, char *argv[])
 {
+   int carrier = TRUE;
    nio_t *nio;
    bridge_t *bridge;
 
@@ -435,7 +436,18 @@ static int cmd_add_nio_tap(hypervisor_conn_t *conn, int argc, char *argv[])
       return (-1);
    }
 
-   nio = create_nio_tap(argv[1]);
+   if (argc == 3) {
+      if (!strcmp(argv[2], "on"))
+         carrier = TRUE;
+      else if (!strcmp(argv[2], "off"))
+         carrier = FALSE;
+      else {
+         hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "invalid TAP carrier state '%s'", argv[2]);
+         return (-1);
+      }
+   }
+
+   nio = create_nio_tap_with_carrier(argv[1], carrier);
    if (!nio) {
       hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "unable to create NIO TAP for bridge '%s'", argv[0]);
       return (-1);
@@ -449,6 +461,47 @@ static int cmd_add_nio_tap(hypervisor_conn_t *conn, int argc, char *argv[])
    add_nio_desc(nio, "%s", argv[1]);
 
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "NIO TAP added to bridge '%s'", argv[0]);
+   return (0);
+}
+
+static int cmd_set_nio_tap_carrier(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+   int carrier;
+   nio_t *nio = NULL;
+   bridge_t *bridge;
+
+   bridge = find_bridge(argv[0]);
+   if (bridge == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
+      return (-1);
+   }
+
+   if (!strcmp(argv[1], "on"))
+      carrier = TRUE;
+   else if (!strcmp(argv[1], "off"))
+      carrier = FALSE;
+   else {
+      hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "invalid TAP carrier state '%s'", argv[1]);
+      return (-1);
+   }
+
+   if (bridge->source_nio && bridge->source_nio->type == NIO_TYPE_TAP)
+      nio = bridge->source_nio;
+   else if (bridge->destination_nio && bridge->destination_nio->type == NIO_TYPE_TAP)
+      nio = bridge->destination_nio;
+
+   if (nio == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' has no TAP NIO", argv[0]);
+      return (-1);
+   }
+
+   if (nio_tap_set_carrier(nio, carrier) < 0) {
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "unable to set TAP carrier %s on bridge '%s': %s",
+                            argv[1], argv[0], strerror(errno));
+      return (-1);
+   }
+
+   hypervisor_send_reply(conn, HSC_INFO_OK, 1, "TAP carrier set %s on bridge '%s'", argv[1], argv[0]);
    return (0);
 }
 
@@ -697,7 +750,8 @@ static hypervisor_cmd_t bridge_cmd_array[] = {
    { "remove_nio_udp", 4, 4, cmd_delete_nio_udp, NULL }, /* kept for compatibility */
    { "delete_nio_udp", 4, 4, cmd_delete_nio_udp, NULL },
    { "add_nio_unix", 3, 3, cmd_add_nio_unix, NULL },
-   { "add_nio_tap", 2, 2, cmd_add_nio_tap, NULL },
+   { "add_nio_tap", 2, 3, cmd_add_nio_tap, NULL },
+   { "set_nio_tap_carrier", 2, 2, cmd_set_nio_tap_carrier, NULL },
    { "add_nio_ethernet", 2, 2, cmd_add_nio_ethernet, NULL },
    { "add_nio_linux_raw", 2, 2, cmd_add_nio_linux_raw, NULL },
    { "start_capture", 2, 3, cmd_start_capture_bridge, NULL },
@@ -722,4 +776,3 @@ int hypervisor_bridge_init(void)
    hypervisor_register_cmd_array(module, bridge_cmd_array);
    return(0);
 }
-

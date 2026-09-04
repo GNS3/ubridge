@@ -34,7 +34,7 @@
 
 
 /* Open a TAP device */
-static int nio_tap_open(char *tap_devname)
+static int nio_tap_open(char *tap_devname, int carrier)
 {
    struct ifreq ifr;
    int err, fd;
@@ -66,6 +66,10 @@ static int nio_tap_open(char *tap_devname)
 
       memset(&ifr,0,sizeof(ifr));
       ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
+#ifdef IFF_NO_CARRIER
+      if (!carrier)
+         ifr.ifr_flags |= IFF_NO_CARRIER;
+#endif
       if (*tap_devname)
          strncpy(ifr.ifr_name, tap_devname, IFNAMSIZ);
 
@@ -75,6 +79,13 @@ static int nio_tap_open(char *tap_devname)
       }
 
       strcpy(tap_devname, ifr.ifr_name);
+   }
+
+   if (!carrier && ioctl(fd, TUNSETCARRIER, &carrier) < 0) {
+      err = errno;
+      close(fd);
+      errno = err;
+      return(-1);
    }
    return(fd);
 }
@@ -96,7 +107,7 @@ static ssize_t nio_tap_recv(nio_tap_t *nio_tap, void *pkt, size_t max_len)
 }
 
 /* Create a new NIO TAP */
-nio_t *create_nio_tap(char *tap_name)
+nio_t *create_nio_tap_with_carrier(char *tap_name, int carrier)
 {
    nio_tap_t *nio_tap;
    nio_t *nio;
@@ -113,7 +124,7 @@ nio_t *create_nio_tap(char *tap_name)
    }
 
    memset(nio_tap, 0, sizeof(*nio_tap));
-   nio_tap->fd = nio_tap_open(tap_name);
+   nio_tap->fd = nio_tap_open(tap_name, carrier);
 
    if (nio_tap->fd == -1) {
       fprintf(stderr,"create_nio_tap: unable to open TAP device %s (%s)\n", tap_name, strerror(errno));
@@ -127,4 +138,20 @@ nio_t *create_nio_tap(char *tap_name)
    nio->free = (void *)nio_tap_free;
    nio->dptr = &nio->u.nio_tap;
    return nio;
+}
+
+nio_t *create_nio_tap(char *tap_name)
+{
+   return create_nio_tap_with_carrier(tap_name, TRUE);
+}
+
+int nio_tap_set_carrier(nio_t *nio, int carrier)
+{
+   if (nio == NULL || nio->type != NIO_TYPE_TAP) {
+      errno = EINVAL;
+      return(-1);
+   }
+
+   carrier = carrier ? 1 : 0;
+   return ioctl(nio->u.nio_tap.fd, TUNSETCARRIER, &carrier);
 }
