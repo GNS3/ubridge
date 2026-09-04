@@ -120,7 +120,8 @@ hypervisor cmd_list bridge
 101 start_capture (min/max args: 2/3)
 101 add_nio_linux_raw (min/max args: 2/2)
 101 add_nio_ethernet (min/max args: 2/2)
-101 add_nio_tap (min/max args: 2/2)
+101 set_nio_tap_carrier (min/max args: 2/2)
+101 add_nio_tap (min/max args: 2/3)
 101 add_nio_unix (min/max args: 3/3)
 101 delete_nio_udp (min/max args: 4/4)
 101 remove_nio_udp (min/max args: 4/4)
@@ -234,12 +235,22 @@ bridge add_nio_unix br0 "/tmp/local" "/tmp/remote"
 100-NIO UNIX added to bridge 'br0'
 ```
 
-- **bridge add_nio_tap** *\<bridge_name\>* *\<tap_device\>*:
-    Add a TAP NIO to a bridge. TAP devices require root access.
+- **bridge add_nio_tap** *\<bridge_name\>* *\<tap_device\>* *[on|off]*:
+    Add a TAP NIO to a bridge. TAP devices require root access. The optional
+    state controls the initial carrier state and defaults to `on`.
 
 ``` {.bash}
 bridge add_nio_tap br0 tap0
 100-NIO TAP added to bridge 'br0'
+```
+
+- **bridge set_nio_tap_carrier** *\<bridge_name\>* *\<on|off\>*:
+    Change the carrier state of a TAP NIO without changing its administrative
+    state. This can be used to emulate plugging or unplugging a cable.
+
+``` {.bash}
+bridge set_nio_tap_carrier br0 off
+100-TAP carrier set off on bridge 'br0'
 ```
 
 - **bridge add_nio_ethernet** *\<bridge_name\>*

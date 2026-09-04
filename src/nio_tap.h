@@ -24,5 +24,7 @@
 #include "nio.h"
 
 nio_t *create_nio_tap(char *tap_name);
+nio_t *create_nio_tap_with_carrier(char *tap_name, int carrier);
+int nio_tap_set_carrier(nio_t *nio, int carrier);
 
 #endif /* !NIO_TAP_H_ */
