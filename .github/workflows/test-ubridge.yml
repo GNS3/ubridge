@@ -20,6 +20,20 @@ on:
       - master
 
 jobs:
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Install test dependencies
+        run: sudo apt-get update && sudo apt-get install -y libcriterion-dev libpcap-dev pkg-config
+
+      - name: Test
+        run: make test
+
   # ---------------------------------------------------------------------
   # Userspace suites — the riskiest user-space logic and zero privilege
   # friction. Run right after `make`, against the in-repo ./ubridge.

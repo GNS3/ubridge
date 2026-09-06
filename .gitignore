@@ -39,3 +39,6 @@ ubridge.ini
 # Python
 __pycache__/
 *.pyc
+
+# lsp
+.clangd
