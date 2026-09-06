@@ -322,6 +322,7 @@ static void create_threads(bridge_t *bridge)
        s = pthread_create(&(bridge->destination_tid), NULL, &destination_nio_listener, bridge);
        if (s != 0)
          handle_error_en(s, "pthread_create");
+       bridge->running = TRUE;
        bridge = bridge->next;
     }
 }
