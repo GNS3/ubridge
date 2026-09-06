@@ -43,7 +43,6 @@ char *config_file = CONFIG_FILE;
 pthread_mutex_t global_lock = PTHREAD_MUTEX_INITIALIZER;
 bridge_t *bridge_list = NULL;
 int debug_level = 0;
-int hypervisor_mode = 0;
 
 /* Send callback for the delay line's release thread: forward a due packet out
  * the transmitting NIO and account for it. (When no delay filter is present,
@@ -323,6 +322,7 @@ static void create_threads(bridge_t *bridge)
        s = pthread_create(&(bridge->destination_tid), NULL, &destination_nio_listener, bridge);
        if (s != 0)
          handle_error_en(s, "pthread_create");
+       bridge->running = TRUE;
        bridge = bridge->next;
     }
 }
@@ -340,8 +340,7 @@ void signal_gen_handler(int sig)
       case SIGTERM:
       case SIGINT:
          /* CTRL+C has been pressed */
-         if (hypervisor_mode)
-            hypervisor_stopsig();
+         hypervisor_stopsig();
          break;
          /* SIGHUP: configuration reload */
       case SIGHUP:
@@ -373,24 +372,13 @@ int iniparser_error_handler(const char *format, ...)
   return ret;
 }
 
-static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port, char *hypervisor_socket_path)
+void run_ubridge(ubridge_options_t opts)
 {
-   if (hypervisor_mode) {
-       struct sigaction act;
+   printf("uBridge version %s running with %s\n", VERSION, pcap_lib_version());
 
-       memset(&act, 0, sizeof(act));
-       act.sa_handler = signal_gen_handler;
-       act.sa_flags = SA_RESTART;
-       sigaction(SIGHUP, &act, NULL);
-       sigaction(SIGTERM, &act, NULL);
-       sigaction(SIGINT, &act, NULL);
-       sigaction(SIGPIPE, &act, NULL);
+   debug_level = opts.debug_level;
 
-      run_hypervisor(hypervisor_ip_address, hypervisor_tcp_port, hypervisor_socket_path);
-      free_bridges(bridge_list);
-      free_iol_bridges(iol_bridge_list);
-   }
-   else {
+   if (opts.mode == UBRIDGE_MODE_CONFIG_FILE) {
       sigset_t sigset;
       int sig;
 
@@ -402,7 +390,7 @@ static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port, char *
       pthread_sigmask(SIG_BLOCK, &sigset, NULL);
 
       while (1) {
-         if (!parse_config(config_file, &bridge_list))
+         if (!parse_config(opts.config.path, &bridge_list))
             break;
          create_threads(bridge_list);
          sigwait(&sigset, &sig);
@@ -412,105 +400,32 @@ static void ubridge(char *hypervisor_ip_address, int hypervisor_tcp_port, char *
          if (sig == SIGTERM || sig == SIGINT)
             break;
          printf("Reloading configuration\n");
-     }
+      }
    }
-}
+   else {
+      struct sigaction act;
 
-/* Display all network devices on this host */
-static void display_network_devices(void)
-{
-   char pcap_errbuf[PCAP_ERRBUF_SIZE];
-   pcap_if_t *device_list, *device;
-   int res;
+      memset(&act, 0, sizeof(act));
+      act.sa_handler = signal_gen_handler;
+      act.sa_flags = SA_RESTART;
+      sigaction(SIGHUP, &act, NULL);
+      sigaction(SIGTERM, &act, NULL);
+      sigaction(SIGINT, &act, NULL);
+      sigaction(SIGPIPE, &act, NULL);
 
-   printf("Network device list:\n\n");
+      switch (opts.mode) {
+        case UBRIDGE_MODE_HYPERVISOR_TCP:
+          run_hypervisor(opts.tcp.ip, opts.tcp.port, NULL);
+          break;
+        case UBRIDGE_MODE_HYPERVISOR_UNIX:
+          run_hypervisor(NULL, 0, opts.unix_socket.path);
+          break;
+        default:
+          fprintf(stderr, "Invalid hypervisor mode\n");
+          return;
+      }
 
-   res = pcap_findalldevs(&device_list, pcap_errbuf);
-
-   if (res < 0) {
-      fprintf(stderr, "PCAP: unable to find device list (%s)\n", pcap_errbuf);
-      return;
+      free_bridges(bridge_list);
+      free_iol_bridges(iol_bridge_list);
    }
-
-   for(device = device_list; device; device = device->next)
-      printf("  %s => %s\n", device->name, device->description ? device->description : "no description");
-   printf("\n");
-
-   pcap_freealldevs(device_list);
-}
-
-static void print_usage(const char *program_name)
-{
-  printf("Usage: %s [OPTION]\n"
-         "\n"
-         "Options:\n"
-         "  -h                           : Print this message and exit\n"
-         "  -f <file>                    : Specify a INI configuration file (default: %s)\n"
-         "  -H [<ip_address>:]<tcp_port> : Hypervisor mode over TCP (default bind: 127.0.0.1)\n"
-         "  -U <socket_path>             : Hypervisor mode over UNIX socket (recommended)\n"
-         "  -e                           : Display all available network devices and exit\n"
-         "  -d <level>                   : Debug level\n"
-         "  -v                           : Print version and exit\n",
-         program_name,
-         CONFIG_FILE);
-}
-
-int main(int argc, char **argv)
-{
-  int hypervisor_tcp_port = 0;
-  char *hypervisor_ip_address = NULL;
-  char *hypervisor_socket_path = NULL;
-  int opt;
-  char *index;
-  size_t len;
-
-  setvbuf(stdout, NULL, _IOLBF, 0);
-  setvbuf(stderr, NULL, _IOLBF, 0);
-
-  while ((opt = getopt(argc, argv, "hved:f:H:U:")) != -1) {
-    switch (opt) {
-      case 'H':
-        hypervisor_mode = 1;
-        index = strrchr(optarg, ':');
-        if (!index) {
-           hypervisor_tcp_port = atoi(optarg);
-        } else {
-           len = index - optarg;
-           hypervisor_ip_address = realloc(hypervisor_ip_address, len + 1);
-
-           if (!hypervisor_ip_address) {
-              fprintf(stderr, "Unable to set hypervisor IP address!\n");
-              exit(EXIT_FAILURE);
-           }
-           memcpy(hypervisor_ip_address, optarg, len);
-           hypervisor_ip_address[len] = '\0';
-           hypervisor_tcp_port = atoi(index + 1);
-        }
-        break;
-      case 'U':
-        hypervisor_mode = 1;
-        hypervisor_socket_path = optarg;
-        break;
-	  case 'v':
-	    printf("%s version %s\n", NAME, VERSION);
-	    exit(EXIT_SUCCESS);
-	  case 'h':
-	    print_usage(argv[0]);
-	    exit(EXIT_SUCCESS);
-	  case 'e':
-	    display_network_devices();
-	    exit(EXIT_SUCCESS);
-	  case 'd':
-        debug_level = atoi(optarg);
-        break;
-	  case 'f':
-        config_file = optarg;
-        break;
-      default:
-        exit(EXIT_FAILURE);
-	}
-  }
-  printf("uBridge version %s running with %s\n", VERSION, pcap_lib_version());
-  ubridge(hypervisor_ip_address, hypervisor_tcp_port, hypervisor_socket_path);
-  return (EXIT_SUCCESS);
 }

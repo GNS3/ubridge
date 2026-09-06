@@ -29,6 +29,7 @@
 
 #include "nio.h"
 #include "packet_filter.h"
+#include "ubridge_options.h"
 
 #define NAME          "ubridge"
 #define VERSION       "1.2.3"
@@ -71,6 +72,7 @@ extern pthread_mutex_t global_lock;
 extern int debug_level;
 
 void ubridge_reset();
+void run_ubridge(ubridge_options_t config);
 void *source_nio_listener(void *data);
 void *destination_nio_listener(void *data);
 

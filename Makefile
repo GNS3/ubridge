@@ -18,10 +18,15 @@
 #   You should have received a copy of the GNU General Public License
 #   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
+BUILDDIR    = build
+NAME        = ubridge
+DEBUG_TARGET = $(BUILDDIR)/$(NAME)
+UNIT_TEST_TARGET = $(BUILDDIR)/unit_tests
+UNIT_TEST_SRC = $(wildcard tests/unit/*.c)
 
-NAME    =   ubridge
-
-SRC     =   src/ubridge.c               \
+SRC     =   src/main.c                  \
+            src/ubridge_options.c       \
+            src/ubridge.c               \
             src/nio.c                   \
             src/nio_udp.c               \
             src/nio_unix.c              \
@@ -37,15 +42,16 @@ SRC     =   src/ubridge.c               \
             src/hypervisor_bridge.c
 
 
-OBJ     =   $(SRC:.c=.o)
+OBJ       = $(SRC:.c=.o)
+DEBUG_OBJ = $(SRC:%.c=$(BUILDDIR)/%.o)
 
-CC      ?=   gcc
+CC      ?=  gcc
 
-CFLAGS  +=   -Wall
+CFLAGS  +=  -Wall
 
 BINDIR  =   /usr/local/bin
 
-LIBS =   -lpthread -lpcap -lm
+LIBS    =   -lpthread -lpcap -lm
 
 # Linux-only: RAW Ethernet + netlink-backed hypervisor modules
 SRC += src/nio_linux_raw.c             \
@@ -67,21 +73,43 @@ else
 	   src/iniparser/dictionary.c
 endif
 
-##############################
+# debug options
+SANITIZERS = address,undefined
+DEBUG_CFLAGS = -O1 -g -fsanitize=$(SANITIZERS) -fno-omit-frame-pointer
+DEBUG_LDFLAGS = -fsanitize=$(SANITIZERS)
 
-$(NAME)	: $(OBJ)
+##############################
+.PHONY: clean debug all install test
+
+$(BUILDDIR)/%.o: %.c
+	mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(DEBUG_CFLAGS) -c $< -o $@
+
+$(NAME): $(OBJ)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(NAME) $(OBJ) $(LIBS)
 
-.PHONY: clean
+$(DEBUG_TARGET): $(DEBUG_OBJ)
+	$(CC) $(CFLAGS) $(DEBUG_CFLAGS) $(LDFLAGS) $(DEBUG_LDFLAGS) -o $(DEBUG_TARGET) $(DEBUG_OBJ) $(LIBS)
+
+all: $(NAME)
+
+debug: $(DEBUG_TARGET)
 
 clean:
 	-rm -f $(OBJ)
-	-rm -f *~
 	-rm -f $(NAME)
+	-rm -f *~
+	-rm -rf $(BUILDDIR)
 
-all	: $(NAME)
-
-install : $(NAME)
+install: $(NAME)
 	chmod +x $(NAME)
 	cp -p $(NAME) $(BINDIR)
 	setcap cap_net_admin,cap_net_raw=ep $(BINDIR)/$(NAME)
+
+$(UNIT_TEST_TARGET): $(UNIT_TEST_SRC) $(filter-out src/main.c,$(SRC))
+	mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(DEBUG_CFLAGS) -Isrc $^ -o $@ \
+		$(DEBUG_LDFLAGS) $(shell pkg-config --cflags --libs criterion) $(LIBS)
+
+test: $(UNIT_TEST_TARGET)
+	./$(UNIT_TEST_TARGET)
