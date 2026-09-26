@@ -91,21 +91,8 @@ static int cmd_delete_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
           else
              prev->next = bridge->next;
 
-          if (bridge->running) {
-             pthread_cancel(bridge->source_tid);
-             pthread_join(bridge->source_tid, NULL);
-             bridge->source_tid = 0;
-             pthread_cancel(bridge->destination_tid);
-             pthread_join(bridge->destination_tid, NULL);
-             bridge->destination_tid = 0;
-          }
-          if (bridge->name)
-             free(bridge->name);
-          free_nio(bridge->source_nio);
-          free_nio(bridge->destination_nio);
-          free_pcap_capture(bridge->capture);
-          free_packet_filters(bridge->packet_filters);
-          free(bridge);
+          bridge->next = NULL;
+          free_bridges(bridge);
           hypervisor_send_reply(conn, HSC_INFO_OK, 1, "bridge '%s' deleted", argv[0]);
           return (0);
       }

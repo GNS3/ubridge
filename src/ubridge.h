@@ -72,6 +72,7 @@ extern pthread_mutex_t global_lock;
 extern int debug_level;
 
 void ubridge_reset();
+void free_bridges(bridge_t *bridge);
 void run_ubridge(ubridge_options_t config);
 void *source_nio_listener(void *data);
 void *destination_nio_listener(void *data);

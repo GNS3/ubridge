@@ -242,13 +242,11 @@ void *destination_nio_listener(void *data)
   pthread_exit(NULL);
 }
 
-static void free_bridges(bridge_t *bridge)
+void free_bridges(bridge_t *bridge)
 {
   bridge_t *next;
 
   while (bridge != NULL) {
-    if (bridge->name)
-       free(bridge->name);
     if (bridge->running) {
        pthread_cancel(bridge->source_tid);
        pthread_join(bridge->source_tid, NULL);
@@ -257,6 +255,8 @@ static void free_bridges(bridge_t *bridge)
        pthread_join(bridge->destination_tid, NULL);
        bridge->destination_tid = 0;
     }
+    if (bridge->name)
+       free(bridge->name);
     free_nio(bridge->source_nio);
     free_nio(bridge->destination_nio);
     free_pcap_capture(bridge->capture);
