@@ -56,36 +56,34 @@ static volatile int hypervisor_running = 0;
 /* Hypervisor connection list */
 static hypervisor_conn_t *hypervisor_conn_list = NULL;
 
-/* Listen on the specified TCP port.
- *
- * For security the default bind address is loopback (127.0.0.1), not all
- * interfaces: a bare `-H <port>` is reachable only locally. Pass an explicit
- * IP (e.g. `-H 0.0.0.0:<port>`) to listen on other interfaces. Returns the
- * number of listening fds (<= max_fd), or -1 on error. */
+/* Listen on the specified IP address and TCP port. ip_addr must not be
+ * NULL; the loopback default for a bare `-H <port>` is applied in
+ * parse_cli_args. Returns the number of listening fds (<= max_fd), or -1 on
+ * error. */
 static int ip_listen(char *ip_addr, int port, int sock_type, int max_fd, int fd_array[])
 {
-   struct addrinfo hints, *res, *res0;
-   char port_str[20], *addr;
-   int nsock, error, i;
+   struct addrinfo hints = {
+    .ai_family = PF_UNSPEC,
+    .ai_socktype = sock_type,
+   };
+   struct addrinfo *res;
+   struct addrinfo *res0;
+   char port_str[20];
+   int nsock = 0;
+   int error;
+   int i;
    int reuse = 1;
 
    for(i = 0; i < max_fd; i++)
       fd_array[i] = -1;
 
-   memset(&hints, 0, sizeof(hints));
-   hints.ai_family = PF_UNSPEC;
-   hints.ai_socktype = sock_type;
-   hints.ai_flags = AI_PASSIVE;
-
    snprintf(port_str, sizeof(port_str), "%d", port);
-   addr = (ip_addr && strlen(ip_addr)) ? ip_addr : "127.0.0.1";
 
-   if ((error = getaddrinfo(addr, port_str, &hints, &res0)) != 0) {
-      fprintf(stderr, "ip_listen: %s", gai_strerror(error));
+   if ((error = getaddrinfo(ip_addr, port_str, &hints, &res0)) != 0) {
+      fprintf(stderr, "ip_listen: %s\n", gai_strerror(error));
       return(-1);
    }
 
-   nsock = 0;
    for(res = res0; (res && (nsock < max_fd)); res = res->ai_next)
    {
       if ((res->ai_family != PF_INET) && (res->ai_family != PF_INET6))
@@ -109,7 +107,7 @@ static int ip_listen(char *ip_addr, int port, int sock_type, int max_fd, int fd_
       nsock++;
    }
    freeaddrinfo(res0);
-   return(nsock);
+   return (nsock);
 }
 
 /* Create and listen on a UNIX domain socket at the given path.
@@ -613,10 +611,7 @@ int run_hypervisor(char *ip_addr, int tcp_port, char *socket_path)
          return (-1);
       }
 
-      if (ip_addr != NULL)
-         printf("Hypervisor TCP control server started (IP %s port %d).\n", ip_addr, tcp_port);
-      else
-         printf("Hypervisor TCP control server started (127.0.0.1 port %d).\n", tcp_port);
+      printf("Hypervisor TCP control server started (IP %s port %d).\n", ip_addr, tcp_port);
    }
 
    hypervisor_running = TRUE;
