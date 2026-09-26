@@ -121,6 +121,7 @@ static bridge_t *add_bridge(bridge_t **head)
    bridge_t *bridge;
 
    if ((bridge = calloc(1, sizeof(*bridge))) != NULL) {
+      pthread_mutex_init(&bridge->lock, NULL);
       bridge->next = *head;
       *head = bridge;
    }

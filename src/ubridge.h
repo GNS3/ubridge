@@ -64,6 +64,7 @@ typedef struct bridge {
   nio_t *destination_nio;
   pcap_capture_t *capture;
   packet_filter_t *packet_filters;
+  pthread_mutex_t lock;
   struct bridge *next;
 } bridge_t;
 
