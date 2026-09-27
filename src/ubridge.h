@@ -64,6 +64,7 @@ typedef struct bridge {
   nio_t *destination_nio;
   pcap_capture_t *capture;
   packet_filter_t *packet_filters;
+  pthread_mutex_t lock;
   struct bridge *next;
 } bridge_t;
 
@@ -72,6 +73,7 @@ extern pthread_mutex_t global_lock;
 extern int debug_level;
 
 void ubridge_reset();
+void free_bridges(bridge_t *bridge);
 void run_ubridge(ubridge_options_t config);
 void *source_nio_listener(void *data);
 void *destination_nio_listener(void *data);

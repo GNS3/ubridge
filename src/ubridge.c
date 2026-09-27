@@ -119,10 +119,12 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
     }
 
     int have_delay;
+    int oldstate;
 
-    /* Lock the shared filter list while we walk it — the hypervisor thread
-     * mutates it via add/delete/reset_packet_filter under global_lock too. */
-    pthread_mutex_lock(&global_lock);
+    /* bridge->lock guards packet_filters and capture, which the hypervisor
+     * thread changes at runtime */
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &oldstate);
+    pthread_mutex_lock(&bridge->lock);
     if (bridge->packet_filters != NULL) {
          int pkt_dir = (rx_nio == bridge->source_nio) ? PKT_DIR_TX : PKT_DIR_RX;
          packet_filter_t *filter = bridge->packet_filters;
@@ -144,13 +146,14 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
      }
     /* snapshot the delay config while the list is stable */
     have_delay = packet_filter_get_delay(bridge->packet_filters, &latency_ms, &jitter_ms);
-    pthread_mutex_unlock(&global_lock);
+
+    if (drop_packet == FALSE)
+       pcap_capture_packet(bridge->capture, pkt, bytes_received);
+    pthread_mutex_unlock(&bridge->lock);
+    pthread_setcancelstate(oldstate, NULL);
 
     if (drop_packet == TRUE)
        continue;
-
-    /* dump the packet to a PCAP file if capture is activated */
-    pcap_capture_packet(bridge->capture, pkt, bytes_received);
 
     /* (re)sync the delay line using the snapshotted config — create/destroy
      * outside the lock so a join inside destroy doesn't block other bridges. */
@@ -242,13 +245,11 @@ void *destination_nio_listener(void *data)
   pthread_exit(NULL);
 }
 
-static void free_bridges(bridge_t *bridge)
+void free_bridges(bridge_t *bridge)
 {
   bridge_t *next;
 
   while (bridge != NULL) {
-    if (bridge->name)
-       free(bridge->name);
     if (bridge->running) {
        pthread_cancel(bridge->source_tid);
        pthread_join(bridge->source_tid, NULL);
@@ -257,10 +258,13 @@ static void free_bridges(bridge_t *bridge)
        pthread_join(bridge->destination_tid, NULL);
        bridge->destination_tid = 0;
     }
+    if (bridge->name)
+       free(bridge->name);
     free_nio(bridge->source_nio);
     free_nio(bridge->destination_nio);
     free_pcap_capture(bridge->capture);
     free_packet_filters(bridge->packet_filters);
+    pthread_mutex_destroy(&bridge->lock);
     next = bridge->next;
     free(bridge);
     bridge = next;

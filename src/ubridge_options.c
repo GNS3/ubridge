@@ -88,17 +88,24 @@ ubridge_options_t parse_cli_args(int argc, char **argv)
         goto err;
       mode_selected = true;
       opts.mode = UBRIDGE_MODE_HYPERVISOR_TCP;
+      /* For security the default bind address is loopback, not all
+       * interfaces: a bare `-H <port>` (or `-H :<port>`) is reachable only
+       * locally. Pass an explicit IP (e.g. `-H 0.0.0.0:<port>`) to listen on
+       * other interfaces. */
       index = strrchr(optarg, ':');
       if (!index) {
         opts.tcp.port = atoi(optarg);
-        opts.tcp.ip = NULL;
+        opts.tcp.ip = strdup("127.0.0.1");
       } else {
-        opts.tcp.ip = strndup(optarg, index - optarg);
-        if (!opts.tcp.ip) {
-          fprintf(stderr, "Unable to set hypervisor IP address!\n");
-          exit(EXIT_FAILURE);
-        }
+        if (index == optarg)
+          opts.tcp.ip = strdup("127.0.0.1");
+        else
+          opts.tcp.ip = strndup(optarg, index - optarg);
         opts.tcp.port = atoi(index + 1);
+      }
+      if (!opts.tcp.ip) {
+        fprintf(stderr, "Unable to set hypervisor IP address!\n");
+        exit(EXIT_FAILURE);
       }
       break;
     case 'U':
@@ -107,6 +114,13 @@ ubridge_options_t parse_cli_args(int argc, char **argv)
       mode_selected = true;
       opts.mode = UBRIDGE_MODE_HYPERVISOR_UNIX;
       opts.unix_socket.path = optarg;
+      break;
+    case 'f':
+      if (mode_selected)
+        goto err;
+      mode_selected = true;
+      opts.mode = UBRIDGE_MODE_CONFIG_FILE;
+      opts.config.path = optarg;
       break;
     case 'v':
       printf("%s version %s\n", NAME, VERSION);
@@ -119,13 +133,6 @@ ubridge_options_t parse_cli_args(int argc, char **argv)
       exit(EXIT_SUCCESS);
     case 'd':
       opts.debug_level = atoi(optarg);
-      break;
-    case 'f':
-      if (mode_selected)
-        goto err;
-      mode_selected = true;
-      opts.mode = UBRIDGE_MODE_CONFIG_FILE;
-      opts.config.path = optarg;
       break;
     default:
       exit(EXIT_FAILURE);

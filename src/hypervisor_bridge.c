@@ -69,6 +69,7 @@ static int cmd_create_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
    new_bridge->running = FALSE;
    new_bridge->next = *head;
    *head = new_bridge;
+   pthread_mutex_init(&new_bridge->lock, NULL);
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "bridge '%s' created", argv[0]);
    return (0);
 
@@ -91,21 +92,8 @@ static int cmd_delete_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
           else
              prev->next = bridge->next;
 
-          if (bridge->running) {
-             pthread_cancel(bridge->source_tid);
-             pthread_join(bridge->source_tid, NULL);
-             bridge->source_tid = 0;
-             pthread_cancel(bridge->destination_tid);
-             pthread_join(bridge->destination_tid, NULL);
-             bridge->destination_tid = 0;
-          }
-          if (bridge->name)
-             free(bridge->name);
-          free_nio(bridge->source_nio);
-          free_nio(bridge->destination_nio);
-          free_pcap_capture(bridge->capture);
-          free_packet_filters(bridge->packet_filters);
-          free(bridge);
+          bridge->next = NULL;
+          free_bridges(bridge);
           hypervisor_send_reply(conn, HSC_INFO_OK, 1, "bridge '%s' deleted", argv[0]);
           return (0);
       }
@@ -563,6 +551,7 @@ static int cmd_add_nio_linux_raw(hypervisor_conn_t *conn, int argc, char *argv[]
 static int cmd_start_capture_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
 {
    char *pcap_linktype = "EN10MB";
+   pcap_capture_t *capture;
    bridge_t *bridge;
 
    bridge = find_bridge(argv[0]);
@@ -579,10 +568,13 @@ static int cmd_start_capture_bridge(hypervisor_conn_t *conn, int argc, char *arg
    if (argc == 3)
      pcap_linktype = argv[2];
 
-   if (!(bridge->capture = create_pcap_capture(argv[1], pcap_linktype))) {
+   if (!(capture = create_pcap_capture(argv[1], pcap_linktype))) {
       hypervisor_send_reply(conn, HSC_ERR_START, 1, "packet capture could not be started on bridge '%s'", argv[0]);
       return (-1);
    }
+   pthread_mutex_lock(&bridge->lock);
+   bridge->capture = capture;
+   pthread_mutex_unlock(&bridge->lock);
 
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "packet capture started on bridge '%s'", argv[0]);
    return (0);
@@ -603,8 +595,10 @@ static int cmd_stop_capture_bridge(hypervisor_conn_t *conn, int argc, char *argv
       return (-1);
    }
 
+   pthread_mutex_lock(&bridge->lock);
    free_pcap_capture(bridge->capture);
    bridge->capture = NULL;
+   pthread_mutex_unlock(&bridge->lock);
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "packet capture stopped on bridge '%s'", argv[0]);
    return (0);
 }
@@ -620,7 +614,9 @@ static int cmd_add_packet_filter(hypervisor_conn_t *conn, int argc, char *argv[]
       return (-1);
    }
 
+   pthread_mutex_lock(&bridge->lock);
    res = add_packet_filter(&bridge->packet_filters, argv[1], argv[2], argc-3, &argv[3]);
+   pthread_mutex_unlock(&bridge->lock);
    if (!res)
       hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Filter '%s' type '%s' added to bridge '%s'", argv[1], argv[2], argv[0]);
    else
@@ -639,7 +635,9 @@ static int cmd_delete_packet_filter(hypervisor_conn_t *conn, int argc, char *arg
       return (-1);
    }
 
+   pthread_mutex_lock(&bridge->lock);
    res = delete_packet_filter(&bridge->packet_filters, argv[1]);
+   pthread_mutex_unlock(&bridge->lock);
    if (!res)
       hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Filter '%s' delete from bridge '%s'", argv[1], argv[0]);
    else
@@ -659,7 +657,9 @@ static int cmd_reset_packet_filters(hypervisor_conn_t *conn, int argc, char *arg
 
    /* impairment reset: drop drop/loss/delay/corrupt/bpf but preserve any `mark`
     * observability tap, which holds an open pcap that must survive the reapply. */
+   pthread_mutex_lock(&bridge->lock);
    reset_impairment_filters(&bridge->packet_filters);
+   pthread_mutex_unlock(&bridge->lock);
 
    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "OK");
    return (0);
@@ -689,7 +689,9 @@ static int cmd_enable_packet_filter(hypervisor_conn_t *conn, int argc, char *arg
       return (-1);
    }
 
+   pthread_mutex_lock(&bridge->lock);
    res = set_packet_filter_enabled(bridge->packet_filters, argv[1], enabled);
+   pthread_mutex_unlock(&bridge->lock);
    if (res)
       hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Filter '%s' %s on bridge '%s'",
                             argv[1], enabled ? "enabled" : "paused", argv[0]);
