@@ -89,6 +89,59 @@ bridge add_packet_filter br0 s0 mark "ip" linktype C_HDLC link 3 pcap /tmp/s0.pc
 > (gns3server's naming) — classic pcap records carry no per-packet metadata, so
 > the link identity lives at the file level, not inside the pcap.
 
+## Kernel-dataplane markers (`add_kernel`)
+
+The `mark` filter hooks ubridge's relay, so it can only see traffic that
+**traverses the relay**. GNS3 docker nodes don't: their data plane lives in
+the kernel (`veth → kernel bridge → veth`), and ubridge is only the
+orchestrator. The kernel marker is the "hooked on an interface" variant —
+same signals, same BPF, same pcap — but fed by sniffing the interface
+directly:
+
+```
+marker add_kernel    <name> <ifname> "<bpf>" [tag <id>] [link <id>] [dir <tx|rx>] [linktype <name>] [pcap "<path>"]
+marker delete_kernel <ifname> <name>
+marker enable_kernel <ifname> <name> <on|off>
+```
+
+- Each marker owns one **AF_PACKET/SOCK_RAW socket** bound to the interface's
+  ifindex, `ETH_P_ALL`, **non-promiscuous** (only the data-plane traffic
+  itself — unlike `capture start_kernel`, which opts into promiscuous mode),
+  plus one reader thread. Several markers may watch the same or different
+  interfaces; the uniqueness key is **(ifname, name)** — the same name may
+  exist on different interfaces, a duplicate on the same interface is
+  rejected.
+- The BPF is compiled and applied exactly like the `mark` filter
+  (`pcap_open_dead` + `pcap_compile` + per-packet `pcap_offline_filter` —
+  *not* `SO_ATTACH_FILTER`, preserving `linktype` offset semantics for serial
+  framings like C_HDLC/PPP). Keyword-pair syntax is identical: any order,
+  each keyword at most once, no dangling value. A compile failure replies
+  with the libpcap error text (so the controller can pattern-match
+  `syntax error` / `compile filter` and degrade to a warning-skip instead of
+  failing the link).
+- **Direction** comes from `sockaddr_ll.sll_pkttype`: a frame *leaving* the
+  host-side end (`PACKET_OUTGOING`) is being delivered to the node — the node
+  **receives** → `dir=rx`; anything else arrived from the node — the node
+  **sent** → `dir=tx`. `dir <tx|rx>` filters post-recv by pkttype; omitted =
+  both directions.
+- `enable_kernel off` = installed but **silent** (the thread keeps reading —
+  dir/BPF state stays warm — but emits no signal and writes no pcap); `on`
+  resumes instantly.
+- `delete_kernel` is idempotent (unknown → `100-OK`) and stops the reader
+  thread **cooperatively** (stop flag + 1s `SO_RCVTIMEO`; no `pthread_cancel`
+  — this path holds locks while writing files), then releases everything.
+- Lifecycle is the ubridge process: node stop → process exit → all kernel
+  markers go with it (no shutdown command). `marker status` reports the live
+  count as `kernel=<n>`.
+
+```
+marker add_kernel icmp-m gv1a2b3c4e0p0 "icmp" tag 1 link <uuid> pcap "/project/markers/docker-r1.pcap"
+100-kernel marker 'icmp-m' added on gv1a2b3c4e0p0
+```
+
+Coexists with `capture start_kernel` (independent sockets: markers are
+non-promisc per-marker sniffers, the capture is a singleton promisc one).
+
 ## The `marker` module
 
 ```
@@ -165,8 +218,12 @@ ignores `dir` degrades to direction-less highlighting without error.
 | Code | Meaning |
 |------|---------|
 | `100` | OK |
-| `204` | Invalid sink port / bad value |
-| `206` | Could not resolve / set sink |
+| `203` | Bad number of parameters (add_kernel takes 3–13) |
+| `204` | Invalid value (bad port / dir / state, unknown or duplicate keyword, dangling value) |
+| `205` | AF_PACKET bind failed |
+| `206` | Could not resolve / set sink; duplicate (ifname, name); BPF compile failed (text carries the libpcap error) |
+| `208` | Interface does not exist; unknown marker for `enable_kernel` |
+| `211` | `pcap <path>` could not be opened |
 
 ## Consumer side (gns3server)
 
@@ -193,6 +250,9 @@ while True:
   formats the line and `sendto`'s a cached UDP socket under a mutex; the socket
   is (re)opened when a sink is set. UDP `sendto` is atomic for small datagrams,
   so no per-event buffering/thread is needed.
+- **Kernel markers** (`src/hypervisor_marker.c`): one AF_PACKET socket + reader
+  thread per marker (see above); the thread never touches the module's list
+  lock and reads only its own marker, so `delete` can stop+join it safely.
 - **Direction (`dir=tx|rx`)**: only the relay loop knows which NIO a packet
   came in on, so `bridge_nios()` / the IOL listeners pass an ingress direction
   (`PKT_DIR_TX`/`PKT_DIR_RX`) to each `filter->handler`. The `mark` handler
@@ -218,5 +278,14 @@ pcap header.
 **Pure user-space (UDP + libpcap cBPF) — no `CAP_NET_ADMIN` needed, no sudo:**
 
 ```bash
-cd tests/marker && python3 run_all.py   # 61/61 PASS
+cd tests/marker && python3 run_all.py   # 61/61 PASS (+ test_kernel skips)
 ```
+
+`tests/marker/test_kernel.py` covers the kernel-dataplane variant: it builds a
+veth pair, injects raw Ethernet/IPv4/ICMP frames from both ends (so both
+`pkttype` classes — `PACKET_OUTGOING` → `dir=rx`, `PACKET_HOST` → `dir=tx` —
+are exercised deterministically, without depending on in-namespace ARP), and
+asserts the signals, the dir filter, pcap append, enable off/on, delete
+idempotency, the error paths, and coexistence with `capture start_kernel`.
+Needs `CAP_NET_RAW` — it **self-skips** when run unprivileged and runs for
+real under sudo (CI kernel job) or `unshare -Urn`.

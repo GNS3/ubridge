@@ -8,6 +8,7 @@ SUITES = [
     "test_linktype",
     "test_pause",
     "test_reset_preserves_mark",
+    "test_kernel",   # self-skips without CAP_NET_ADMIN (userspace CI)
 ]
 
 

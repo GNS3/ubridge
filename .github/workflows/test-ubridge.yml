@@ -116,6 +116,9 @@ jobs:
       - name: capture suite
         run: cd tests/capture && sudo python3 run_all.py
 
+      - name: marker kernel suite
+        run: cd tests/marker && sudo python3 test_kernel.py
+
       - name: nio_raw suite
         run: cd tests/nio_raw && sudo python3 run_all.py
 

@@ -64,7 +64,9 @@ The modules that are currently defined are given below:
 - tap : persistent TAP device lifecycle (kernel data plane)
 - tc : kernel netem link impairment — delay/jitter/loss/dup/corrupt (kernel data plane)
 - capture : kernel-side AF_PACKET capture (kernel data plane)
-- marker : packet-filter match signals, pushed to a UDP sink (kernel data plane)
+- marker : packet-filter match signals, pushed to a UDP sink; `add_kernel`
+  sniffs a kernel interface directly for data-plane traffic that bypasses
+  the relay (kernel data plane)
 
 User-space link impairment (delay / jitter / loss / corrupt / BPF) is **not a
 separate module**: it is a per-bridge filter chain configured through the
