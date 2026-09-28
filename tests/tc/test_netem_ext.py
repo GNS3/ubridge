@@ -219,9 +219,10 @@ def main():
                 r.check("dup correl alone survives", "duplicate 25% 50%" in qshow(IFN), qshow(IFN).strip()[:120])
 
                 # --- capabilities --------------------------------------------
+                # cbpf=1 since part C (bpf_drop) — probed on a throwaway dummy
                 r.check("capabilities string",
                         c.send("tc capabilities") ==
-                        "100-netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;ebpf=0;cbpf=0",
+                        "100-netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;ebpf=0;cbpf=1",
                         c.send("tc capabilities"))
 
                 # --- error contract ------------------------------------------

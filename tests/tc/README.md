@@ -1,7 +1,8 @@
 # tc test suite
 
 Black-box tests for the `tc` hypervisor module (kernel netem link
-impairment, plus the P6a keyword extensions and `tc capabilities`).
+impairment, the P6a keyword extensions, the P6c `bpf_drop` classic-BPF
+filters, and `tc capabilities`).
 
 ## Prerequisites
 
@@ -41,6 +42,11 @@ sudo python3 run_all.py
 |-------|----------------|
 | `test_basic.py` | P5 surface: netem set with the five base parameters (delay, jitter, loss, dup, corrupt — kernel-verified via `tc qdisc show`), REPLACE semantics on re-set, reset (idempotent: no qdisc → 100), param validation (203/204), missing iface (207). |
 | `test_netem_ext.py` | P6a extensions: `rate` (bit/kbit/mbit/gbit + bps-family bytes/s units, RATE64 path), `reorder` (+correl, gap, requires-delay), `loss gemodel` (p/r/1-h), `distribution` (embedded tables, uniform = no table), `seed`, `limit`, `correl` suffixes, `tc capabilities`. Verified by **byte-comparing the kernel's TCA_OPTIONS dump against what the real `tc` CLI produces for the same parameters**, plus `tc qdisc show` state, the full 203/204 error contract, and behavioral checks on a veth pair (delay lower bound, limit overflow, gemodel extremes) using raw AF_PACKET injection. |
+| `test_bpf_drop.py` | P6c: `bpf_drop add` (prio 10-99, pcap expression) / `flush` / full-restore `reset` / capabilities `cbpf=1`. Byte-compare oracle: the kernel's TCA_BPF_OPS must equal an **independent libpcap compile** (ctypes) and dump identically to the real `tc` CLI's `bpf bytecode '<insns>' action drop`; action must be gact/TC_ACT_SHOT (RTM_GETTFILTER dump). Error contract (203/204/207/209), flush removes only ubridge-tracked prios (a foreign CLI filter survives), netem coexistence, veth behavioral (match dropped / non-match passes / multi-prio OR / flush restores). |
+
+`test_bpf_drop.py` also needs **libpcap loadable by ctypes** (`libpcap.so.1`,
+already a ubridge build dependency) — it self-skips if the library cannot be
+loaded.
 
 ### Behavioral-test notes
 
@@ -61,3 +67,13 @@ anything needing the kernel IP stack (ping/ARP) does not work — hence raw
 injection. The precision tier (distribution shape statistics, rate ±10%
 throughput, seed-identical drop patterns) is left to a CI-root tier with real
 traffic.
+
+### Netlink dump quirks (RTM_GETTFILTER, kernel 7.2)
+
+- The dump terminator is an **`NLMSG_ERROR(err=0)`** ack, not `NLMSG_DONE`
+  (same as the qdisc dump).
+- Each filter dumps as **two messages**: the filter itself (with
+  `TCA_OPTIONS`) and a stats continuation (without) — keep only messages
+  carrying `TCA_OPTIONS` when collecting by prio.
+- Inside `TCA_ACT_OPTIONS`, `TCA_GACT_PARMS` is attr **2** (`UNSPEC=0,
+  TM=1, PARMS=2`) — easy to mis-number.

@@ -37,6 +37,21 @@
  * on the wire (tc's internal unit: "10mbit" => 1250000); the gemodel third
  * parameter is 1-h and is stored complemented (h = ~pct); reorder needs a
  * delay and defaults gap to 1, like the tc CLI.
+ *
+ * bpf_drop (the GNS3 "bpf" filter, kernel-side): a pcap-compiled classic
+ * BPF program attached as a cls_bpf filter on the clsact qdisc's egress
+ * side, with a gact TC_ACT_SHOT action — match means drop, non-match falls
+ * through. Wire ABI (verified against net/sched/cls_bpf.c cls_bpf_change()
+ * and iproute2 tc/f_bpf.c): clsact is created at parent TC_H_CLSACT with
+ * handle TC_H_MAKE(TC_H_CLSACT, 0); filters sit at parent
+ * TC_H_MAKE(TC_H_CLSACT, TC_H_MIN_EGRESS) with tcm_info = (prio << 16) |
+ * htons(ETH_P_ALL), and carry TCA_OPTIONS { TCA_BPF_ACT (nested gact with
+ * action TC_ACT_SHOT), TCA_BPF_OPS_LEN (u16), TCA_BPF_OPS (sock_filter
+ * array) }. The kernel migrates classic bytecode to eBPF internally
+ * (bpf_prog_create) — no CAP_BPF needed, only the netlink CAP_NET_ADMIN
+ * this module already requires. Egress cls_bpf filters see the full
+ * Ethernet frame (the ingress side would need a mac_len push), which is
+ * exactly what a DLT_EN10MB pcap program expects.
  */
 
 #include <stdio.h>
@@ -46,11 +61,18 @@
 #include <ctype.h>
 #include <errno.h>
 #include <assert.h>
+#include <unistd.h>
 
 #include <net/if.h>
+#include <arpa/inet.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <linux/pkt_sched.h>
+#include <linux/pkt_cls.h>
+#include <linux/tc_act/tc_gact.h>
+#include <linux/filter.h>
+#include <linux/if_ether.h>
+#include <pcap.h>
 
 #include "netlink/nl.h"
 #include "hypervisor.h"
@@ -62,6 +84,11 @@
 
 /* Highest accepted rate: 100gbit (in bits/s). */
 #define NETEM_RATE_MAX_BPS 100000000000ULL
+
+/* bpf_drop filter priorities the controller may use (spec part C/D: egress
+ * classifiers run by ascending prio, eBPF impairment owns prio 1). */
+#define BPF_DROP_PRIO_MIN 10
+#define BPF_DROP_PRIO_MAX 99
 
 /* One "tc netem set" command, as gathered by the parser. */
 struct netem_params {
@@ -95,6 +122,41 @@ struct netem_params {
     int has_limit;
     unsigned int limit;
 };
+
+/* --------------------------------------------------------------------------
+ * bpf_drop filter registry — the prios we installed, per interface.
+ *
+ * Kernel state is the source of truth; this list only remembers WHICH prios
+ * of an interface belong to us, so `bpf_drop flush` and `tc reset` remove
+ * exactly our filters and never a foreign classifier. Only touched from
+ * command handlers, which the dispatcher serialises under global_lock.
+ * --------------------------------------------------------------------------
+ */
+
+struct bpf_drop_prio {
+    struct bpf_drop_prio *next;
+    unsigned int ifindex;
+    unsigned int prio;
+};
+
+static struct bpf_drop_prio *bpf_drop_prios;
+
+static void bpf_drop_track(unsigned int ifindex, unsigned int prio)
+{
+    struct bpf_drop_prio *e;
+
+    for (e = bpf_drop_prios; e != NULL; e = e->next)
+        if (e->ifindex == ifindex && e->prio == prio)
+            return;
+
+    e = malloc(sizeof(*e));
+    if (e != NULL) {
+        e->ifindex = ifindex;
+        e->prio = prio;
+        e->next = bpf_drop_prios;
+        bpf_drop_prios = e;
+    }
+}
 
 /* --------------------------------------------------------------------------
  * netlink helpers — return 0 on success or a negative errno.
@@ -293,7 +355,294 @@ out:
     return ret;
 }
 
-/* Remove the root qdisc of <ifname>. Returns 0 or -errno. */
+/* --------------------------------------------------------------------------
+ * clsact / classifier-filter netlink ops (bpf_drop). All take an open
+ * netlink handler and return 0 or a negative errno.
+ * --------------------------------------------------------------------------
+ */
+
+/*
+ * Create the clsact qdisc on <ifindex>. It coexists with the root netem
+ * qdisc — clsact never replaces the root. EEXIST (already attached) is
+ * success for the caller's "ensure" intent.
+ */
+static int tc_clsact_create(struct nl_handler *nlh, int ifindex)
+{
+    struct nlmsg *msg, *reply;
+    struct tcmsg *tcm;
+    int ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        return -ENOMEM;
+    }
+
+    tcm = (struct tcmsg *)nlmsg_data(msg);
+    memset(tcm, 0, sizeof(*tcm));
+    tcm->tcm_family = AF_UNSPEC;
+    tcm->tcm_ifindex = ifindex;
+    tcm->tcm_parent = TC_H_CLSACT;
+    tcm->tcm_handle = TC_H_MAKE(TC_H_CLSACT, 0);
+
+    msg->nlmsghdr.nlmsg_type = RTM_NEWQDISC;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct tcmsg));
+
+    nla_put_string(msg, TCA_KIND, "clsact");
+
+    ret = netlink_transaction(nlh, msg, reply);
+    if (ret == -EEXIST)
+        ret = 0;
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    return ret;
+}
+
+/*
+ * Delete the clsact qdisc of <ifindex>. Requesting handle 0 (rather than
+ * TC_H_MAKE(TC_H_CLSACT, 0)) makes an absent clsact uniformly ENOENT: the
+ * kernel finds the ingress queue's noop qdisc and refuses to delete
+ * handle 0, instead of comparing against a handle and returning EINVAL
+ * (what `tc qdisc del ... clsact` twice prints as "Invalid handle").
+ */
+static int tc_clsact_delete(struct nl_handler *nlh, int ifindex)
+{
+    struct nlmsg *msg, *reply;
+    struct tcmsg *tcm;
+    int ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        return -ENOMEM;
+    }
+
+    tcm = (struct tcmsg *)nlmsg_data(msg);
+    memset(tcm, 0, sizeof(*tcm));
+    tcm->tcm_family = AF_UNSPEC;
+    tcm->tcm_ifindex = ifindex;
+    tcm->tcm_parent = TC_H_CLSACT;
+
+    msg->nlmsghdr.nlmsg_type = RTM_DELQDISC;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct tcmsg));
+
+    ret = netlink_transaction(nlh, msg, reply);
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    return ret;
+}
+
+/*
+ * Delete the whole prio node <prio> (all filters at that priority) from the
+ * clsact egress side. ENOENT = nothing at that prio, fine for callers.
+ */
+static int tc_filter_del_prio(struct nl_handler *nlh, int ifindex, unsigned int prio)
+{
+    struct nlmsg *msg, *reply;
+    struct tcmsg *tcm;
+    int ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        return -ENOMEM;
+    }
+
+    tcm = (struct tcmsg *)nlmsg_data(msg);
+    memset(tcm, 0, sizeof(*tcm));
+    tcm->tcm_family = AF_UNSPEC;
+    tcm->tcm_ifindex = ifindex;
+    tcm->tcm_parent = TC_H_MAKE(TC_H_CLSACT, TC_H_MIN_EGRESS);
+    tcm->tcm_info = (prio << 16) | htons(ETH_P_ALL);
+
+    msg->nlmsghdr.nlmsg_type = RTM_DELTFILTER;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct tcmsg));
+
+    ret = netlink_transaction(nlh, msg, reply);
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    return ret;
+}
+
+/*
+ * Attach a classic-BPF drop filter: cls_bpf on clsact egress at <prio>,
+ * protocol ETH_P_ALL, one gact action with TC_ACT_SHOT. The kernel assigns
+ * the filter handle. Attribute order mirrors the tc CLI (ACT, then
+ * OPS_LEN/OPS; the kernel is order-agnostic).
+ */
+static int tc_bpf_filter_add(struct nl_handler *nlh, int ifindex,
+                             unsigned int prio,
+                             const struct sock_filter *ops, unsigned int ops_len)
+{
+    struct nlmsg *msg, *reply;
+    struct rtattr *opts, *act, *slot, *actopts;
+    struct tc_gact gact;
+    struct tcmsg *tcm;
+    int ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        return -ENOMEM;
+    }
+
+    tcm = (struct tcmsg *)nlmsg_data(msg);
+    memset(tcm, 0, sizeof(*tcm));
+    tcm->tcm_family = AF_UNSPEC;
+    tcm->tcm_ifindex = ifindex;
+    tcm->tcm_parent = TC_H_MAKE(TC_H_CLSACT, TC_H_MIN_EGRESS);
+    tcm->tcm_info = (prio << 16) | htons(ETH_P_ALL);
+
+    msg->nlmsghdr.nlmsg_type = RTM_NEWTFILTER;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct tcmsg));
+
+    nla_put_string(msg, TCA_KIND, "bpf");
+
+    opts = nla_begin_nested(msg, TCA_OPTIONS);
+    opts->rta_type |= NLA_F_NESTED;
+
+    /* TCA_BPF_ACT -> action slot 1 -> gact with action = TC_ACT_SHOT */
+    act = nla_begin_nested(msg, TCA_BPF_ACT);
+    act->rta_type |= NLA_F_NESTED;
+    slot = nla_begin_nested(msg, 1);
+    slot->rta_type |= NLA_F_NESTED;
+    nla_put_string(msg, TCA_ACT_KIND, "gact");
+    actopts = nla_begin_nested(msg, TCA_ACT_OPTIONS);
+    actopts->rta_type |= NLA_F_NESTED;
+    memset(&gact, 0, sizeof(gact));
+    gact.action = TC_ACT_SHOT;
+    nla_put_buffer(msg, TCA_GACT_PARMS, &gact, sizeof(gact));
+    nla_end_nested(msg, actopts);
+    nla_end_nested(msg, slot);
+    nla_end_nested(msg, act);
+
+    /* the classic bytecode itself (struct bpf_insn == struct sock_filter) */
+    nla_put_u16(msg, TCA_BPF_OPS_LEN, ops_len);
+    nla_put_buffer(msg, TCA_BPF_OPS, ops, ops_len * sizeof(*ops));
+
+    nla_end_nested(msg, opts);
+
+    ret = netlink_transaction(nlh, msg, reply);
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    return ret;
+}
+
+/*
+ * Delete every tracked prio node of <ifindex> from the kernel and untrack
+ * it. ENOENT per filter is tolerated (already gone). With stop_on_error
+ * (flush), the first real failure aborts and the remaining entries stay
+ * tracked; reset passes 0 — clsact is torn down right after, so untracking
+ * everything is correct regardless. Returns 0 or the first non-ENOENT
+ * negative errno.
+ */
+static int bpf_drop_flush_tracked(struct nl_handler *nlh, unsigned int ifindex,
+                                  int stop_on_error)
+{
+    struct bpf_drop_prio **pp = &bpf_drop_prios, *e;
+    int ret = 0, err;
+
+    while ((e = *pp) != NULL) {
+        if (e->ifindex != ifindex) {
+            pp = &e->next;
+            continue;
+        }
+        err = tc_filter_del_prio(nlh, ifindex, e->prio);
+        if (err < 0 && err != -ENOENT) {
+            if (ret == 0)
+                ret = err;
+            if (stop_on_error)
+                break;
+        }
+        *pp = e->next;
+        free(e);
+    }
+    return ret;
+}
+
+/* RTM_NEWLINK a throwaway dummy (IFLA_INFO_KIND "dummy"). */
+static int nl_link_create_dummy(struct nl_handler *nlh, const char *name)
+{
+    struct nlmsg *msg, *reply;
+    struct ifinfomsg *ifi;
+    struct rtattr *linkinfo;
+    int ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        return -ENOMEM;
+    }
+
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_UNSPEC;
+
+    msg->nlmsghdr.nlmsg_type = RTM_NEWLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+
+    nla_put_string(msg, IFLA_IFNAME, name);
+    linkinfo = nla_begin_nested(msg, IFLA_LINKINFO);
+    nla_put_string(msg, IFLA_INFO_KIND, "dummy");
+    nla_end_nested(msg, linkinfo);
+
+    ret = netlink_transaction(nlh, msg, reply);
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    return ret;
+}
+
+/* RTM_DELLINK by ifindex. */
+static int nl_link_delete(struct nl_handler *nlh, int ifindex)
+{
+    struct nlmsg *msg, *reply;
+    struct ifinfomsg *ifi;
+    int ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        return -ENOMEM;
+    }
+
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_UNSPEC;
+    ifi->ifi_index = ifindex;
+
+    msg->nlmsghdr.nlmsg_type = RTM_DELLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+
+    ret = netlink_transaction(nlh, msg, reply);
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    return ret;
+}
+
+/*
+ * Full restore of <ifname> (spec part D): 1. remove every bpf_drop filter we
+ * added (clsact egress side), 2. delete clsact, 3. delete the root qdisc.
+ * ENOENT at any step is the target state already (idempotent reset).
+ * Returns 0 or a negative errno.
+ */
 static int tc_reset(const char *ifname)
 {
     struct nl_handler nlh;
@@ -309,6 +658,20 @@ static int tc_reset(const char *ifname)
     if (ret < 0)
         return ret;
 
+    /* 1. our classifier filters (ENOENT tolerated; untrack all regardless —
+     * clsact goes away next, taking any survivor with it) */
+    ret = bpf_drop_flush_tracked(&nlh, ifindex, 0);
+    if (ret < 0)
+        goto out;
+
+    /* 2. clsact (coexisted with the root netem; absent = fine) */
+    ret = tc_clsact_delete(&nlh, ifindex);
+    if (ret == -ENOENT)
+        ret = 0;
+    if (ret < 0)
+        goto out;
+
+    /* 3. the root qdisc */
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
     reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
     if (!msg || !reply) {
@@ -615,17 +978,214 @@ static int cmd_reset(hypervisor_conn_t *conn, int argc, char *argv[])
     return 0;
 }
 
+/* --------------------------------------------------------------------------
+ * bpf_drop commands
+ * --------------------------------------------------------------------------
+ */
+
+/*
+ * Compile a pcap expression against Ethernet (same shape as the relay's
+ * "bpf" filter, so one expression serves both datapaths). On failure the
+ * caller replies 209 with this exact prefix — the controller keys on it.
+ * Newlines in pcap's error are folded to spaces to keep the reply
+ * single-line. Returns 0 or -1 with <err> filled.
+ */
+static int bpf_drop_compile(const char *expr, struct bpf_program *fp,
+                            char *err, size_t errlen)
+{
+    pcap_t *pd;
+    char *p;
+
+    pd = pcap_open_dead(DLT_EN10MB, 65535);
+    if (pd == NULL) {
+        snprintf(err, errlen, "pcap_open_dead failed");
+        return -1;
+    }
+    if (pcap_compile(pd, fp, expr, 1, PCAP_NETMASK_UNKNOWN) < 0) {
+        snprintf(err, errlen, "%s", pcap_geterr(pd));
+        for (p = err; *p != '\0'; p++)
+            if (*p == '\n' || *p == '\r')
+                *p = ' ';
+        pcap_close(pd);
+        return -1;
+    }
+    pcap_close(pd);
+    return 0;
+}
+
+/*
+ * tc bpf_drop add <if> <prio> "<expression>"
+ * tc bpf_drop flush <if>
+ */
+static int cmd_bpf_drop(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    struct nl_handler nlh;
+    struct bpf_program fp;
+    char errbuf[PCAP_ERRBUF_SIZE];
+    const char *ifname;
+    unsigned int prio;
+    char *end;
+    long v;
+    int ifindex, ret;
+
+    if (strcmp(argv[0], "add") == 0) {
+        if (argc != 4) {
+            hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1,
+                                  "Bad number of parameters (%d with min/max=4/4)", argc);
+            return -1;
+        }
+        ifname = argv[1];
+        v = strtol(argv[2], &end, 10);
+        if (end == argv[2] || *end != '\0' || v < BPF_DROP_PRIO_MIN || v > BPF_DROP_PRIO_MAX) {
+            hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1,
+                                  "invalid prio value '%s' (%d-%d)", argv[2],
+                                  BPF_DROP_PRIO_MIN, BPF_DROP_PRIO_MAX);
+            return -1;
+        }
+        prio = (unsigned int)v;
+
+        if (bpf_drop_compile(argv[3], &fp, errbuf, sizeof(errbuf)) < 0) {
+            hypervisor_send_reply(conn, HSC_ERR_START, 1,
+                                  "Cannot compile filter '%s': %s", argv[3], errbuf);
+            return -1;
+        }
+
+        ifindex = if_nametoindex(ifname);
+        if (ifindex == 0) {
+            pcap_freecode(&fp);
+            hypervisor_send_reply(conn, HSC_ERR_DELETE, 1,
+                                  "Could not add bpf_drop filter on %s: %s", ifname, strerror(ENODEV));
+            return -1;
+        }
+
+        ret = netlink_open(&nlh, NETLINK_ROUTE);
+        if (ret < 0) {
+            pcap_freecode(&fp);
+            hypervisor_send_reply(conn, HSC_ERR_DELETE, 1,
+                                  "Could not add bpf_drop filter on %s: %s", ifname, strerror(-ret));
+            return -1;
+        }
+
+        /* clsact (EEXIST tolerated), then replace-whole-prio semantics:
+         * drop any filter already sitting at this prio so re-adding an
+         * expression cannot stack duplicates. The controller normally
+         * flushes first; this covers a ubridge restart. */
+        ret = tc_clsact_create(&nlh, ifindex);
+        if (ret == 0) {
+            tc_filter_del_prio(&nlh, ifindex, prio);   /* best effort */
+            ret = tc_bpf_filter_add(&nlh, ifindex, prio,
+                                    (const struct sock_filter *)fp.bf_insns, fp.bf_len);
+        }
+        netlink_close(&nlh);
+        pcap_freecode(&fp);
+
+        if (ret < 0) {
+            hypervisor_send_reply(conn, HSC_ERR_DELETE, 1,
+                                  "Could not add bpf_drop filter on %s: %s", ifname, strerror(-ret));
+            return -1;
+        }
+        bpf_drop_track(ifindex, prio);
+        hypervisor_send_reply(conn, HSC_INFO_OK, 1,
+                              "bpf_drop filter added on %s (prio %u)", ifname, prio);
+        return 0;
+    }
+
+    if (strcmp(argv[0], "flush") == 0) {
+        if (argc != 2) {
+            hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1,
+                                  "Bad number of parameters (%d with min/max=2/2)", argc);
+            return -1;
+        }
+        ifname = argv[1];
+
+        ifindex = if_nametoindex(ifname);
+        if (ifindex == 0) {
+            hypervisor_send_reply(conn, HSC_ERR_DELETE, 1,
+                                  "Could not flush bpf_drop on %s: %s", ifname, strerror(ENODEV));
+            return -1;
+        }
+
+        ret = netlink_open(&nlh, NETLINK_ROUTE);
+        if (ret < 0) {
+            hypervisor_send_reply(conn, HSC_ERR_DELETE, 1,
+                                  "Could not flush bpf_drop on %s: %s", ifname, strerror(-ret));
+            return -1;
+        }
+        /* only OUR filters: clsact itself, any eBPF impairment filter and
+         * the netem root qdisc stay untouched */
+        ret = bpf_drop_flush_tracked(&nlh, ifindex, 1);
+        netlink_close(&nlh);
+
+        if (ret < 0) {
+            hypervisor_send_reply(conn, HSC_ERR_DELETE, 1,
+                                  "Could not flush bpf_drop on %s: %s", ifname, strerror(-ret));
+            return -1;
+        }
+        hypervisor_send_reply(conn, HSC_INFO_OK, 1,
+                              "bpf_drop filters flushed on %s", ifname);
+        return 0;
+    }
+
+    hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1,
+                          "unknown bpf_drop action '%s' (expected 'add' or 'flush')", argv[0]);
+    return -1;
+}
+
+/*
+ * cbpf capability probe: can this kernel (and our caps) install a
+ * classic-BPF cls_bpf filter at all? Creates a throwaway dummy, attaches
+ * clsact plus a one-instruction never-matching program, then deletes the
+ * dummy again (deleting the link tears the qdisc with it). Result cached;
+ * failure of any step means cbpf=0 and the controller stays on the relay
+ * datapath for "bpf" filters.
+ */
+static int tc_cbpf_capable(void)
+{
+    static int capable = -1;
+    struct nl_handler nlh;
+    /* ret #0 — never matches, so even a leak could not drop traffic */
+    static const struct sock_filter never[1] = { { .code = BPF_RET | BPF_K, .k = 0 } };
+    char name[IF_NAMESIZE];
+    unsigned int salt;
+    int attempt, ifindex, ok = 0;
+
+    if (capable >= 0)
+        return capable;
+    capable = 0;
+
+    if (netlink_open(&nlh, NETLINK_ROUTE) < 0)
+        return capable;
+
+    for (attempt = 0; attempt < 3 && !ok; attempt++) {
+        salt = (unsigned int)(getpid() + attempt * 7919) % 100000;
+        snprintf(name, sizeof(name), "ubcap%05u", salt);
+        if (nl_link_create_dummy(&nlh, name) < 0)
+            continue;
+        ifindex = if_nametoindex(name);
+        if (ifindex == 0)
+            continue;
+        if (tc_clsact_create(&nlh, ifindex) == 0)
+            ok = (tc_bpf_filter_add(&nlh, ifindex, BPF_DROP_PRIO_MAX, never, 1) == 0);
+        nl_link_delete(&nlh, ifindex);   /* qdisc and filters go with it */
+    }
+    netlink_close(&nlh);
+
+    capable = ok;
+    return capable;
+}
+
 /*
  * tc capabilities — what this build supports, so the controller can hide
  * filter types the local kernel/ubridge cannot run (and fall back to the
- * relay datapath). ebpf/cbpf flip to 1 when the clsact classifier commands
- * (spec parts B/C) land; an old ubridge without this command at all keeps
- * the controller on the relay datapath.
+ * relay datapath). ebpf flips to 1 when the stateful classifier (spec part
+ * B) lands; cbpf is probed for real. An old ubridge without this command
+ * at all keeps the controller on the relay datapath.
  */
 static int cmd_capabilities(hypervisor_conn_t *conn, int argc, char *argv[])
 {
     hypervisor_send_reply(conn, HSC_INFO_OK, 1,
-                          "netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;ebpf=0;cbpf=0");
+                          "netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;ebpf=0;cbpf=%d",
+                          tc_cbpf_capable());
     return 0;
 }
 
@@ -640,6 +1200,8 @@ static hypervisor_cmd_t tc_cmd_array[] = {
     *              [rate <bw>] [limit <pkts>]
     *              [distribution uniform|normal|pareto|paretonormal] [seed <u32>] */
    { "netem", 4, 32, cmd_netem, NULL },
+   /* bpf_drop add <if> <prio> "<expr>" (prio 10-99) / bpf_drop flush <if> */
+   { "bpf_drop", 2, 4, cmd_bpf_drop, NULL },
    { "reset", 1, 1, cmd_reset, NULL },
    { "capabilities", 0, 0, cmd_capabilities, NULL },
    { NULL, -1, -1, NULL, NULL },

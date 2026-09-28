@@ -1,15 +1,16 @@
-# tc module — kernel netem link impairment
+# tc module — kernel netem link impairment + bpf_drop classifiers
 
 The `tc` hypervisor module attaches and removes a **netem** qdisc at the root
-of an interface, providing kernel-side link impairment. It is exposed over
-the hypervisor text protocol as `tc <command> [args...]`.
+of an interface (kernel-side link impairment) and installs **classic-BPF match
+drop filters** (`bpf_drop`) on the egress classifier. It is exposed over the
+hypervisor text protocol as `tc <command> [args...]`.
 
 It exists for the **kernel data plane**: once frames flow `TAP → kernel bridge
 (brctl) → TAP`, they never reach ubridge's user-space NIO relay, so the
 `bridge` module's user-space packet filters (`delay` / `packet_loss` / `corrupt`
 / `bpf`) no longer see the traffic. The impairment has to live in the kernel
-qdisc instead. `tc` is that kernel-side replacement for the subset of user-space
-filters that netem covers (delay/jitter/loss/dup/corrupt and beyond).
+qdisc instead. `tc` is that kernel-side replacement for the user-space filters
+(delay/jitter/loss/dup/corrupt and beyond, plus `bpf` → `bpf_drop`).
 
 ## Transport
 
@@ -94,20 +95,64 @@ dangling value → `203`. `reorder` without `delay` → `204-reorder requires
 delay`. Netlink/kernel failure (incl. missing interface) →
 `207-Could not set netem on <if>: <strerror>`.
 
+### `tc bpf_drop add <if> <prio> "<expression>"`
+
+The kernel-side replacement for the user-space `bpf` packet filter: compile
+the pcap/libpcap expression against Ethernet (`DLT_EN10MB`, snaplen 65535,
+optimized — same shape as the relay's `bpf` filter, so one expression serves
+both datapaths) and install it as a **cls_bpf classifier on the clsact
+qdisc's egress side**, with a `gact` `TC_ACT_SHOT` action: a match drops the
+frame, a non-match falls through to the next filter (any match drops — OR
+semantics across filters).
+
+```
+tc bpf_drop add tap-gns3-e0 10 "icmp[icmptype] == 8"
+100-bpf_drop filter added on tap-gns3-e0 (prio 10)
+```
+
+- `<prio>` is 10–99 (server-assigned; prio 1 is reserved for the future eBPF
+  impairment filter). Egress classifiers run by ascending priority, *before*
+  the root netem qdisc — dropped frames never reach netem **nor the AF_PACKET
+  tap points** (capture/markers will not observe cls_bpf-dropped frames).
+- clsact is created on first use and **coexists with the netem root qdisc**
+  (never replaces the root).
+- Re-adding at the same prio **replaces** (the prio node is cleared first) —
+  the normal update path is `flush` + re-`add` (mirrors `netem set`), which
+  this makes safe even after a ubridge restart.
+- Errors: `204-invalid prio value '<v>' (10-99)`; `209-Cannot compile filter
+  '<expr>': <pcap error>` (the controller keys on that exact prefix — same
+  shape as the relay's compile error, so one regex serves both datapaths);
+  `207` on netlink/kernel failure (incl. missing interface).
+
+### `tc bpf_drop flush <if>`
+
+Delete every bpf_drop filter **uBridge added** on `<if>` (prios are tracked
+in-process; a flush after a ubridge restart is a no-op that still returns
+`100`). Does **not** touch the clsact qdisc itself, the netem root qdisc, or
+any filter ubridge does not own (e.g. a future eBPF impairment filter at
+prio 1, or a classifier someone else attached).
+
+```
+tc bpf_drop flush tap-gns3-e0
+100-bpf_drop filters flushed on tap-gns3-e0
+```
+
+Idempotent; per-filter `ENOENT` tolerated. Missing interface → `207`.
+
 ### `tc reset <if>`
 
-Remove the root qdisc of `<if>` (`RTM_DELQDISC`). This removes whatever root
-qdisc is attached (netem or the default); the kernel re-creates a default
-qdisc.
+**Full restore** of the interface: 1. remove every bpf_drop filter ubridge
+added (clsact egress side), 2. delete the clsact qdisc, 3. remove the root
+qdisc (`RTM_DELQDISC` — whatever root qdisc is attached, netem or the
+default; the kernel re-creates a default qdisc).
 
 ```
 tc reset tap-gns3-e0
 100-qdisc reset on tap-gns3-e0
 ```
 
-**Idempotent**: the semantics are "ensure no netem", so a reset on an
-interface that has no qdisc is not an error — the target state already
-holds:
+**Idempotent**: the semantics are "ensure nothing is attached", so a reset
+on an untouched interface is not an error — the target state already holds:
 
 ```
 tc reset tap-gns3-e0
@@ -124,21 +169,25 @@ an old ubridge without this command gets the same treatment):
 
 ```
 tc capabilities
-100-netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;ebpf=0;cbpf=0
+100-netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;ebpf=0;cbpf=1
 ```
 
-`ebpf`/`cbpf` flip to 1 when the clsact-classifier commands (stateful eBPF
-filters, classic-BPF match-drop) land; until then the controller must keep
-`frequency_drop`/`bpf` on the relay datapath.
+`cbpf` is **probed for real** (cached): ubridge creates a throwaway dummy
+link, attaches clsact plus a one-instruction never-matching cBPF filter, and
+deletes the dummy again; any step failing (no `CAP_NET_ADMIN`, kernel
+without `cls_bpf`) reports `cbpf=0`. `ebpf` flips to 1 when the stateful
+eBPF classifier (spec part B) lands; until then the controller must keep
+`frequency_drop` on the relay datapath.
 
 ## Status codes
 
 | Code | Meaning |
 |------|---------|
 | `100` | OK |
-| `203` | Bad number of parameters (netem takes 4–32) / dangling value |
-| `204` | Invalid value; `reorder requires delay`; `unknown distribution '<v>'`; duplicate `loss` |
-| `207` | Netlink/kernel failure (`Could not set netem / reset qdisc on <if>: <strerror>`; ENODEV; a missing qdisc on reset is `100`, not an error) |
+| `203` | Bad number of parameters (netem takes 4–32; bpf_drop add 4, flush 2) / dangling value |
+| `204` | Invalid value; `reorder requires delay`; `unknown distribution '<v>'`; duplicate `loss`; bpf_drop prio/verb errors |
+| `207` | Netlink/kernel failure (`Could not set netem / add bpf_drop / reset qdisc on <if>: <strerror>`; ENODEV; a missing qdisc on reset is `100`, not an error) |
+| `209` | `Cannot compile filter '<expr>': <pcap error>` — bpf_drop expression failed to compile |
 
 ## Implementation notes
 
@@ -170,6 +219,28 @@ filters, classic-BPF match-drop) land; until then the controller must keep
 - One deliberate divergence from the `tc` CLI: **`dup … correl` alone is not
   silently dropped**. iproute2 forgets to mark the CORR attribute present in
   that case, losing the setting; ubridge always sends it.
+- **bpf_drop ABI** (per `net/sched/cls_bpf.c` `cls_bpf_change()`): clsact is
+  created at parent `TC_H_CLSACT` (handle `TC_H_MAKE(TC_H_CLSACT, 0)`,
+  `EEXIST` tolerated); filters are attached with `RTM_NEWTFILTER`
+  (`CREATE|EXCL`) at parent `TC_H_MAKE(TC_H_CLSACT, TC_H_MIN_EGRESS)`,
+  `tcm_info = (prio << 16) | htons(ETH_P_ALL)`, and `TCA_OPTIONS` =
+  `TCA_BPF_ACT` (nested: action slot 1 → `TCA_ACT_KIND "gact"` →
+  `TCA_ACT_OPTIONS` → `TCA_GACT_PARMS` with `action = TC_ACT_SHOT`) followed
+  by `TCA_BPF_OPS_LEN` (u16) + `TCA_BPF_OPS` (the `sock_filter` array —
+  `struct bpf_insn` is layout-identical). The kernel migrates classic
+  bytecode to eBPF internally (`bpf_prog_create`), so **no `CAP_BPF` is
+  needed** — only the netlink `CAP_NET_ADMIN` this module already requires.
+- **flush/reset delete** whole prio nodes: `RTM_DELTFILTER` with the prio in
+  `tcm_info` and handle 0 removes every filter at that priority (`ENOENT` =
+  nothing there). Deleting clsact requests handle 0 rather than
+  `TC_H_MAKE(TC_H_CLSACT, 0)` so an absent clsact uniformly returns `ENOENT`
+  (with the handle set, the kernel compares against the ingress queue's
+  noop qdisc and returns `EINVAL` — the "Invalid handle" `tc qdisc del …
+  clsact` prints on a second delete).
+- bpf_drop prios are tracked per-ifindex in-process (a linked list only
+  touched from command handlers, which the dispatcher serialises under
+  `global_lock`). Kernel state remains the source of truth; the list exists
+  so flush/reset remove exactly our filters.
 - Uses ubridge's netlink library (`src/netlink/nl.c`); helpers return a
   **negative errno**; command handlers report `strerror(-err)`.
 
@@ -182,7 +253,7 @@ filters, classic-BPF match-drop) land; until then the controller must keep
 | `corrupt` | `tc netem corrupt` |
 | (none) | `tc netem dup`, `tc netem reorder`, `tc netem rate`, `tc netem limit`, `tc netem seed` (no user-space equivalents) |
 | `frequency_drop` (exact every-Nth) | none — netem loss is stochastic; exact needs eBPF (`ebpf=0` so far) |
-| `bpf` (cBPF drop filter) | none — needs tc clsact classifiers (`cbpf=0` so far) |
+| `bpf` (cBPF drop filter) | `tc bpf_drop add` — same pcap expression, compiled against the same DLT_EN10MB (`cbpf=1`) |
 
 ## Testing
 
@@ -201,6 +272,16 @@ filters, classic-BPF match-drop) land; until then the controller must keep
   on a veth pair with raw AF_PACKET injection (delay lower bound, limit
   overflow, gemodel extremes — with IPv6 disabled on the test veth, because
   the kernel's Router Solicitations otherwise traverse the qdisc under test).
+- `test_bpf_drop.py` — the P6c bpf_drop surface. Oracles, strongest first:
+  the installed bytecode must be **byte-identical to an independent libpcap
+  compile** (ctypes driving the same library), and must dump identically to
+  the same bytecode installed through the real `tc` CLI (`bpf bytecode
+  '<insns>' action drop`); the action must be gact/`TC_ACT_SHOT` (RTM_GETTFILTER
+  dump). Plus the 203/204/207/209 error contract, flush semantics (only
+  ubridge-tracked prios — a foreign CLI-installed filter at prio 50 must
+  survive), the full-restore reset, `tc capabilities` (`cbpf=1`), and
+  behavioral checks on a veth pair (match dropped / non-match passes /
+  multi-prio OR / flush restores traffic) with raw AF_PACKET injection.
 
 Requires `CAP_NET_ADMIN` — run under sudo (CI kernel job) or `unshare -Urn`.
 The **`tc`/`ip` CLI tools are a test-only dependency** (kernel-state
@@ -208,13 +289,15 @@ verification); ubridge itself talks netlink directly and needs no iproute2
 tools at runtime. `tc` ships with the `iproute2` package on all major distros
 (in `/usr/sbin` on several, so the suite also probes absolute paths — a
 non-root `PATH` may not include it) and self-skips only when it is truly
-absent (see `tests/tc/README.md`).
+absent (see `tests/tc/README.md`). `test_bpf_drop.py` additionally drives
+**libpcap via ctypes** as its independent compile oracle (skips if the
+library cannot be loaded).
 
 ```bash
 make
 cd tests/tc
 sudo python3 run_all.py          # or: unshare -Urn python3 run_all.py
-# test_basic 18/18, test_netem_ext 64/64
+# test_basic 18/18, test_netem_ext 64/64, test_bpf_drop 32/32
 ```
 
 Not covered locally (needs real traffic + a time budget, CI-root tier):

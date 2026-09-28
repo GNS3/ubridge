@@ -5,6 +5,7 @@ import sys
 SUITES = [
     "test_basic",
     "test_netem_ext",
+    "test_bpf_drop",
 ]
 
 
