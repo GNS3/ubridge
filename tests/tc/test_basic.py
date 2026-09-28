@@ -99,8 +99,8 @@ def main():
                         c.send("tc reset %s" % IFC).startswith("100-"))
 
                 # --- error paths ---
-                r.check("netem missing iface -> 206",
-                        c.send("tc netem set %s-nope delay 10" % PREFIX).startswith("206-"))
+                r.check("netem missing iface -> 207",
+                        c.send("tc netem set %s-nope delay 10" % PREFIX).startswith("207-"))
                 r.check("netem too few params -> 203",
                         c.send("tc netem set %s" % IFC).startswith("203-"))
                 r.check("netem negative delay -> 204",

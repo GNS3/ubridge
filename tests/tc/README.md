@@ -1,7 +1,7 @@
 # tc test suite
 
 Black-box tests for the `tc` hypervisor module (kernel netem link
-impairment: delay/jitter/loss/dup/corrupt, qdisc reset).
+impairment, plus the P6a keyword extensions and `tc capabilities`).
 
 ## Prerequisites
 
@@ -11,12 +11,12 @@ impairment: delay/jitter/loss/dup/corrupt, qdisc reset).
   dependency: ubridge itself talks netlink directly and needs no iproute2
   tools at runtime.
 - `tc` ships with the `iproute2` package on all major distros, but lives in
-  `/usr/sbin` on several of them — a non-root `PATH` (and the `PATH` inherited
-  into `unshare`) may not include it. The suite falls back to `/usr/sbin/tc`
-  and `/sbin/tc` and only skips when the tool is truly absent (a vacuous
-  pass — CI, which installs iproute2, is the real gate).
+  `/usr/sbin` on several of them — a non-root `PATH` (and the `PATH`
+  inherited into `unshare`) may not include it. The suites fall back to
+  `/usr/sbin/tc` and `/sbin/tc` and only skip when the tool is truly absent
+  (a vacuous pass — CI, which installs iproute2, is the real gate).
 
-The tests run ubridge themselves (control socket /tmp/ubridge-test-13040.sock)
+The tests run ubridge themselves (control socket /tmp/ubridge-test-*.sock)
 and tear it down when done. They drive the **in-repo** `./ubridge` (run `make`
 first) — the installed `/usr/local/bin/ubridge` may be older than the tree
 (same convention as the marker suite).
@@ -27,7 +27,7 @@ first) — the installed `/usr/local/bin/ubridge` may be older than the tree
 cd tests/tc
 
 # one suite
-sudo python3 test_basic.py
+sudo python3 test_basic.py        # or: unshare -Urn python3 test_basic.py
 
 # everything
 sudo python3 run_all.py
@@ -39,4 +39,25 @@ sudo python3 run_all.py
 
 | Suite | What it covers |
 |-------|----------------|
-| `test_basic.py` | netem set with all five parameters (delay, jitter, loss, dup, corrupt — kernel-verified via `tc qdisc show`), REPLACE semantics on re-set, reset (idempotent: no qdisc → 100), param validation (203/204), missing iface (206/207). |
+| `test_basic.py` | P5 surface: netem set with the five base parameters (delay, jitter, loss, dup, corrupt — kernel-verified via `tc qdisc show`), REPLACE semantics on re-set, reset (idempotent: no qdisc → 100), param validation (203/204), missing iface (207). |
+| `test_netem_ext.py` | P6a extensions: `rate` (bit/kbit/mbit/gbit + bps-family bytes/s units, RATE64 path), `reorder` (+correl, gap, requires-delay), `loss gemodel` (p/r/1-h), `distribution` (embedded tables, uniform = no table), `seed`, `limit`, `correl` suffixes, `tc capabilities`. Verified by **byte-comparing the kernel's TCA_OPTIONS dump against what the real `tc` CLI produces for the same parameters**, plus `tc qdisc show` state, the full 203/204 error contract, and behavioral checks on a veth pair (delay lower bound, limit overflow, gemodel extremes) using raw AF_PACKET injection. |
+
+### Behavioral-test notes
+
+- The behavioral cases disable IPv6 on the test veth first: the kernel's
+  Router Solicitations otherwise traverse the egress qdisc under test (they
+  fill a small `limit` and shift the gemodel state machine).
+- netem **loss/gemodel drops are silent** at the sender (send succeeds, the
+  frame vanishes); only `limit` overflow surfaces as `ENOBUFS` on send.
+  The tests distinguish the two.
+- Inside `unshare -Urn`, `lo` starts down — `tests/marker/test_kernel.py`
+  brings it up because its marker sink is 127.0.0.1 UDP (the tc suites don't
+  need it).
+
+### Known environment quirks (`unshare -Urn`, this machine)
+
+Frames flow across a veth and netem behaves (delay/limit/loss verified), but
+anything needing the kernel IP stack (ping/ARP) does not work — hence raw
+injection. The precision tier (distribution shape statistics, rate ±10%
+throughput, seed-identical drop patterns) is left to a CI-root tier with real
+traffic.
