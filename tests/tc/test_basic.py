@@ -65,6 +65,9 @@ def main():
                 # --- reset removes the qdisc ---
                 r.check("reset", c.send("tc reset %s" % IFC).startswith("100-"))
                 r.check("kernel: netem gone after reset", "netem" not in _qdisc(IFC))
+                # idempotent: no qdisc is already the target state
+                r.check("reset with no qdisc -> 100 (idempotent)",
+                        c.send("tc reset %s" % IFC).startswith("100-"))
 
                 # --- error paths ---
                 r.check("netem missing iface -> 206",

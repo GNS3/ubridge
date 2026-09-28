@@ -70,6 +70,15 @@ tc reset tap-gns3-e0
 100-qdisc reset on tap-gns3-e0
 ```
 
+**Idempotent**: the semantics are "ensure no netem", so a reset on an
+interface that has no qdisc is not an error — the target state already
+holds:
+
+```
+tc reset tap-gns3-e0
+100-no qdisc on tap-gns3-e0
+```
+
 Missing interface → `207/ENODEV`.
 
 ## Status codes
@@ -80,7 +89,7 @@ Missing interface → `207/ENODEV`.
 | `203` | Bad number of parameters |
 | `204` | Invalid parameter value |
 | `206` | Unable to create / set (`ENODEV`, etc.) |
-| `207` | Unable to delete (`ENODEV`) |
+| `207` | Unable to delete (`ENODEV`; a missing qdisc is `100`, not an error) |
 
 ## Implementation notes
 

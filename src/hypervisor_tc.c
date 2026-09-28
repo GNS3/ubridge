@@ -264,6 +264,12 @@ static int cmd_reset(hypervisor_conn_t *conn, int argc, char *argv[])
     int err = tc_reset(ifname);
 
     if (err < 0) {
+        if (err == -ENOENT) {
+            /* No root qdisc = already the target state ("ensure no netem").
+             * Idempotent OK, like marker delete_kernel / capture stop_kernel. */
+            hypervisor_send_reply(conn, HSC_INFO_OK, 1, "no qdisc on %s", ifname);
+            return 0;
+        }
         hypervisor_send_reply(conn, HSC_ERR_DELETE, 1, "Could not reset qdisc on %s: %s", ifname, strerror(-err));
         return -1;
     }
