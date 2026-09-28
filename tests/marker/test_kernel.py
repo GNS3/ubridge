@@ -119,6 +119,11 @@ def main():
         print("  [SKIP] needs CAP_NET_RAW (run under sudo or unshare -Urn)")
         return 0
 
+    # the marker sink is 127.0.0.1 UDP: inside a fresh netns (unshare -Urn)
+    # loopback starts DOWN and the signals silently vanish — bring it up
+    # (no-op on a real system, where lo is already up)
+    subprocess.run(["ip", "link", "set", "lo", "up"], capture_output=True)
+
     marker_port = _free_udp()
     ms = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     ms.bind(("127.0.0.1", marker_port))
