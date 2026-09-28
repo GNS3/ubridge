@@ -2,12 +2,15 @@
 
 Attaches netem (delay/jitter/loss/dup) to a throwaway dummy interface and
 reads it back with `tc qdisc show` to confirm the netlink ABI and unit
-conversions are correct. Stdlib only. Requires CAP_NET_ADMIN — run under sudo.
+conversions are correct. Stdlib only. Requires CAP_NET_ADMIN — run under
+sudo. Self-skips when the `tc` binary is missing (a TEST dependency only —
+ubridge itself talks netlink directly and needs no iproute2 tools).
 
 Reuses Ubridge / Results from tests/brctl/common.py.
 """
 import os
 import sys
+import shutil
 import subprocess
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "brctl"))
@@ -32,6 +35,14 @@ def _qdisc(ifname):
 
 def main():
     r = Results()
+
+    if shutil.which("tc") is None:
+        # CI installs iproute2 (which ships tc); a skip here means the local
+        # host is missing the test-only verification tool.
+        print("  [SKIP] needs the `tc` binary to verify kernel qdisc state")
+        print("         (test-only dependency: iproute2 on Debian/Ubuntu,")
+        print("          iproute2-tc on openSUSE/Fedora)")
+        return 0
 
     # throwaway dummy interface to hang the qdisc on
     _ip(["link", "add", IFC, "type", "dummy"])

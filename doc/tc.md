@@ -120,7 +120,12 @@ Missing interface → `207/ENODEV`.
 
 `tests/tc/` attaches netem to a throwaway dummy interface and reads it back with
 `tc qdisc show` (delay/jitter/loss/dup/corrupt), plus reset and error paths.
-Requires `CAP_NET_ADMIN` — run under sudo.
+Requires `CAP_NET_ADMIN` — run under sudo. The **`tc`/`ip` CLI tools are a
+test-only dependency** (kernel-state verification); ubridge itself talks
+netlink directly and needs no iproute2 tools at runtime. On Debian/Ubuntu
+they come with `iproute2`; on openSUSE/Fedora `tc` is the separate
+`iproute2-tc` package. The suite self-skips with a hint when `tc` is
+missing (see `tests/tc/README.md`).
 
 ```bash
 sudo make install
