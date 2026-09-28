@@ -122,10 +122,10 @@ Missing interface → `207/ENODEV`.
 `tc qdisc show` (delay/jitter/loss/dup/corrupt), plus reset and error paths.
 Requires `CAP_NET_ADMIN` — run under sudo. The **`tc`/`ip` CLI tools are a
 test-only dependency** (kernel-state verification); ubridge itself talks
-netlink directly and needs no iproute2 tools at runtime. On Debian/Ubuntu
-they come with `iproute2`; on openSUSE/Fedora `tc` is the separate
-`iproute2-tc` package. The suite self-skips with a hint when `tc` is
-missing (see `tests/tc/README.md`).
+netlink directly and needs no iproute2 tools at runtime. `tc` ships with the
+`iproute2` package on all major distros (in `/usr/sbin` on several, so the
+suite also probes absolute paths — a non-root `PATH` may not include it) and
+self-skips only when it is truly absent (see `tests/tc/README.md`).
 
 ```bash
 sudo make install
