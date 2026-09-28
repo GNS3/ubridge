@@ -142,6 +142,19 @@ marker add_kernel icmp-m gv1a2b3c4e0p0 "icmp" tag 1 link <uuid> pcap "/project/m
 Coexists with `capture start_kernel` (independent sockets: markers are
 non-promisc per-marker sniffers, the capture is a singleton promisc one).
 
+> **One observation point per link.** A kernel marker reports every frame
+> that passes the interface it is attached to — nothing more, nothing less.
+> A packet crossing a docker link transits two veth host-ends (ingress at
+> the sender's port, egress at the receiver's port), so markers on **both**
+> ends each report that packet once: same frame, two signals (`dir=tx` at
+> the sender's end, `dir=rx` at the receiver's end), and a ping round trip
+> yields four. That is two observation points stacking, not a duplicate —
+> but for relay-like one-signal-per-packet semantics (a ping round trip =
+> one `tx` + one `rx`), attach a **single** marker at the capture node's
+> end, exactly like a capture. `dir` is defined relative to the capture
+> node, so a single-point marker closes the loop: request → `tx` (node
+> sent), reply → `rx` (node received).
+
 ## The `marker` module
 
 ```
