@@ -8,11 +8,11 @@ Split by capability, self-degrading:
   needs the load then self-skips, and the enable commands must reply the
   exact spec-210 string.
 - The validation/error contract (203/204/207) is checked unconditionally,
-  as is a static budget check of the committed instruction array's single
-  loop — the verifier walks a constant-bound loop in full and some kernels
-  reject the whole program when that walk passes BPF_COMPLEXITY_LIMIT_JMP_SEQ
-  (see doc/tc.md). That failure is invisible on kernels new enough to
-  accept it, so it is pinned statically here instead.
+  as are static checks of the committed instruction array (no loops at all;
+  the hand-unrolled catch-up stays small) — the verifier's non-root path
+  cannot bound a loop and rejects the whole program at its jump-sequence
+  budget, and that failure is invisible from a root run, so the shape is
+  pinned statically instead (see doc/tc.md).
 - With CAP_BPF (real sudo) the behavioral section runs: exact nth pattern
   (frame sequence in the payload), byte-quota threshold, window in/out/
   expiry/recurring-period/jitter, flow-hash determinism against a Python
@@ -98,10 +98,12 @@ def _jenkins(mask, dst=None, src=None, proto=None):
 
 
 INSNS_C = os.path.join(os.path.dirname(REPO_UBRIDGE), "src", "tc_ebpf_insns.c")
+INSNS_H = os.path.join(os.path.dirname(REPO_UBRIDGE), "src", "tc_ebpf_insns.h")
 BPF_C = os.path.join(os.path.dirname(REPO_UBRIDGE), "src", "tc_impair.bpf.c")
 INSNS_RE = re.compile(r"\.code = (0x[0-9a-fA-F]+), \.dst_reg = \d+, \.src_reg = \d+, "
                       r"\.off = (-?\d+), \.imm = (-?\d+)")
-JMP_SEQ_BUDGET = 8192                     # BPF_COMPLEXITY_LIMIT_JMP_SEQ
+STEP_RE = re.compile(r"start = win_step\(now, start, cur\);")
+MAX_STEPS = 32                            # unrolled catch-up steps per packet
 
 
 def _is_jump(code):
@@ -115,50 +117,45 @@ def _parse_insns():
                 for c, off, imm in INSNS_RE.findall(f.read())]
 
 
-def static_loop_budget(r):
-    """The program carries exactly one loop; keep it cheap for the verifier.
+def static_verifier_checks(r):
+    """Pin the two shapes the verifier's NON-root path requires.
 
-    clang lowers a constant-bound counter loop into a count-down whose
-    induction variable stays an EXACT scalar, so the verifier's states never
-    converge and nothing is pruned: it walks the full trip count, ~3 jump
-    sequences per trip. Kernels enforcing BPF_COMPLEXITY_LIMIT_JMP_SEQ
-    (8192) reject the WHOLE program past that budget — every mode going down
-    with it, since all four share this one program. A 4096-trip cap did
-    exactly that ("The sequence of 8193 jumps is too complex") while this
-    host's kernel accepted it, so the bound is asserted here, statically,
-    where no capability is needed.
+    Production ubridge never runs as root (it carries CAP_BPF), and that
+    path does not keep a loop counter's constant bound: it sees a wide
+    scalar, unrolls the loop as if unbounded, and piles up unexplored branch
+    states until `push_stack()` trips BPF_COMPLEXITY_LIMIT_JMP_SEQ (8192) —
+    E2BIG, "The sequence of N jumps is too complex" (N = pending states),
+    the WHOLE program rejected and all four modes down with it. The same
+    binary run as root verifies fine, and this host's kernel is lenient
+    about the loop anyway — so the shape is pinned statically here, where
+    no capability is needed and every run checks it.
     """
-    cap = 0
-    with open(BPF_C) as f:
-        m = re.search(r"#define\s+WIN_CATCHUP_MAX\s+(\d+)", f.read())
-        if m:
-            cap = int(m.group(1))
     insns = _parse_insns()
-    loops = [n for n, (code, off, _i) in enumerate(insns) if _is_jump(code) and off < 0]
-    if len(loops) != 1:
-        r.check("static: exactly one loop (backward jump)", False,
-                "%d backward jumps in %d insns" % (len(loops), len(insns)))
-        return
-    head = loops[0]
-    first = head + 1 + insns[head][1]        # target of the backward jump
-    body = head - first + 1
-    jumps = sum(1 for code, _off, _i in insns[first:head + 1] if _is_jump(code))
-    walk = cap * jumps
+    loops = [n for n, (code, off, _i) in enumerate(insns)
+             if _is_jump(code) and off < 0]
+    r.check("static: no loops (backward jumps) in the committed program",
+            not loops, "%d backward jumps in %d insns" % (len(loops), len(insns)))
 
-    r.check("static: one loop, body <= 16 insns", 0 < body <= 16,
-            "loop insns %d..%d, body %d" % (first, head, body))
-    r.check("static: committed insns carry WIN_CATCHUP_MAX",
-            0 < cap and any(imm in (cap, cap - 1) for _c, _o, imm in insns[:head]),
-            "cap %d" % cap)
-    r.check("static: verifier walk %d trips x %d jumps/trip = %d <= budget/4 (%d)"
-            % (cap, jumps, walk, JMP_SEQ_BUDGET // 4),
-            0 < walk <= JMP_SEQ_BUDGET // 4, "cap %d" % cap)
+    with open(BPF_C) as f:
+        src = f.read()
+    m = re.search(r"#define\s+WIN_CATCHUP_STEPS\s+(\d+)", src)
+    steps = int(m.group(1)) if m else 0
+    calls = len(STEP_RE.findall(src))
+    r.check("static: catch-up unrolled %d times (<=%d), no loop" % (calls, MAX_STEPS),
+            0 < steps <= MAX_STEPS and calls == steps,
+            "WIN_CATCHUP_STEPS %d, %d win_step() calls" % (steps, calls))
+
+    with open(INSNS_H) as f:
+        m = re.search(r"#define\s+TC_IMPAIR_INSNS\s+(\d+)", f.read())
+    r.check("static: committed array length matches TC_IMPAIR_INSNS",
+            bool(m) and int(m.group(1)) == len(insns),
+            "%d insns, header says %s" % (len(insns), m.group(1) if m else "?"))
 
 
 def main():
     r = Results()
 
-    static_loop_budget(r)
+    static_verifier_checks(r)
 
     if TC is None:
         print("  [SKIP] needs the `tc` tool for kernel-state checks")

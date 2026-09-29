@@ -179,9 +179,10 @@ drop wins):
   `jitter` (whole-ms grid, clamped so a cycle never overlaps its
   successor; `jitter 0` draws nothing and is exactly the fixed schedule)
   — randomized flap that cannot let protocols sync to a beat. The program
-  advances whole cycles in a small bounded loop (128 cycles per packet,
-  the walk resumable by each further packet), so traffic pausing across
-  many cycles still lands in the right one.
+  advances whole cycles in a few straight-line steps (up to
+  `WIN_CATCHUP_STEPS` = 16 cycles per packet, the walk resumable by each
+  further packet), so traffic pausing across many cycles still lands in
+  the right one.
 - `flow_drop <mask> <target>`: `<mask>` is the decimal bitmask of header
   fields feeding a Jenkins one-at-a-time hash — `1`=source MAC, `2`=dest
   MAC, `4`=L4 source port, `8`=L4 dest port, `16`=IPv4 protocol (ports only
@@ -335,21 +336,25 @@ capability and keeps them on the relay datapath.
   is the usual `RTM_NEWTFILTER` at prio 1 with `TCA_BPF_FD` +
   `TCA_BPF_FLAGS = TCA_BPF_FLAG_ACT_DIRECT` (direct-action — the program's
   `TC_ACT_SHOT/OK` return IS the verdict, no gact).
-- The program is verifier-friendly by construction: no unbounded loops,
-  and the **only** loop is kept tiny (the window cycle catch-up is capped
-  at `WIN_CATCHUP_MAX` = 128 trips). A constant-bound loop is walked in
-  full by the verifier — clang's count-down induction variable stays an
-  exact scalar, so states never converge and nothing is pruned — at ~7
-  insns and 3 jump sequences per trip, and kernels enforcing
-  `BPF_COMPLEXITY_LIMIT_JMP_SEQ` (8192) reject the **whole** program past
-  that budget, which would take all four modes down at once since they
-  share this one program (a 4096-trip cap did exactly that on such
-  kernels: *The sequence of 8193 jumps is too complex*; newer kernels
-  accept it, so it shows only on some hosts — `tests/tc/test_ebpf.py`
-  guards the cap statically for that reason). 128 × 3 = 384 jump
-  sequences, a 21× margin, and a bigger cap would buy nothing anyway: the
-  catch-up is resumable, so a pause of any length re-syncs a packet at a
-  time. Every packet access is bounds-checked, L4 ports only for TCP/UDP
+- The program is verifier-friendly by construction — and the constraint is
+  stricter than it looks: **no loops at all**. Production ubridge carries
+  `CAP_BPF` and never runs as root, and the verifier's non-root path does
+  not keep a loop counter's constant bound (it records the register as a
+  wide scalar — see "Verifier constraint" below), so it
+  unrolls the loop as if unbounded and piles up unexplored branch states
+  until `push_stack()` exceeds `BPF_COMPLEXITY_LIMIT_JMP_SEQ` (8192) and
+  rejects the **whole** program with `E2BIG` — *The sequence of N jumps is
+  too complex*, where N counts pending states, not jumps. All four modes go
+  down with it, since they share this one program, and **the same binary
+  run as root verifies fine** — which is why a `sudo`-only test run cannot
+  catch it. The window cycle catch-up is therefore a fixed number
+  (`WIN_CATCHUP_STEPS` = 16) of hand-unrolled `win_step()` calls under a
+  guard that keeps the hot path at one comparison; a bigger count buys
+  nothing because the walk is resumable (a pause of any length re-syncs a
+  packet at a time), and re-issuing `window_drop` re-anchors the phase if a
+  pause was pathological. `tests/tc/test_ebpf.py` asserts both statically
+  (no backward jumps; steps in sync and small) — without a capability, and
+  therefore on every run. Every packet access is bounds-checked, L4 ports only for TCP/UDP
   over IPv4 with the header verified present, 32-bit modulo only (BPF has
   no native 64-bit mod). Every helper is force-inlined
   (`always_inline`): an outlined one would emit an intra-program call
@@ -364,6 +369,41 @@ capability and keeps them on the relay datapath.
   offsets are compile-time-asserted against the uapi from the native side.
 - Uses ubridge's netlink library (`src/netlink/nl.c`); helpers return a
   **negative errno**; command handlers report `strerror(-err)`.
+
+### Verifier constraint: why the eBPF program has no loops
+
+Everything above is loaded by a process that is **not root** — gns3-server
+spawns ubridge with `setcap cap_bpf,cap_net_admin,cap_net_raw=ep`, and the
+BPF verifier takes a *different, stricter path* for such callers than it
+does for root (`env->allow_ptr_leaks` / Spectre-v1 bypass are gated on
+CAP_PERFMON/CAP_SYS_ADMIN, not CAP_BPF — the same gate that forces the
+constant-offset packet access in `flow_hash`).
+
+Observed on this project (same binary, same kernel):
+
+| caller | loop counter `R4` at the loop head | verdict |
+|---|---|---|
+| root | exact constant (127 → 126 → …) | accepted |
+| non-root + `CAP_BPF` | `scalar(smax=umax32=0xfffff086)` — bound lost | `E2BIG` |
+
+With the bound gone the verifier cannot prove the loop bounded, unfolds it
+as if unbounded and queues states until `push_stack()` trips
+`BPF_COMPLEXITY_LIMIT_JMP_SEQ` (8192): `The sequence of 8193 jumps is too
+complex.` — that N counts *pending states*, not jumps or trips. `E2BIG`
+from `BPF_PROG_LOAD` therefore means "too much un-pruned exploration", and
+in this program it takes all four modes down (they share one program).
+
+Consequences, all of them load-bearing:
+
+* **No loops anywhere**, not even trip-capped ones (`tests/tc/test_ebpf.py`
+  asserts zero backward jumps in the committed array). The window catch-up
+  is `WIN_CATCHUP_STEPS` hand-unrolled `win_step()` calls.
+* **`sudo` runs prove nothing about the deployed path.** The test suite's
+  behavioral section runs as root; the non-root path is checked by probing
+  the *installed* binary as the invoking user (`tc capabilities` must say
+  `ebpf=1`).
+* Any future change to the program must be re-probed that way — a green
+  root-only run is not evidence.
 
 ## Relationship to user-space packet filters
 
@@ -404,11 +444,11 @@ capability and keeps them on the relay datapath.
   behavioral checks on a veth pair (match dropped / non-match passes /
   multi-prio OR / flush restores traffic) with raw AF_PACKET injection.
 - `test_ebpf.py` — the P6b stateful modes, split by capability.
-  **Unconditionally** (no `tc`, no capability): a static budget check of
-  the committed instruction array — exactly one loop, a small body, and
-  `WIN_CATCHUP_MAX` × jumps-per-trip under a quarter of
-  `BPF_COMPLEXITY_LIMIT_JMP_SEQ` — because that rejection only shows on
-  kernels enforcing the budget (see the implementation notes). Without
+  **Unconditionally** (no `tc`, no capability): static checks of the
+  committed instruction array — no backward jumps at all, the
+  `WIN_CATCHUP_STEPS` unrolling in sync and small, array length matching
+  the header — because a loop rejection only shows on the non-root
+  verifier path (see "Verifier constraint" above). Without
   CAP_BPF (e.g. `unshare -Urn`): the validation contract (204s before any
   load), argc/207 errors, idempotent `off`, and the **exact 210 string**
   for every enable. With CAP_BPF (real sudo): prio-1 attachment, one

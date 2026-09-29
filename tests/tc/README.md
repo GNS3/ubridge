@@ -43,7 +43,7 @@ sudo python3 run_all.py
 | `test_basic.py` | P5 surface: netem set with the five base parameters (delay, jitter, loss, dup, corrupt — kernel-verified via `tc qdisc show`), REPLACE semantics on re-set, reset (idempotent: no qdisc → 100), param validation (203/204), missing iface (207). |
 | `test_netem_ext.py` | P6a extensions: `rate` (bit/kbit/mbit/gbit + bps-family bytes/s units, RATE64 path), `reorder` (+correl, gap, requires-delay), `loss gemodel` (p/r/1-h), `distribution` (embedded tables, uniform = no table), `seed`, `limit`, `correl` suffixes, `tc capabilities`. Verified by **byte-comparing the kernel's TCA_OPTIONS dump against what the real `tc` CLI produces for the same parameters**, plus `tc qdisc show` state, the full 203/204 error contract, and behavioral checks on a veth pair (delay lower bound, limit overflow, gemodel extremes) using raw AF_PACKET injection. |
 | `test_bpf_drop.py` | P6c: `bpf_drop add` (prio 10-99, pcap expression) / `flush` / full-restore `reset` / capabilities `cbpf=1`. Byte-compare oracle: the kernel's TCA_BPF_OPS must equal an **independent libpcap compile** (ctypes) and dump identically to the real `tc` CLI's `bpf bytecode '<insns>' action drop`; action must be gact/TC_ACT_SHOT (RTM_GETTFILTER dump). Error contract (203/204/207/209), flush removes only ubridge-tracked prios (a foreign CLI filter survives), netem coexistence, veth behavioral (match dropped / non-match passes / multi-prio OR / flush restores). |
-| `test_ebpf.py` | P6b stateful modes (`nth_drop`/`quota_drop`/`window_drop`/`flow_drop`, one eBPF program at clsact egress prio 1). Always (no `tc`, no capability): a static budget check of the committed instruction array — one loop, small body, cap × jumps-per-trip well under the verifier's jump-sequence limit; that rejection only appears on kernels enforcing the limit, so it cannot be caught behaviorally here (see `doc/tc.md`). Without CAP_BPF (plain `unshare -Urn`, `unprivileged_bpf_disabled=2`): validation contract (204 before any load), argc/207, idempotent `off`, and the **exact 210 no-CAP_BPF string** for every enable. With CAP_BPF: prio-1 attach/teardown (last-off, reset), single shared program, and veth behavioral — nth exact pattern via payload sequence numbers, counter reset on re-set, quota threshold at pct extremes, window active/future/**expired-pass** plus **recurring period** (drops in two cycles, passes in the gap) and **jitter** (both dropped and passed bursts), flow-hash determinism against a Python mirror of the program's Jenkins fold. |
+| `test_ebpf.py` | P6b stateful modes (`nth_drop`/`quota_drop`/`window_drop`/`flow_drop`, one eBPF program at clsact egress prio 1). Always (no `tc`, no capability): static checks of the committed instruction array — **no backward jumps** (a loop is rejected by the verifier's non-root path, which is what production uses), the `WIN_CATCHUP_STEPS` unrolling in sync and small, array length matching the header. That rejection is invisible from a root run, so it cannot be caught behaviorally here (see the "Verifier constraint" section of `doc/tc.md`). Without CAP_BPF (plain `unshare -Urn`, `unprivileged_bpf_disabled=2`): validation contract (204 before any load), argc/207, idempotent `off`, and the **exact 210 no-CAP_BPF string** for every enable. With CAP_BPF: prio-1 attach/teardown (last-off, reset), single shared program, and veth behavioral — nth exact pattern via payload sequence numbers, counter reset on re-set, quota threshold at pct extremes, window active/future/**expired-pass** plus **recurring period** (drops in two cycles, passes in the gap) and **jitter** (both dropped and passed bursts), flow-hash determinism against a Python mirror of the program's Jenkins fold. |
 | `test_precision.py` | F-precision tier, the statistical assertions: gemodel loss within ±5pp (steady-state rate = (1-h)·p/(p+r) from the kernel's Markov chain — p=43 r=100 1-h=100 targets 30.07%), rate within ±10% measured as received byte throughput (span between first and last arrival so burst credit cannot skew), delay+jitter+reorder observability (median inside delay±jitter, delay mdev, arrival inversions — received CONCURRENTLY with the paced injection, else timestamps measure reads not arrivals), and netem seed determinism (identical drop bitmaps across reset + re-set with the same seed). Slowest suite (~15 s), runs last. |
 
 `test_bpf_drop.py` also needs **libpcap loadable by ctypes** (`libpcap.so.1`,
@@ -53,6 +53,19 @@ loaded.
 The `test_ebpf.py` behavioral section only runs when the ubridge binary can
 actually load BPF (root, or `setcap cap_bpf,...` on a kernel allowing it) —
 same invocation as the other kernel suites: `sudo python3 test_ebpf.py`.
+
+**Root is not the deployed path.** gns3-server launches ubridge non-root
+with file capabilities, and the verifier takes a stricter path there (it
+cannot bound loops at all — see `doc/tc.md`), so a green `sudo` run says
+nothing about it. After `make install`, probe the installed binary as the
+ordinary user (the `Ubridge` helper defaults to `/usr/local/bin/ubridge`):
+
+```bash
+python3 -c "
+import sys; sys.path.insert(0, 'tests/brctl'); from common import Ubridge
+with Ubridge(port=13188) as ub: print(ub.connect().send('tc capabilities'))"
+# must print ...;ebpf=1;cbpf=1
+```
 
 ### Behavioral-test notes
 
