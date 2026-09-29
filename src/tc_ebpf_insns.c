@@ -113,7 +113,7 @@ const struct bpf_insn tc_impair_insns[TC_IMPAIR_INSNS] = {
     { .code = 0x0f, .dst_reg = 4, .src_reg = 2, .off = 0, .imm = 0 },
     { .code = 0x79, .dst_reg = 6, .src_reg = 10, .off = -16, .imm = 0 },
     { .code = 0xad, .dst_reg = 0, .src_reg = 4, .off = 83, .imm = 0 },
-    { .code = 0xb4, .dst_reg = 4, .src_reg = 0, .off = 0, .imm = 16777215 },
+    { .code = 0xb4, .dst_reg = 4, .src_reg = 0, .off = 0, .imm = 4095 },
     { .code = 0xbf, .dst_reg = 5, .src_reg = 2, .off = 0, .imm = 0 },
     { .code = 0x67, .dst_reg = 5, .src_reg = 0, .off = 0, .imm = 1 },
     { .code = 0x05, .dst_reg = 0, .src_reg = 0, .off = 3, .imm = 0 },

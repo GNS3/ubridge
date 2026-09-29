@@ -42,8 +42,10 @@
 #include "tc_ebpf.h"
 #include "tc_ebpf_insns.h"
 
-/* verifier log for BPF_PROG_LOAD failures (only printed on error) */
-static char bpf_log[65536];
+/* verifier log for BPF_PROG_LOAD failures (only printed on error). Big:
+ * a rejected loop prints one line PER explored iteration, which overflows
+ * a small buffer and turns the verdict into ENOSPC. */
+static char bpf_log[262144];
 
 /* The freestanding program reads ctx->data / ctx->data_end through a
  * hand-written minimal __sk_buff; prove its offsets match the uapi. */

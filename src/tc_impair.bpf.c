@@ -265,7 +265,17 @@ int tc_impair_prog(struct min_skb *ctx)
             int advanced = 0;
             u32 i;
 
-            for (i = 0; i < (1u << 24); i++) {
+            /* Cap 4096, not 2^24: clang lowers a constant-bound counter
+             * loop into a count-down with an ==0 exit, whose induction
+             * variable stays an EXACT scalar every iteration — the
+             * verifier's states never converge/prune and it walks the
+             * loop until the 8193-jump-sequence limit rejects the whole
+             * program (observed: EINVAL/ENOSPC-log-overflow as root).
+             * <= 8192 trips are brute-force explored and pass on any
+             * kernel >= 5.3. An extreme pause (> 4096 cycles) keeps
+             * catching up 4096 cycles per further packet — misclassifying
+             * only as "in the gap", and only after hours at flap scales. */
+            for (i = 0; i < 4096; i++) {
                 if (now < start + cur)
                     break;
                 start += cur;

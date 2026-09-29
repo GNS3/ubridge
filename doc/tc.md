@@ -179,8 +179,8 @@ drop wins):
   `jitter` (whole-ms grid, clamped so a cycle never overlaps its
   successor; `jitter 0` draws nothing and is exactly the fixed schedule)
   — randomized flap that cannot let protocols sync to a beat. The program
-  advances whole cycles in a bounded loop, so traffic pausing across many
-  cycles still lands in the right one.
+  advances whole cycles in a bounded loop (4096 cycles per packet), so
+  traffic pausing across many cycles still lands in the right one.
 - `flow_drop <mask> <target>`: `<mask>` is the decimal bitmask of header
   fields feeding a Jenkins one-at-a-time hash — `1`=source MAC, `2`=dest
   MAC, `4`=L4 source port, `8`=L4 dest port, `16`=IPv4 protocol (ports only
@@ -335,9 +335,11 @@ capability and keeps them on the relay datapath.
   `TCA_BPF_FLAGS = TCA_BPF_FLAG_ACT_DIRECT` (direct-action — the program's
   `TC_ACT_SHOT/OK` return IS the verdict, no gact).
 - The program is verifier-friendly by construction: no unbounded loops
-  (the window cycle catch-up is bounded — the verifier accepts bounded
-  loops on kernels ≥ 5.3, and the CAP_BPF requirement above already gates
-  on ≥ 5.8), every packet access bounds-checked, L4 ports only for TCP/UDP
+  (the window cycle catch-up is capped at 4096 trips — the verifier
+  brute-force explores a constant-bound loop's full trip count and rejects
+  jump sequences beyond 8192, so small caps verify on any kernel ≥ 5.3,
+  and the CAP_BPF requirement above already gates on ≥ 5.8), every packet
+  access bounds-checked, L4 ports only for TCP/UDP
   over IPv4 with the header verified present, 32-bit modulo only (BPF has
   no native 64-bit mod). Every helper is force-inlined
   (`always_inline`): an outlined one would emit an intra-program call
