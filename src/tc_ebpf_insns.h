@@ -36,7 +36,7 @@
 
 #include <linux/bpf.h>
 
-#define TC_IMPAIR_INSNS 365
+#define TC_IMPAIR_INSNS 375
 #define TC_IMPAIR_CFG_LD_IDX 5
 #define TC_IMPAIR_CNT_LD_IDX 12
 

@@ -245,11 +245,13 @@ int tc_impair_prog(struct min_skb *ctx)
     /* 3. window: period 0 = a single [start, start+len) outage — packets
      * pass before AND after it. With a period, outages recur: inside the
      * current cycle's [start, start+outage) drop with win_pct, in the rest
-     * of the cycle pass. jitter > 0 re-draws each new cycle's outage and
-     * period uniformly in nominal ±jitter (draws happen only when jittered
-     * — jitter 0 consumes no PRNG values and is exactly the fixed
-     * schedule). The bounded catch-up loop means traffic pausing across
-     * many cycles still lands in the right one; the userspace CFG update
+     * of the cycle pass. jitter > 0 re-draws the cycle's outage and period
+     * uniformly in nominal ±jitter ONCE, on entering it (jitter 0 consumes
+     * no PRNG values and is exactly the fixed schedule). The catch-up loop
+     * is counter-bounded with a pure scalar body — the draws stay OUT of
+     * it, an in-loop draw chain is what the verifier rejects the whole
+     * program for (EINVAL as root, ebpf=0). Traffic pausing across many
+     * cycles still lands in the right one; the userspace CFG update
      * (window_drop set/off) is the only other writer of these fields. */
     if (cfg->win_len_ns) {
         u64 start = cfg->win_start_ns;
@@ -260,10 +262,17 @@ int tc_impair_prog(struct min_skb *ctx)
         if (cfg->win_period_ns) {
             u64 cur = cnt->win_period_cur_ns ? cnt->win_period_cur_ns
                                              : cfg->win_period_ns;
+            int advanced = 0;
             u32 i;
 
-            for (i = 0; i < (1u << 24) && now >= start + cur; i++) {
+            for (i = 0; i < (1u << 24); i++) {
+                if (now < start + cur)
+                    break;
                 start += cur;
+                advanced = 1;
+            }
+            if (advanced) {
+                cfg->win_start_ns = start;
                 if (cfg->win_jitter_ns) {
                     u64 o = draw_range(&cnt->prng_state, cfg->win_len_ns,
                                        cfg->win_jitter_ns);
@@ -274,11 +283,10 @@ int tc_impair_prog(struct min_skb *ctx)
                     cur = p;
                     if (out_len > cur)    /* keep cycles non-overlapping */
                         out_len = cur;
+                    cnt->win_outage_cur_ns = out_len;
                 }
+                cnt->win_period_cur_ns = cur;
             }
-            cfg->win_start_ns = start;
-            cnt->win_outage_cur_ns = out_len;
-            cnt->win_period_cur_ns = cur;
             if (now >= start && now < start + out_len
                 && pct_drop(&cnt->prng_state, cfg->win_pct))
                 return TC_ACT_SHOT;

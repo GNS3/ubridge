@@ -141,7 +141,7 @@ int tc_ebpf_load(int *prog_fd, int *cfg_fd, int *cnt_fd)
         fprintf(stderr, "tc_ebpf: BPF_PROG_LOAD failed: %s\n", strerror(errno));
         if (n > 0)
             fprintf(stderr, "tc_ebpf: verifier log (tail): %s\n",
-                    n > 700 ? bpf_log + n - 700 : bpf_log);
+                    n > 1600 ? bpf_log + n - 1600 : bpf_log);
         ret = -errno;
         close(cfd);
         close(nfd);
