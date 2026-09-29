@@ -31,6 +31,7 @@
 
 #include <errno.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
@@ -40,6 +41,9 @@
 
 #include "tc_ebpf.h"
 #include "tc_ebpf_insns.h"
+
+/* verifier log for BPF_PROG_LOAD failures (only printed on error) */
+static char bpf_log[65536];
 
 /* The freestanding program reads ctx->data / ctx->data_end through a
  * hand-written minimal __sk_buff; prove its offsets match the uapi. */
@@ -82,10 +86,13 @@ int tc_ebpf_load(int *prog_fd, int *cfg_fd, int *cnt_fd)
     int cfd, nfd, pfd, ret;
 
     cfd = bpf_map_create_array(sizeof(struct tc_impair_cfg));
-    if (cfd < 0)
+    if (cfd < 0) {
+        fprintf(stderr, "tc_ebpf: BPF_MAP_CREATE(cfg) failed: %s\n", strerror(errno));
         return -errno;
+    }
     nfd = bpf_map_create_array(sizeof(struct tc_impair_cnt));
     if (nfd < 0) {
+        fprintf(stderr, "tc_ebpf: BPF_MAP_CREATE(cnt) failed: %s\n", strerror(errno));
         ret = -errno;
         close(cfd);
         return ret;
@@ -104,6 +111,7 @@ int tc_ebpf_load(int *prog_fd, int *cfg_fd, int *cnt_fd)
         attr.key = (unsigned long)&key;
         attr.value = (unsigned long)&cnt;
         if (bpf_call(BPF_MAP_UPDATE_ELEM, &attr) < 0) {
+            fprintf(stderr, "tc_ebpf: BPF_MAP_UPDATE_ELEM(cnt seed) failed: %s\n", strerror(errno));
             ret = -errno;
             close(cfd);
             close(nfd);
@@ -122,8 +130,18 @@ int tc_ebpf_load(int *prog_fd, int *cfg_fd, int *cnt_fd)
     attr.insns = (unsigned long)insns;
     attr.insn_cnt = TC_IMPAIR_INSNS;
     attr.license = (unsigned long)"GPL";
+    attr.log_buf = (unsigned long)bpf_log;
+    attr.log_size = sizeof(bpf_log);
+    attr.log_level = 1;
+    bpf_log[0] = '\0';
     pfd = bpf_call(BPF_PROG_LOAD, &attr);
     if (pfd < 0) {
+        size_t n = strlen(bpf_log);
+
+        fprintf(stderr, "tc_ebpf: BPF_PROG_LOAD failed: %s\n", strerror(errno));
+        if (n > 0)
+            fprintf(stderr, "tc_ebpf: verifier log (tail): %s\n",
+                    n > 700 ? bpf_log + n - 700 : bpf_log);
         ret = -errno;
         close(cfd);
         close(nfd);

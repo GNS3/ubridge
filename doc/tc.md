@@ -178,10 +178,12 @@ drop wins):
 - `flow_drop <mask> <target>`: `<mask>` is the decimal bitmask of header
   fields feeding a Jenkins one-at-a-time hash — `1`=source MAC, `2`=dest
   MAC, `4`=L4 source port, `8`=L4 dest port, `16`=IPv4 protocol (ports only
-  for TCP/UDP over IPv4, non-IP frames contribute their MAC fields only).
-  Packets whose hash modulo `<target>` is 0 are dropped — per-flow select,
-  roughly 1/`target` of flows (a filter cannot delay; delay stays netem's
-  job).
+  for TCP/UDP over IPv4 with IHL=20 — the program uses fixed-offset packet
+  access only, because variable-offset packet-pointer arithmetic is
+  rejected by the verifier for non-root; non-IP frames contribute their
+  MAC fields). Packets whose hash modulo `<target>` is 0 are dropped —
+  per-flow select, roughly 1/`target` of flows (a filter cannot delay;
+  delay stays netem's job).
 
 Each `off` resets that mode's counters; when the last mode goes off the
 prio-1 filter is removed and the program/map fds closed. Re-`set`ting a
@@ -192,8 +194,13 @@ load). `tc reset` tears the whole thing down with everything else.
 **Capability requirement**: `BPF_PROG_LOAD(SCHED_CLS)` needs
 **CAP_BPF** (or CAP_SYS_ADMIN) on kernels ≥ 5.8 — installation sets it
 (`setcap cap_bpf,cap_net_admin,cap_net_raw=ep`, with a fallback to the old
-set on kernels/filesystems without it). Without it every enable replies
-exactly:
+set on kernels/filesystems without it; note the binary must live on a
+filesystem mounted **suid** — a `nosuid` mount silently drops file caps at
+exec). The program deliberately uses only fixed-offset packet access,
+because variable-offset packet-pointer arithmetic is rejected by the
+verifier for non-root processes even when they hold CAP_BPF. When loading
+is refused — missing CAP_BPF (EPERM) or a verifier/kernel restriction for
+this process (EACCES) — every enable replies exactly:
 
 ```
 210-uBridge lacks CAP_BPF (setcap cap_bpf,cap_net_admin,cap_net_raw=ep) and the kernel requires it for stateful filters

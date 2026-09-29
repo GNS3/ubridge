@@ -137,26 +137,28 @@ static u32 flow_hash(struct min_skb *ctx, u32 mask)
 
     if ((u16)((d[12] << 8) | d[13]) == ETH_P_IPV4) {
         u8 *ip = d + ETH_HLEN;
-        u8 proto = 0;
-        u32 ihl;
 
         if (ip + 20 > d_end)
             goto out;                  /* truncated IPv4 header: fold MACs only */
-        ihl = (ip[0] & 0xf) * 4;
-        if (ihl < 20 || ip + ihl + 8 > d_end)
-            goto out;                  /* no room for ports: fold MACs (+proto below) only */
-        proto = ip[9];
+        /* All pointer arithmetic below uses FIXED offsets: variable-offset
+         * packet-pointer arithmetic (ip + ihl) is prohibited for !root by
+         * the verifier, and uBridge must load as a setcap'd non-root
+         * process. Consequence: L4 ports are folded only for IHL == 20
+         * (no IP options) — packets with IP options fold MACs + proto. */
         if (mask & 0x10)
-            FOLD(proto);
-        if (proto == 6 || proto == 17) {   /* TCP / UDP */
-            u8 *l4 = ip + ihl;
-            if (mask & 0x4) {
-                FOLD(l4[0]);
-                FOLD(l4[1]);
-            }
-            if (mask & 0x8) {
-                FOLD(l4[2]);
-                FOLD(l4[3]);
+            FOLD(ip[9]);
+        if ((ip[0] & 0xf) == 5 && ip + 28 <= d_end) {
+            u8 proto = ip[9];
+            if (proto == 6 || proto == 17) {   /* TCP / UDP */
+                u8 *l4 = ip + 20;
+                if (mask & 0x4) {
+                    FOLD(l4[0]);
+                    FOLD(l4[1]);
+                }
+                if (mask & 0x8) {
+                    FOLD(l4[2]);
+                    FOLD(l4[3]);
+                }
             }
         }
     }

@@ -24,8 +24,10 @@
  * because <linux/bpf.h> and libpcap both define struct bpf_insn; callers
  * (hypervisor_tc.c) only handle fds and netlink, never bpf.h types.
  *
- * All functions return 0 on success or a negative errno (EPERM = the
- * process lacks CAP_BPF — callers report the spec's 210 string).
+ * All functions return 0 on success or a negative errno. EPERM (the BPF
+ * capability gate) and EACCES (the verifier refusing a program this
+ * process may not run — kernel !root restrictions) both mean "stateful
+ * filters unavailable": callers report the spec's exact 210 string.
  */
 
 #ifndef TC_EBPF_H

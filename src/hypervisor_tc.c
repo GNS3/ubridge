@@ -1089,7 +1089,10 @@ static int ebpf_if_enable(struct nl_handler *nlh, unsigned int ifindex,
     ret = tc_ebpf_load(&e->prog_fd, &e->cfg_fd, &e->cnt_fd);
     if (ret < 0) {
         free(e);
-        if (ret == -EPERM) {
+        /* EPERM = the BPF capability gate; EACCES = the verifier refusing a
+         * program this process may not run (kernel !root restrictions).
+         * Both mean "stateful filters unavailable here" — the spec's 210. */
+        if (ret == -EPERM || ret == -EACCES) {
             *errmsg = EBPF_NO_CAP_MSG;
             return -1;
         }
