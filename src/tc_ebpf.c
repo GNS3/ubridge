@@ -132,22 +132,34 @@ int tc_ebpf_load(int *prog_fd, int *cfg_fd, int *cnt_fd)
     attr.insns = (unsigned long)insns;
     attr.insn_cnt = TC_IMPAIR_INSNS;
     attr.license = (unsigned long)"GPL";
-    attr.log_buf = (unsigned long)bpf_log;
-    attr.log_size = sizeof(bpf_log);
-    attr.log_level = 1;
-    bpf_log[0] = '\0';
+
+    /* First attempt WITHOUT a verifier log: a supplied-but-too-small log
+     * buffer turns even a SUCCESSFUL verification into ENOSPC and no fd
+     * (the log is one line per explored insn — the bounded catch-up loop
+     * alone makes it ~33k lines / megabytes, no sane buffer holds it).
+     * Only on failure re-run with the log to capture the verdict. */
     pfd = bpf_call(BPF_PROG_LOAD, &attr);
     if (pfd < 0) {
-        size_t n = strlen(bpf_log);
+        int verdict = errno;
 
-        fprintf(stderr, "tc_ebpf: BPF_PROG_LOAD failed: %s\n", strerror(errno));
-        if (n > 0)
-            fprintf(stderr, "tc_ebpf: verifier log (tail): %s\n",
-                    n > 1600 ? bpf_log + n - 1600 : bpf_log);
-        ret = -errno;
-        close(cfd);
-        close(nfd);
-        return ret;
+        attr.log_buf = (unsigned long)bpf_log;
+        attr.log_size = sizeof(bpf_log);
+        attr.log_level = 1;
+        bpf_log[0] = '\0';
+        pfd = bpf_call(BPF_PROG_LOAD, &attr);
+        if (pfd < 0) {
+            size_t n = strlen(bpf_log);
+
+            fprintf(stderr, "tc_ebpf: BPF_PROG_LOAD failed: %s\n", strerror(verdict));
+            if (n > 0)
+                fprintf(stderr, "tc_ebpf: verifier log (tail): %s\n",
+                        n > 1600 ? bpf_log + n - 1600 : bpf_log);
+            ret = -verdict;
+            close(cfd);
+            close(nfd);
+            return ret;
+        }
+        /* not expected (verdicts are deterministic) — take the fd anyway */
     }
 
     *prog_fd = pfd;
