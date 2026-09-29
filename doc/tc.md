@@ -1,16 +1,19 @@
-# tc module — kernel netem link impairment + bpf_drop classifiers
+# tc module — kernel netem link impairment + clsact classifiers
 
 The `tc` hypervisor module attaches and removes a **netem** qdisc at the root
-of an interface (kernel-side link impairment) and installs **classic-BPF match
-drop filters** (`bpf_drop`) on the egress classifier. It is exposed over the
-hypervisor text protocol as `tc <command> [args...]`.
+of an interface (kernel-side link impairment), installs **classic-BPF match
+drop filters** (`bpf_drop`) on the egress classifier, and runs a **stateful
+eBPF impairment program** (`nth_drop` / `quota_drop` / `window_drop` /
+`flow_drop`) there. It is exposed over the hypervisor text protocol as
+`tc <command> [args...]`.
 
 It exists for the **kernel data plane**: once frames flow `TAP → kernel bridge
 (brctl) → TAP`, they never reach ubridge's user-space NIO relay, so the
-`bridge` module's user-space packet filters (`delay` / `packet_loss` / `corrupt`
-/ `bpf`) no longer see the traffic. The impairment has to live in the kernel
-qdisc instead. `tc` is that kernel-side replacement for the user-space filters
-(delay/jitter/loss/dup/corrupt and beyond, plus `bpf` → `bpf_drop`).
+`bridge` module's user-space packet filters (`delay` / `packet_loss` /
+`corrupt` / `bpf` / `frequency_drop`) no longer see the traffic. The
+impairment has to live in the kernel instead. `tc` is that kernel-side
+replacement — netem for delay/jitter/loss/dup/corrupt and beyond,
+`bpf_drop` for `bpf`, `nth_drop` for `frequency_drop`.
 
 ## Transport
 
@@ -129,8 +132,8 @@ tc bpf_drop add tap-gns3-e0 10 "icmp[icmptype] == 8"
 Delete every bpf_drop filter **uBridge added** on `<if>` (prios are tracked
 in-process; a flush after a ubridge restart is a no-op that still returns
 `100`). Does **not** touch the clsact qdisc itself, the netem root qdisc, or
-any filter ubridge does not own (e.g. a future eBPF impairment filter at
-prio 1, or a classifier someone else attached).
+any filter ubridge does not own (e.g. the eBPF impairment filter at prio 1,
+or a classifier someone else attached).
 
 ```
 tc bpf_drop flush tap-gns3-e0
@@ -139,12 +142,75 @@ tc bpf_drop flush tap-gns3-e0
 
 Idempotent; per-filter `ENOENT` tolerated. Missing interface → `207`.
 
+### eBPF stateful impairment: `tc nth_drop` / `quota_drop` / `window_drop` / `flow_drop`
+
+Kernel-side replacements for the user-space `frequency_drop` filter and
+three stateful modes netem cannot express. **One** SCHED_CLS eBPF program
+per interface (`tc_impair`, source `src/tc_impair.bpf.c`), loaded once on
+the first enable and attached at **clsact egress prio 1** (below
+`bpf_drop`'s 10–99 — classifiers run by ascending priority, so stateful
+drops happen before expression drops and before netem). All four modes are
+pure map state — enabling or changing one never reloads the program.
+
+```
+tc nth_drop    <if> <n | off>              # drop every Nth packet (exact)
+tc quota_drop  <if> <bytes> <pct> | off    # after <bytes> of traffic, drop pct%
+tc window_drop <if> <start_ms> <len_ms> <pct> | off   # recurring time window
+tc flow_drop   <if> <mask> <target> | off  # flow-hash select (hash % target == 0 drops)
+```
+
+Semantics (evaluation order fixed: **nth → quota → window → flow**, first
+drop wins):
+
+- `nth_drop <n>`: the Nth, 2Nth, … packet is dropped — exact across CPUs
+  (atomic counter), unlike netem's stochastic loss. This is the kernel-side
+  `frequency_drop`.
+- `quota_drop <bytes> <pct>`: bytes are counted from the last quota enable
+  (only traffic that survived nth); once the running total reaches
+  `<bytes>`, each further packet drops with probability `pct` (100 =
+  hard cutoff after the quota).
+- `window_drop <start_ms> <len_ms> <pct>`: a recurring
+  `[start, start+len)` window on the monotonic clock — the first window
+  opens `start_ms` from the command; inside it packets drop with `pct`,
+  outside they pass. The program advances the window by one `len` when it
+  expires (no loop — if traffic pauses across several windows, the first
+  packet lands "inside").
+- `flow_drop <mask> <target>`: `<mask>` is the decimal bitmask of header
+  fields feeding a Jenkins one-at-a-time hash — `1`=source MAC, `2`=dest
+  MAC, `4`=L4 source port, `8`=L4 dest port, `16`=IPv4 protocol (ports only
+  for TCP/UDP over IPv4, non-IP frames contribute their MAC fields only).
+  Packets whose hash modulo `<target>` is 0 are dropped — per-flow select,
+  roughly 1/`target` of flows (a filter cannot delay; delay stays netem's
+  job).
+
+Each `off` resets that mode's counters; when the last mode goes off the
+prio-1 filter is removed and the program/map fds closed. Re-`set`ting a
+mode also restarts its counters. Percentage draws use the same 2³²
+probability encoding as netem (PRNG state in the counters map, seeded at
+load). `tc reset` tears the whole thing down with everything else.
+
+**Capability requirement**: `BPF_PROG_LOAD(SCHED_CLS)` needs
+**CAP_BPF** (or CAP_SYS_ADMIN) on kernels ≥ 5.8 — installation sets it
+(`setcap cap_bpf,cap_net_admin,cap_net_raw=ep`, with a fallback to the old
+set on kernels/filesystems without it). Without it every enable replies
+exactly:
+
+```
+210-uBridge lacks CAP_BPF (setcap cap_bpf,cap_net_admin,cap_net_raw=ep) and the kernel requires it for stateful filters
+```
+
+and `tc capabilities` reports `ebpf=0` (probed by loading the real program
+once, cached) — the controller keeps these filter types on the relay
+datapath. Value validation (204) happens before any load attempt; `off` on
+an interface with nothing loaded is a plain `100`.
+
 ### `tc reset <if>`
 
-**Full restore** of the interface: 1. remove every bpf_drop filter ubridge
-added (clsact egress side), 2. delete the clsact qdisc, 3. remove the root
-qdisc (`RTM_DELQDISC` — whatever root qdisc is attached, netem or the
-default; the kernel re-creates a default qdisc).
+**Full restore** of the interface: 0. remove the eBPF impairment filter
+(prio 1) and close its program/map fds, 1. remove every bpf_drop filter
+ubridge added (clsact egress side), 2. delete the clsact qdisc, 3. remove
+the root qdisc (`RTM_DELQDISC` — whatever root qdisc is attached, netem or
+the default; the kernel re-creates a default qdisc).
 
 ```
 tc reset tap-gns3-e0
@@ -169,25 +235,27 @@ an old ubridge without this command gets the same treatment):
 
 ```
 tc capabilities
-100-netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;ebpf=0;cbpf=1
+100-netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;ebpf=1;cbpf=1
 ```
 
-`cbpf` is **probed for real** (cached): ubridge creates a throwaway dummy
-link, attaches clsact plus a one-instruction never-matching cBPF filter, and
-deletes the dummy again; any step failing (no `CAP_NET_ADMIN`, kernel
-without `cls_bpf`) reports `cbpf=0`. `ebpf` flips to 1 when the stateful
-eBPF classifier (spec part B) lands; until then the controller must keep
-`frequency_drop` on the relay datapath.
+Both classifier capabilities are **probed for real** (cached):
+`ebpf` loads the actual `tc_impair` program (maps + verifier acceptance)
+and throws it away — any failure (no CAP_BPF, kernel the program does not
+verify on) reports `0`; `cbpf` creates a throwaway dummy link, attaches
+clsact plus a one-instruction never-matching cBPF filter, and deletes the
+dummy again. The controller hides the corresponding filter types per
+capability and keeps them on the relay datapath.
 
 ## Status codes
 
 | Code | Meaning |
 |------|---------|
 | `100` | OK |
-| `203` | Bad number of parameters (netem takes 4–32; bpf_drop add 4, flush 2) / dangling value |
-| `204` | Invalid value; `reorder requires delay`; `unknown distribution '<v>'`; duplicate `loss`; bpf_drop prio/verb errors |
-| `207` | Netlink/kernel failure (`Could not set netem / add bpf_drop / reset qdisc on <if>: <strerror>`; ENODEV; a missing qdisc on reset is `100`, not an error) |
+| `203` | Bad number of parameters (netem takes 4–32; bpf_drop add 4, flush 2; ebpf modes 2–4 per verb) / dangling value |
+| `204` | Invalid value; `reorder requires delay`; `unknown distribution '<v>'`; duplicate `loss`; bpf_drop prio/verb errors; ebpf mode value errors |
+| `207` | Netlink/kernel failure (`Could not set netem / add bpf_drop / set <mode> / reset qdisc on <if>: <strerror>`; ENODEV; a missing qdisc on reset is `100`, not an error) |
 | `209` | `Cannot compile filter '<expr>': <pcap error>` — bpf_drop expression failed to compile |
+| `210` | `uBridge lacks CAP_BPF (...)` — the kernel requires CAP_BPF for stateful filters and this ubridge does not have it |
 
 ## Implementation notes
 
@@ -241,6 +309,26 @@ eBPF classifier (spec part B) lands; until then the controller must keep
   touched from command handlers, which the dispatcher serialises under
   `global_lock`). Kernel state remains the source of truth; the list exists
   so flush/reset remove exactly our filters.
+- **eBPF program** (`src/tc_impair.bpf.c`): freestanding C compiled with
+  `clang -target bpf -O2` (no CO-RE, no BTF-typed pointers, plain packet
+  access). The committed object's instructions are embedded as a plain
+  array (`src/tc_ebpf_insns.c`, regenerated by `tools/gen_tc_impair.py`
+  via `make bpf`) — the normal build needs neither clang nor libbpf. The
+  loader (`src/tc_ebpf.c`, its own TU because `<linux/bpf.h>` and libpcap
+  both define `struct bpf_insn`) is raw syscalls: two `BPF_MAP_CREATE`s
+  (ARRAY, 1 entry: CFG + CNT), patching the two `BPF_PSEUDO_MAP_FD` loads
+  the generator located, one `BPF_PROG_LOAD` of type SCHED_CLS. Attaching
+  is the usual `RTM_NEWTFILTER` at prio 1 with `TCA_BPF_FD` +
+  `TCA_BPF_FLAGS = TCA_BPF_FLAG_ACT_DIRECT` (direct-action — the program's
+  `TC_ACT_SHOT/OK` return IS the verdict, no gact).
+- The program is verifier-friendly by construction: no loops, every packet
+  access bounds-checked, L4 ports only for TCP/UDP over IPv4 with the
+  header verified present, 32-bit modulo only (BPF has no native 64-bit
+  mod). Counters (`packets`/`bytes`/`nth_state`) use atomic adds, so the
+  every-Nth count is exact across CPUs; the PRNG state rides in the
+  counters map (seeded at load, never zero). `struct __sk_buff` is
+  hand-written minimally in the program — its `data`/`data_end` offsets
+  are compile-time-asserted against the uapi from the native side.
 - Uses ubridge's netlink library (`src/netlink/nl.c`); helpers return a
   **negative errno**; command handlers report `strerror(-err)`.
 
@@ -251,9 +339,9 @@ eBPF classifier (spec part B) lands; until then the controller must keep
 | `delay`(+`jitter`) | `tc netem delay/jitter` (+`distribution`) |
 | `packet_loss` | `tc netem loss` (+`correl`, `loss gemodel`) |
 | `corrupt` | `tc netem corrupt` |
-| (none) | `tc netem dup`, `tc netem reorder`, `tc netem rate`, `tc netem limit`, `tc netem seed` (no user-space equivalents) |
-| `frequency_drop` (exact every-Nth) | none — netem loss is stochastic; exact needs eBPF (`ebpf=0` so far) |
+| `frequency_drop` (exact every-Nth) | `tc nth_drop` (exact, atomic) — needs `ebpf=1` |
 | `bpf` (cBPF drop filter) | `tc bpf_drop add` — same pcap expression, compiled against the same DLT_EN10MB (`cbpf=1`) |
+| (none) | `tc quota_drop`, `tc window_drop`, `tc flow_drop` (stateful selects, `ebpf=1`); `tc netem dup/reorder/rate/limit/seed` (no user-space equivalents) |
 
 ## Testing
 
@@ -282,6 +370,16 @@ eBPF classifier (spec part B) lands; until then the controller must keep
   survive), the full-restore reset, `tc capabilities` (`cbpf=1`), and
   behavioral checks on a veth pair (match dropped / non-match passes /
   multi-prio OR / flush restores traffic) with raw AF_PACKET injection.
+- `test_ebpf.py` — the P6b stateful modes, split by capability. Without
+  CAP_BPF (e.g. `unshare -Urn`): the validation contract (204s before any
+  load), argc/207 errors, idempotent `off`, and the **exact 210 string**
+  for every enable. With CAP_BPF (real sudo): prio-1 attachment, one
+  program shared across modes, teardown on last off / reset, and behavioral
+  checks on a veth — **nth exact pattern** (payload sequence numbers:
+  survivors are exactly seq % n ≠ 0), counter reset on re-set, byte-quota
+  threshold at pct 0/100 extremes, window active vs future-start, and
+  flow-hash determinism against a **Python mirror of the program's Jenkins
+  fold** (src MACs picked to hash ≡ 0 / ≢ 0 mod target).
 
 Requires `CAP_NET_ADMIN` — run under sudo (CI kernel job) or `unshare -Urn`.
 The **`tc`/`ip` CLI tools are a test-only dependency** (kernel-state
@@ -291,13 +389,17 @@ tools at runtime. `tc` ships with the `iproute2` package on all major distros
 non-root `PATH` may not include it) and self-skips only when it is truly
 absent (see `tests/tc/README.md`). `test_bpf_drop.py` additionally drives
 **libpcap via ctypes** as its independent compile oracle (skips if the
-library cannot be loaded).
+library cannot be loaded). `test_ebpf.py`'s behavioral section needs the
+binary to actually hold **CAP_BPF** (`sudo make install` sets it; a plain
+`unshare -Urn` cannot load BPF on this machine —
+`kernel.unprivileged_bpf_disabled=2`), which is also why its degraded
+no-CAP_BPF path is fully asserted instead.
 
 ```bash
 make
 cd tests/tc
 sudo python3 run_all.py          # or: unshare -Urn python3 run_all.py
-# test_basic 18/18, test_netem_ext 64/64, test_bpf_drop 32/32
+# test_basic 18/18, test_netem_ext 64/64, test_bpf_drop 32/32, test_ebpf 28+/28+
 ```
 
 Not covered locally (needs real traffic + a time budget, CI-root tier):

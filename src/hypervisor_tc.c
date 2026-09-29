@@ -65,6 +65,7 @@
 
 #include <net/if.h>
 #include <arpa/inet.h>
+#include <time.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <linux/pkt_sched.h>
@@ -78,6 +79,8 @@
 #include "hypervisor.h"
 #include "hypervisor_tc.h"
 #include "tc_netem_dist.h"
+#include "tc_impair.h"
+#include "tc_ebpf.h"
 
 /* Default netem fifo limit (packets). */
 #define NETEM_LIMIT_DEFAULT 1000
@@ -637,6 +640,9 @@ static int nl_link_delete(struct nl_handler *nlh, int ifindex)
     return ret;
 }
 
+/* defined with the eBPF section below; used by tc_reset */
+static void ebpf_if_release(struct nl_handler *nlh, unsigned int ifindex);
+
 /*
  * Full restore of <ifname> (spec part D): 1. remove every bpf_drop filter we
  * added (clsact egress side), 2. delete clsact, 3. delete the root qdisc.
@@ -657,6 +663,9 @@ static int tc_reset(const char *ifname)
     ret = netlink_open(&nlh, NETLINK_ROUTE);
     if (ret < 0)
         return ret;
+
+    /* 0. the eBPF impairment filter (prio 1) and its program/maps */
+    ebpf_if_release(&nlh, ifindex);
 
     /* 1. our classifier filters (ENOENT tolerated; untrack all regardless —
      * clsact goes away next, taking any survivor with it) */
@@ -979,6 +988,473 @@ static int cmd_reset(hypervisor_conn_t *conn, int argc, char *argv[])
 }
 
 /* --------------------------------------------------------------------------
+ * eBPF stateful impairment (spec B): one program per interface, attached
+ * once at clsact egress prio 1; the four modes are pure map state.
+ * -------------------------------------------------------------------------- */
+
+/* prio 1 is reserved for this filter (bpf_drop owns 10..99) */
+#define EBPF_FILTER_PRIO 1
+
+/* the exact 210 reply the controller keys on (spec B.3 / E) */
+#define EBPF_NO_CAP_MSG \
+    "uBridge lacks CAP_BPF (setcap cap_bpf,cap_net_admin,cap_net_raw=ep) " \
+    "and the kernel requires it for stateful filters"
+
+struct ebpf_if {
+    struct ebpf_if *next;
+    unsigned int ifindex;
+    int prog_fd, cfg_fd, cnt_fd;
+    struct tc_impair_cfg cfg;
+};
+
+/* like the bpf_drop prio registry: only touched from command handlers
+ * (dispatcher serialises them under global_lock) */
+static struct ebpf_if *ebpf_interfaces;
+
+static struct ebpf_if *ebpf_if_find(unsigned int ifindex)
+{
+    struct ebpf_if *e;
+
+    for (e = ebpf_interfaces; e != NULL; e = e->next)
+        if (e->ifindex == ifindex)
+            return e;
+    return NULL;
+}
+
+/* Attach the loaded program at clsact egress prio 1, direct-action (the
+ * program's TC_ACT_* return IS the verdict). 0 or -errno. */
+static int ebpf_attach(struct nl_handler *nlh, int ifindex, int prog_fd)
+{
+    struct nlmsg *msg, *reply;
+    struct rtattr *opts;
+    struct tcmsg *tcm;
+    int ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        return -ENOMEM;
+    }
+
+    tcm = (struct tcmsg *)nlmsg_data(msg);
+    memset(tcm, 0, sizeof(*tcm));
+    tcm->tcm_family = AF_UNSPEC;
+    tcm->tcm_ifindex = ifindex;
+    tcm->tcm_parent = TC_H_MAKE(TC_H_CLSACT, TC_H_MIN_EGRESS);
+    tcm->tcm_info = (EBPF_FILTER_PRIO << 16) | htons(ETH_P_ALL);
+
+    msg->nlmsghdr.nlmsg_type = RTM_NEWTFILTER;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct tcmsg));
+
+    nla_put_string(msg, TCA_KIND, "bpf");
+
+    opts = nla_begin_nested(msg, TCA_OPTIONS);
+    opts->rta_type |= NLA_F_NESTED;
+    nla_put_u32(msg, TCA_BPF_FD, prog_fd);
+    nla_put_string(msg, TCA_BPF_NAME, "tc_impair");
+    /* direct-action: no gact needed, the program returns TC_ACT_SHOT/OK */
+    nla_put_u32(msg, TCA_BPF_FLAGS, 1 /* TCA_BPF_FLAG_ACT_DIRECT */);
+    nla_end_nested(msg, opts);
+
+    ret = netlink_transaction(nlh, msg, reply);
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    return ret;
+}
+
+/*
+ * First enable on an interface: ensure clsact, create maps + load the
+ * program, attach at prio 1. *out is registered on success. Returns 0,
+ * -errno, or -1 with *errmsg set to the static no-CAP_BPF message.
+ */
+static int ebpf_if_enable(struct nl_handler *nlh, unsigned int ifindex,
+                          struct ebpf_if **out, const char **errmsg)
+{
+    struct ebpf_if *e;
+    int ret;
+
+    ret = tc_clsact_create(nlh, ifindex);
+    if (ret < 0)
+        return ret;
+
+    e = malloc(sizeof(*e));
+    if (e == NULL)
+        return -ENOMEM;
+    memset(e, 0, sizeof(*e));
+    e->ifindex = ifindex;
+
+    ret = tc_ebpf_load(&e->prog_fd, &e->cfg_fd, &e->cnt_fd);
+    if (ret < 0) {
+        free(e);
+        if (ret == -EPERM) {
+            *errmsg = EBPF_NO_CAP_MSG;
+            return -1;
+        }
+        return ret;
+    }
+
+    ret = ebpf_attach(nlh, ifindex, e->prog_fd);
+    if (ret < 0) {
+        close(e->prog_fd);
+        close(e->cfg_fd);
+        close(e->cnt_fd);
+        free(e);
+        return ret;
+    }
+
+    e->next = ebpf_interfaces;
+    ebpf_interfaces = e;
+    *out = e;
+    return 0;
+}
+
+/* Detach the prio-1 filter, close the fds, drop the registry entry. */
+static void ebpf_if_release(struct nl_handler *nlh, unsigned int ifindex)
+{
+    struct ebpf_if **pp = &ebpf_interfaces, *e;
+
+    while ((e = *pp) != NULL) {
+        if (e->ifindex != ifindex) {
+            pp = &e->next;
+            continue;
+        }
+        tc_filter_del_prio(nlh, ifindex, EBPF_FILTER_PRIO);   /* ENOENT fine */
+        close(e->prog_fd);
+        close(e->cfg_fd);
+        close(e->cnt_fd);
+        *pp = e->next;
+        free(e);
+    }
+}
+
+/* true when no mode is active anymore — the filter can go away */
+static int ebpf_cfg_all_off(const struct tc_impair_cfg *c)
+{
+    return c->nth == 0 && c->quota_bytes == 0 && c->win_len_ns == 0
+           && (c->flow_mask == 0 || c->flow_target == 0);
+}
+
+/* Common tail of every mode command: apply cfg, reset that mode's
+ * counters, tear the whole thing down when the last mode went off. */
+static int ebpf_apply(hypervisor_conn_t *conn, struct nl_handler *nlh,
+                      struct ebpf_if *e, const char *mode, const char *ifname,
+                      int reset_nth, int reset_quota, int was_loaded)
+{
+    int ret;
+
+    if (ebpf_cfg_all_off(&e->cfg)) {
+        /* last mode off: filter and program go away */
+        if (was_loaded)
+            ebpf_if_release(nlh, e->ifindex);
+        hypervisor_send_reply(conn, HSC_INFO_OK, 1, "%s off on %s", mode, ifname);
+        return 0;
+    }
+
+    if (reset_nth || reset_quota)
+        tc_ebpf_cnt_reset(e->cnt_fd, reset_nth, reset_quota);   /* best effort */
+    ret = tc_ebpf_map_update(e->cfg_fd, &e->cfg);
+    if (ret < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_DELETE, 1,
+                              "Could not set %s on %s: %s", mode, ifname, strerror(-ret));
+        return -1;
+    }
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "%s set on %s", mode, ifname);
+    return 0;
+}
+
+/*
+ * Shared dispatch for the four mode commands. argv after the command:
+ *   <if> <mode-specific values...> | <if> off
+ * set_fn fills e->cfg (validation, 204 on bad values) and the reset flags.
+ */
+static int cmd_ebpf_mode(hypervisor_conn_t *conn, int argc, char *argv[],
+                         const char *mode,
+                         int (*set_fn)(hypervisor_conn_t *conn, char **argv,
+                                       struct tc_impair_cfg *cfg,
+                                       int *reset_nth, int *reset_quota))
+{
+    struct nl_handler nlh;
+    struct ebpf_if *e;
+    const char *ifname = argv[0];
+    const char *errmsg = NULL;
+    int ifindex, reset_nth = 0, reset_quota = 0, was_loaded, ret;
+
+    if (strcmp(argv[1], "off") == 0) {
+        if (argc != 2) {
+            hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1,
+                                  "Bad number of parameters (%d with min/max=2/2)", argc);
+            return -1;
+        }
+        ifindex = if_nametoindex(ifname);
+        if (ifindex == 0) {
+            hypervisor_send_reply(conn, HSC_ERR_DELETE, 1,
+                                  "Could not set %s on %s: %s", mode, ifname, strerror(ENODEV));
+            return -1;
+        }
+        e = ebpf_if_find(ifindex);
+        if (e == NULL) {
+            /* nothing loaded: the mode is trivially off (idempotent) */
+            hypervisor_send_reply(conn, HSC_INFO_OK, 1, "%s off on %s", mode, ifname);
+            return 0;
+        }
+        /* clear this mode's cfg fields; counters reset below (or the whole
+         * state is torn down when this was the last active mode) */
+        if (strcmp(mode, "nth_drop") == 0) {
+            e->cfg.nth = 0;
+            reset_nth = 1;
+        } else if (strcmp(mode, "quota_drop") == 0) {
+            e->cfg.quota_bytes = 0;
+            e->cfg.quota_pct = 0;
+            reset_quota = 1;
+        } else if (strcmp(mode, "window_drop") == 0) {
+            e->cfg.win_len_ns = 0;
+            e->cfg.win_pct = 0;
+        } else {
+            e->cfg.flow_mask = 0;
+            e->cfg.flow_target = 0;
+        }
+        ret = netlink_open(&nlh, NETLINK_ROUTE);
+        if (ret < 0) {
+            hypervisor_send_reply(conn, HSC_ERR_DELETE, 1,
+                                  "Could not set %s on %s: %s", mode, ifname, strerror(-ret));
+            return -1;
+        }
+        ebpf_apply(conn, &nlh, e, mode, ifname, reset_nth, reset_quota, 1);
+        netlink_close(&nlh);
+        return 0;
+    }
+
+    /* set path: validate FIRST — a bad value must 204 without touching the
+     * kernel (and without a pointless program load). The scratch cfg is
+     * seeded from the current state so the other modes stay configured. */
+    {
+        struct tc_impair_cfg scratch;
+
+        ifindex = if_nametoindex(ifname);
+        e = (ifindex != 0) ? ebpf_if_find(ifindex) : NULL;
+        if (e != NULL)
+            scratch = e->cfg;
+        else
+            memset(&scratch, 0, sizeof(scratch));
+
+        if (set_fn(conn, argv, &scratch, &reset_nth, &reset_quota) < 0)
+            return -1;                        /* set_fn already replied 204 */
+
+        if (ifindex == 0) {
+            hypervisor_send_reply(conn, HSC_ERR_DELETE, 1,
+                                  "Could not set %s on %s: %s", mode, ifname, strerror(ENODEV));
+            return -1;
+        }
+
+        ret = netlink_open(&nlh, NETLINK_ROUTE);
+        if (ret < 0) {
+            hypervisor_send_reply(conn, HSC_ERR_DELETE, 1,
+                                  "Could not set %s on %s: %s", mode, ifname, strerror(-ret));
+            return -1;
+        }
+
+        was_loaded = (e != NULL);
+        if (e == NULL) {
+            ret = ebpf_if_enable(&nlh, ifindex, &e, &errmsg);
+            if (ret < 0) {
+                netlink_close(&nlh);
+                if (errmsg != NULL) {
+                    hypervisor_send_reply(conn, HSC_ERR_STOP, 1, "%s", errmsg);
+                    return -1;
+                }
+                hypervisor_send_reply(conn, HSC_ERR_DELETE, 1,
+                                      "Could not set %s on %s: %s", mode, ifname, strerror(-ret));
+                return -1;
+            }
+        }
+
+        e->cfg = scratch;
+        ebpf_apply(conn, &nlh, e, mode, ifname, reset_nth, reset_quota, was_loaded);
+        netlink_close(&nlh);
+        return 0;
+    }
+}
+
+/* tc nth_drop <if> <n | off> */
+static int nth_set(hypervisor_conn_t *conn, char **argv,
+                   struct tc_impair_cfg *cfg, int *reset_nth, int *reset_quota)
+{
+    char *end;
+    long v;
+
+    (void)reset_quota;
+    v = strtol(argv[1], &end, 10);
+    if (end == argv[1] || *end != '\0' || v < 1 || v > 1000000) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1,
+                              "invalid nth value '%s' (1-1000000)", argv[1]);
+        return -1;
+    }
+    cfg->nth = (unsigned int)v;
+    *reset_nth = 1;
+    return 0;
+}
+
+/* tc quota_drop <if> <bytes> <pct> | off */
+static int quota_set(hypervisor_conn_t *conn, char **argv,
+                     struct tc_impair_cfg *cfg, int *reset_nth, int *reset_quota)
+{
+    char *end;
+    unsigned long long bytes;
+
+    (void)reset_nth;
+    if (!isdigit((unsigned char)argv[1][0]))
+        goto bad_bytes;
+    bytes = strtoull(argv[1], &end, 10);
+    if (end == argv[1] || *end != '\0' || bytes == 0)
+        goto bad_bytes;
+    if (parse_pct(argv[2], &cfg->quota_pct) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1,
+                              "invalid quota percent '%s' (0-100)", argv[2]);
+        return -1;
+    }
+    cfg->quota_bytes = bytes;
+    *reset_quota = 1;
+    return 0;
+
+bad_bytes:
+    hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1,
+                          "invalid quota bytes '%s'", argv[1]);
+    return -1;
+}
+
+/* tc window_drop <if> <start_ms> <len_ms> <pct> | off */
+static int window_set(hypervisor_conn_t *conn, char **argv,
+                      struct tc_impair_cfg *cfg, int *reset_nth, int *reset_quota)
+{
+    char *end;
+    unsigned long long start_ms, len_ms;
+    struct timespec ts;
+
+    (void)reset_nth;
+    (void)reset_quota;
+    if (!isdigit((unsigned char)argv[1][0])) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1,
+                              "invalid window start '%s'", argv[1]);
+        return -1;
+    }
+    start_ms = strtoull(argv[1], &end, 10);
+    if (end == argv[1] || *end != '\0' || start_ms > 1000000000000ULL) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1,
+                              "invalid window start '%s'", argv[1]);
+        return -1;
+    }
+    if (!isdigit((unsigned char)argv[2][0]))
+        goto bad_len;
+    len_ms = strtoull(argv[2], &end, 10);
+    if (end == argv[2] || *end != '\0' || len_ms == 0 || len_ms > 1000000000000ULL)
+        goto bad_len;
+    if (parse_pct(argv[3], &cfg->win_pct) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1,
+                              "invalid window percent '%s' (0-100)", argv[3]);
+        return -1;
+    }
+
+    /* first window starts start_ms from now; the program then advances it
+     * by len (monotonic clock, same base as bpf_ktime_get_ns) */
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    cfg->win_start_ns = ((unsigned long long)ts.tv_sec * 1000000000ULL + ts.tv_nsec)
+                        + start_ms * 1000000ULL;
+    cfg->win_len_ns = len_ms * 1000000ULL;
+    return 0;
+
+bad_len:
+    hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1,
+                          "invalid window length '%s'", argv[2]);
+    return -1;
+}
+
+/* tc flow_drop <if> <mask> <target> | off */
+static int flow_set(hypervisor_conn_t *conn, char **argv,
+                    struct tc_impair_cfg *cfg, int *reset_nth, int *reset_quota)
+{
+    char *end;
+    long mask, target;
+
+    (void)reset_nth;
+    (void)reset_quota;
+    mask = strtol(argv[1], &end, 10);
+    if (end == argv[1] || *end != '\0' || mask < 1 || mask > 0x1F) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1,
+                              "invalid flow mask '%s' (1-31: 1=src 2=dst 4=sport 8=dport 16=proto)",
+                              argv[1]);
+        return -1;
+    }
+    target = strtol(argv[2], &end, 10);
+    if (end == argv[2] || *end != '\0' || target < 1 || target > 0xFFFFFFFFL) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1,
+                              "invalid flow target '%s' (>=1)", argv[2]);
+        return -1;
+    }
+    cfg->flow_mask = (unsigned int)mask;
+    cfg->flow_target = (unsigned int)target;
+    return 0;
+}
+
+/* thin command handlers keeping the per-mode expected-argc in one place */
+static int cmd_nth_drop(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    if (argc != 2) {
+        hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1,
+                              "Bad number of parameters (%d with min/max=2/2)", argc);
+        return -1;
+    }
+    return cmd_ebpf_mode(conn, argc, argv, "nth_drop", nth_set);
+}
+
+static int cmd_quota_drop(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    if (argc != 3 && strcmp(argv[1], "off") != 0) {
+        hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1,
+                              "Bad number of parameters (%d with min/max=3/3)", argc);
+        return -1;
+    }
+    if (argc != 2 && strcmp(argv[1], "off") == 0) {
+        hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1,
+                              "Bad number of parameters (%d with min/max=2/2)", argc);
+        return -1;
+    }
+    return cmd_ebpf_mode(conn, argc, argv, "quota_drop", quota_set);
+}
+
+static int cmd_window_drop(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    if (argc != 4 && strcmp(argv[1], "off") != 0) {
+        hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1,
+                              "Bad number of parameters (%d with min/max=4/4)", argc);
+        return -1;
+    }
+    if (argc != 2 && strcmp(argv[1], "off") == 0) {
+        hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1,
+                              "Bad number of parameters (%d with min/max=2/2)", argc);
+        return -1;
+    }
+    return cmd_ebpf_mode(conn, argc, argv, "window_drop", window_set);
+}
+
+static int cmd_flow_drop(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    if (argc != 3 && strcmp(argv[1], "off") != 0) {
+        hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1,
+                              "Bad number of parameters (%d with min/max=3/3)", argc);
+        return -1;
+    }
+    if (argc != 2 && strcmp(argv[1], "off") == 0) {
+        hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1,
+                              "Bad number of parameters (%d with min/max=2/2)", argc);
+        return -1;
+    }
+    return cmd_ebpf_mode(conn, argc, argv, "flow_drop", flow_set);
+}
+
+/* --------------------------------------------------------------------------
  * bpf_drop commands
  * --------------------------------------------------------------------------
  */
@@ -1177,15 +1653,16 @@ static int tc_cbpf_capable(void)
 /*
  * tc capabilities — what this build supports, so the controller can hide
  * filter types the local kernel/ubridge cannot run (and fall back to the
- * relay datapath). ebpf flips to 1 when the stateful classifier (spec part
- * B) lands; cbpf is probed for real. An old ubridge without this command
- * at all keeps the controller on the relay datapath.
+ * relay datapath). ebpf = the real program loads+verifies here (CAP_BPF,
+ * kernel new enough); cbpf = a classic cls_bpf filter installs. An old
+ * ubridge without this command at all keeps the controller on the relay
+ * datapath.
  */
 static int cmd_capabilities(hypervisor_conn_t *conn, int argc, char *argv[])
 {
     hypervisor_send_reply(conn, HSC_INFO_OK, 1,
-                          "netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;ebpf=0;cbpf=%d",
-                          tc_cbpf_capable());
+                          "netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;ebpf=%d;cbpf=%d",
+                          tc_ebpf_supported(), tc_cbpf_capable());
     return 0;
 }
 
@@ -1202,6 +1679,11 @@ static hypervisor_cmd_t tc_cmd_array[] = {
    { "netem", 4, 32, cmd_netem, NULL },
    /* bpf_drop add <if> <prio> "<expr>" (prio 10-99) / bpf_drop flush <if> */
    { "bpf_drop", 2, 4, cmd_bpf_drop, NULL },
+   /* eBPF stateful impairment, one shared program at clsact prio 1 */
+   { "nth_drop", 2, 2, cmd_nth_drop, NULL },
+   { "quota_drop", 2, 3, cmd_quota_drop, NULL },
+   { "window_drop", 2, 4, cmd_window_drop, NULL },
+   { "flow_drop", 2, 3, cmd_flow_drop, NULL },
    { "reset", 1, 1, cmd_reset, NULL },
    { "capabilities", 0, 0, cmd_capabilities, NULL },
    { NULL, -1, -1, NULL, NULL },

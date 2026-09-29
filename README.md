@@ -63,9 +63,10 @@ The modules that are currently defined are given below:
 - link : generic interface management
 - tap : persistent TAP device lifecycle (kernel data plane)
 - tc : kernel netem link impairment — delay/jitter/loss/dup/corrupt plus
-  rate/reorder/loss-gemodel/distribution/seed/limit — and `bpf_drop`
-  classic-BPF match-drop filters on clsact egress, plus `tc capabilities`
-  (kernel data plane)
+  rate/reorder/loss-gemodel/distribution/seed/limit — `bpf_drop`
+  classic-BPF match-drop filters, the eBPF stateful modes
+  (`nth_drop`/`quota_drop`/`window_drop`/`flow_drop`, needs CAP_BPF), and
+  `tc capabilities` (kernel data plane)
 - capture : kernel-side AF_PACKET capture (kernel data plane)
 - marker : packet-filter match signals, pushed to a UDP sink; `add_kernel`
   sniffs a kernel interface directly for data-plane traffic that bypasses

@@ -275,10 +275,11 @@ def main():
             c = ub.connect()
             try:
                 # --- capabilities: cbpf now probed for real ------------------
-                r.check("capabilities: cbpf=1",
-                        c.send("tc capabilities") ==
-                        "100-netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;ebpf=0;cbpf=1",
-                        c.send("tc capabilities"))
+                # ebpf varies with CAP_BPF (0 under unshare, 1 with it)
+                res = c.send("tc capabilities")
+                r.check("capabilities: cbpf=1, ebpf=[01]",
+                        re.match(r"^100-netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;ebpf=[01];cbpf=1$", res) is not None,
+                        res)
 
                 # --- add: kernel dump == independent libpcap compile --------
                 res = c.send('tc bpf_drop add %s 10 "%s"' % (IFN, expr_a))

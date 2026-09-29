@@ -62,6 +62,8 @@ SRC += src/nio_linux_raw.c             \
        src/hypervisor_tap.c            \
        src/hypervisor_tc.c             \
        src/tc_netem_dist.c             \
+       src/tc_ebpf.c                   \
+       src/tc_ebpf_insns.c             \
        src/hypervisor_capture.c        \
        src/hypervisor_marker.c         \
        src/netlink/nl.c
@@ -80,7 +82,7 @@ DEBUG_CFLAGS = -O1 -g -fsanitize=$(SANITIZERS) -fno-omit-frame-pointer
 DEBUG_LDFLAGS = -fsanitize=$(SANITIZERS)
 
 ##############################
-.PHONY: clean debug all install test
+.PHONY: clean debug all install test bpf
 
 $(BUILDDIR)/%.o: %.c
 	mkdir -p $(dir $@)
@@ -94,6 +96,13 @@ $(DEBUG_TARGET): $(DEBUG_OBJ)
 
 all: $(NAME)
 
+# Regenerate the committed eBPF artifacts (developer-only; the normal build
+# compiles the committed src/tc_ebpf_insns.c and needs neither clang nor
+# libbpf). Requires clang (bpf target) + binutils (objcopy/readelf).
+bpf:
+	clang -target bpf -O2 -Wall -c src/tc_impair.bpf.c -o src/tc_impair.bpf.o
+	python3 tools/gen_tc_impair.py
+
 debug: $(DEBUG_TARGET)
 
 clean:
@@ -105,7 +114,11 @@ clean:
 install: $(NAME)
 	chmod +x $(NAME)
 	cp -p $(NAME) $(BINDIR)
-	setcap cap_net_admin,cap_net_raw=ep $(BINDIR)/$(NAME)
+	# stateful eBPF classifiers (tc nth_drop & co) additionally need
+	# CAP_BPF on kernels >= 5.8; fall back when the filesystem/kernel
+	# does not know the capability yet
+	setcap cap_bpf,cap_net_admin,cap_net_raw=ep $(BINDIR)/$(NAME) || \
+	    setcap cap_net_admin,cap_net_raw=ep $(BINDIR)/$(NAME)
 
 $(UNIT_TEST_TARGET): $(UNIT_TEST_SRC) $(filter-out src/main.c,$(SRC))
 	mkdir -p $(dir $@)

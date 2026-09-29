@@ -219,11 +219,12 @@ def main():
                 r.check("dup correl alone survives", "duplicate 25% 50%" in qshow(IFN), qshow(IFN).strip()[:120])
 
                 # --- capabilities --------------------------------------------
-                # cbpf=1 since part C (bpf_drop) — probed on a throwaway dummy
+                # cbpf=1 since part C (bpf_drop); ebpf varies with CAP_BPF
+                # (0 e.g. under unshare, 1 with it) — match the shape
+                res = c.send("tc capabilities")
                 r.check("capabilities string",
-                        c.send("tc capabilities") ==
-                        "100-netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;ebpf=0;cbpf=1",
-                        c.send("tc capabilities"))
+                        re.match(r"^100-netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;ebpf=[01];cbpf=1$", res) is not None,
+                        res)
 
                 # --- error contract ------------------------------------------
                 r.check("reorder without delay -> 204 'reorder requires delay'",

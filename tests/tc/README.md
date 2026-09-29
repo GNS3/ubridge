@@ -2,7 +2,7 @@
 
 Black-box tests for the `tc` hypervisor module (kernel netem link
 impairment, the P6a keyword extensions, the P6c `bpf_drop` classic-BPF
-filters, and `tc capabilities`).
+filters, the P6b eBPF stateful modes, and `tc capabilities`).
 
 ## Prerequisites
 
@@ -43,10 +43,15 @@ sudo python3 run_all.py
 | `test_basic.py` | P5 surface: netem set with the five base parameters (delay, jitter, loss, dup, corrupt — kernel-verified via `tc qdisc show`), REPLACE semantics on re-set, reset (idempotent: no qdisc → 100), param validation (203/204), missing iface (207). |
 | `test_netem_ext.py` | P6a extensions: `rate` (bit/kbit/mbit/gbit + bps-family bytes/s units, RATE64 path), `reorder` (+correl, gap, requires-delay), `loss gemodel` (p/r/1-h), `distribution` (embedded tables, uniform = no table), `seed`, `limit`, `correl` suffixes, `tc capabilities`. Verified by **byte-comparing the kernel's TCA_OPTIONS dump against what the real `tc` CLI produces for the same parameters**, plus `tc qdisc show` state, the full 203/204 error contract, and behavioral checks on a veth pair (delay lower bound, limit overflow, gemodel extremes) using raw AF_PACKET injection. |
 | `test_bpf_drop.py` | P6c: `bpf_drop add` (prio 10-99, pcap expression) / `flush` / full-restore `reset` / capabilities `cbpf=1`. Byte-compare oracle: the kernel's TCA_BPF_OPS must equal an **independent libpcap compile** (ctypes) and dump identically to the real `tc` CLI's `bpf bytecode '<insns>' action drop`; action must be gact/TC_ACT_SHOT (RTM_GETTFILTER dump). Error contract (203/204/207/209), flush removes only ubridge-tracked prios (a foreign CLI filter survives), netem coexistence, veth behavioral (match dropped / non-match passes / multi-prio OR / flush restores). |
+| `test_ebpf.py` | P6b stateful modes (`nth_drop`/`quota_drop`/`window_drop`/`flow_drop`, one eBPF program at clsact egress prio 1). Without CAP_BPF (plain `unshare -Urn`, `unprivileged_bpf_disabled=2`): validation contract (204 before any load), argc/207, idempotent `off`, and the **exact 210 no-CAP_BPF string** for every enable. With CAP_BPF: prio-1 attach/teardown (last-off, reset), single shared program, and veth behavioral — nth exact pattern via payload sequence numbers, counter reset on re-set, quota threshold at pct extremes, window active vs future, flow-hash determinism against a Python mirror of the program's Jenkins fold. |
 
 `test_bpf_drop.py` also needs **libpcap loadable by ctypes** (`libpcap.so.1`,
 already a ubridge build dependency) — it self-skips if the library cannot be
 loaded.
+
+The `test_ebpf.py` behavioral section only runs when the ubridge binary can
+actually load BPF (root, or `setcap cap_bpf,...` on a kernel allowing it) —
+same invocation as the other kernel suites: `sudo python3 test_ebpf.py`.
 
 ### Behavioral-test notes
 
@@ -74,6 +79,8 @@ traffic.
   (same as the qdisc dump).
 - Each filter dumps as **two messages**: the filter itself (with
   `TCA_OPTIONS`) and a stats continuation (without) — keep only messages
-  carrying `TCA_OPTIONS` when collecting by prio.
+  carrying `TCA_OPTIONS` when collecting by prio. `tc filter show` mirrors
+  this: two LINES per filter (header + handle detail) — count "chain 0
+  handle" lines when counting filters.
 - Inside `TCA_ACT_OPTIONS`, `TCA_GACT_PARMS` is attr **2** (`UNSPEC=0,
   TM=1, PARMS=2`) — easy to mis-number.

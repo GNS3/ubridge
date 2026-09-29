@@ -1,5 +1,7 @@
 # Object files
 *.o
+# committed eBPF artifact (kernel-impairment spec B.1; regenerate with `make bpf`)
+!src/tc_impair.bpf.o
 *.ko
 *.obj
 *.elf
