@@ -190,6 +190,29 @@ int tc_ebpf_cnt_reset(int cnt_fd, int reset_nth, int reset_quota)
 }
 
 /*
+ * (Re)seed the current-cycle window lengths in CNT with the nominals —
+ * called on every window_drop set so a schedule (jittered or not) starts
+ * from the configured values, never from stale draws of a previous run.
+ */
+int tc_ebpf_cnt_set_window(int cnt_fd, unsigned long long outage_ns,
+                           unsigned long long period_ns)
+{
+    struct tc_impair_cnt cnt;
+    const unsigned int key = 0;
+    union bpf_attr attr;
+
+    memset(&attr, 0, sizeof(attr));
+    attr.map_fd = cnt_fd;
+    attr.key = (unsigned long)&key;
+    attr.value = (unsigned long)&cnt;
+    if (bpf_call(BPF_MAP_LOOKUP_ELEM, &attr) < 0)
+        return -errno;
+    cnt.win_outage_cur_ns = outage_ns;
+    cnt.win_period_cur_ns = period_ns;
+    return tc_ebpf_map_update(cnt_fd, &cnt);
+}
+
+/*
  * Capability probe: load the REAL program (maps + verifier acceptance on
  * this kernel) and throw it away. Result cached; any failure — EPERM for
  * a missing CAP_BPF, EINVAL/EOVERFLOW for a kernel the program does not

@@ -9,9 +9,10 @@ Split by capability, self-degrading:
   exact spec-210 string.
 - The validation/error contract (203/204/207) is checked unconditionally.
 - With CAP_BPF (real sudo) the behavioral section runs: exact nth pattern
-  (frame sequence in the payload), byte-quota threshold, window in/out,
-  flow-hash determinism against a Python mirror of the program's Jenkins
-  fold, counter reset on re-set, teardown on last off / tc reset.
+  (frame sequence in the payload), byte-quota threshold, window in/out/
+  expiry/recurring-period/jitter, flow-hash determinism against a Python
+  mirror of the program's Jenkins fold, counter reset on re-set, teardown
+  on last off / tc reset.
 
 Stdlib only. Reuses Ubridge / Results from tests/brctl/common.py.
 """
@@ -21,6 +22,7 @@ import socket
 import struct
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "brctl"))
 from common import Ubridge, Results  # noqa: E402
@@ -121,6 +123,10 @@ def main():
                     ("tc window_drop %s 10 0 50" % IFN, "204-invalid window length '0'"),
                     ("tc window_drop %s abc 100 50" % IFN, "204-invalid window start 'abc'"),
                     ("tc window_drop %s 10 100 101" % IFN, "204-invalid window percent '101' (0-100)"),
+                    ("tc window_drop %s 10 100 50 50" % IFN, "204-invalid window period '50' (>= outage length)"),
+                    ("tc window_drop %s 10 100 50 abc" % IFN, "204-invalid window period 'abc' (>= outage length)"),
+                    ("tc window_drop %s 10 100 50 5000 abc" % IFN, "204-invalid window jitter 'abc' (0-1000000000)"),
+                    ("tc window_drop %s 10 100 50 5000 1000000001" % IFN, "204-invalid window jitter '1000000001' (0-1000000000)"),
                     ("tc flow_drop %s 32 7" % IFN, "204-invalid flow mask '32' (1-31: 1=src 2=dst 4=sport 8=dport 16=proto)"),
                     ("tc flow_drop %s 0 7" % IFN, "204-invalid flow mask '0' (1-31: 1=src 2=dst 4=sport 8=dport 16=proto)"),
                     ("tc flow_drop %s 3 0" % IFN, "204-invalid flow target '0' (>=1)"),
@@ -131,6 +137,8 @@ def main():
                 r.check("argc: nth -> 203", c.send("tc nth_drop %s" % IFN).startswith("203-"), "")
                 r.check("argc: quota set -> 203", c.send("tc quota_drop %s 100" % IFN).startswith("203-"), "")
                 r.check("argc: window set -> 203", c.send("tc window_drop %s 10 100" % IFN).startswith("203-"), "")
+                r.check("argc: window 7 tokens -> 203",
+                        c.send("tc window_drop %s 0 100 50 5000 100 x" % IFN).startswith("203-"), "")
                 r.check("argc: off + extra -> 203", c.send("tc window_drop %s off x" % IFN).startswith("203-"), "")
                 r.check("missing iface -> 207",
                         c.send("tc nth_drop %s-nope 5" % IFN).startswith("207-"), "")
@@ -142,6 +150,8 @@ def main():
                     for cmd in ("tc nth_drop %s 5" % IFN,
                                 "tc quota_drop %s 1000 10" % IFN,
                                 "tc window_drop %s 0 1000 50" % IFN,
+                                "tc window_drop %s 0 1000 50 2000" % IFN,
+                                "tc window_drop %s 0 1000 50 2000 300" % IFN,
                                 "tc flow_drop %s 3 7" % IFN):
                         res = c.send(cmd)
                         r.check("%s -> exact 210" % cmd.split(" ", 1)[1], res == NO_CAP_210, res)
@@ -283,6 +293,55 @@ def main():
                     r.check("behavioral: future window passes all (10/10)",
                             sorted(got) == list(range(1, 11)), "received %s" % sorted(got))
                     c.send("tc window_drop %s off" % VB)
+
+                    # single window EXPIRES: 300ms outage, then pass again
+                    # (the B.2 "outside the window packets pass" contract)
+                    c.send("tc window_drop %s 0 300 100" % VB)
+                    inject_seq(mac_a, mac_b, 10)
+                    got = drain(0.5)
+                    r.check("behavioral: single window active drops (0/10)",
+                            got == [], "received %s" % got)
+                    time.sleep(0.6)                      # past the outage
+                    inject_seq(mac_a, mac_b, 10)
+                    got = drain(0.8)
+                    r.check("behavioral: single window EXPIRED passes (10/10)",
+                            sorted(got) == list(range(1, 11)), "received %s" % sorted(got))
+                    c.send("tc window_drop %s off" % VB)
+
+                    # recurring: 800ms outage every 2400ms — drop inside
+                    # cycles 1 and 2, pass in the gap between them
+                    # (anchored on the monotonic clock, not on sleeps)
+                    c.send("tc window_drop %s 0 800 100 2400" % VB)
+                    t0 = time.monotonic()
+                    inject_seq(mac_a, mac_b, 10)         # outage 1 [0, 0.8)
+                    got1 = drain(0.4)
+                    time.sleep(max(0, (t0 + 2.7) - time.monotonic()))
+                    inject_seq(mac_a, mac_b, 10)         # outage 2 [2.4, 3.2)
+                    got2 = drain(0.4)
+                    time.sleep(max(0, (t0 + 4.2) - time.monotonic()))
+                    inject_seq(mac_a, mac_b, 10)         # gap [3.2, 4.8)
+                    got3 = drain(0.8)
+                    r.check("behavioral: recurring drops in cycles, passes in gap",
+                            got1 == [] and got2 == [] and sorted(got3) == list(range(1, 11)),
+                            "cyc1 %s cyc2 %s gap %s" % (got1, got2, sorted(got3)))
+                    c.send("tc window_drop %s off" % VB)
+
+                    # jittered schedule (outage 200±190ms every 600±190ms):
+                    # bursts land at random phase — both dropped and passed
+                    # bursts must occur (determinism of jitter 0 is covered
+                    # by the fixed-period check above)
+                    c.send("tc window_drop %s 0 200 100 600 190" % VB)
+                    dropped_bursts = passed_bursts = 0
+                    for _ in range(16):
+                        inject_seq(mac_a, mac_b, 3)
+                        if drain(0.28):
+                            passed_bursts += 1
+                        else:
+                            dropped_bursts += 1
+                    c.send("tc window_drop %s off" % VB)
+                    r.check("behavioral: jitter schedule drops AND passes bursts",
+                            dropped_bursts >= 2 and passed_bursts >= 2,
+                            "dropped %d passed %d" % (dropped_bursts, passed_bursts))
 
                     # flow: src-MAC hash mod 4 == 0 drops; picked via the
                     # Python mirror of the program's Jenkins fold

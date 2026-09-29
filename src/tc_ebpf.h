@@ -52,4 +52,9 @@ int tc_ebpf_map_update(int map_fd, const void *value);
 /* Zero the given mode's counters in CNT (read-modify-write). 0 or -errno. */
 int tc_ebpf_cnt_reset(int cnt_fd, int reset_nth, int reset_quota);
 
+/* Seed CNT's current-cycle window lengths with the nominals (called on
+ * every window_drop set). 0 or -errno. */
+int tc_ebpf_cnt_set_window(int cnt_fd, unsigned long long outage_ns,
+                           unsigned long long period_ns);
+
 #endif /* TC_EBPF_H */

@@ -46,13 +46,27 @@ def insns_and_relocs():
         if len(data) == 0 or len(data) % 8 != 0:
             sys.exit("section %s has bogus size %d" % (SECTION, len(data)))
         relocs = {}
-        txt = run(["readelf", "-rW", OBJ])
-        pat = re.compile(
-            r"^([0-9a-f]+)\s+\S+\s+R_BPF_64_64\s+\S+\s+(\S+)\s*$", re.M)
-        for off_hex, sym in pat.findall(txt):
-            off = int(off_hex, 16)
-            if off not in relocs:          # .reltc_impair only; ignore others
-                relocs[off] = sym
+        sect = None
+        for line in run(["readelf", "-rW", OBJ]).splitlines():
+            m = re.match(r"^Relocation section '([^']+)'", line)
+            if m:
+                sect = m.group(1)
+                continue
+            if sect != ".rel" + SECTION:
+                continue
+            m = re.match(r"^([0-9a-f]+)\s+\S+\s+(\S+)\s+\S+\s+(\S+)\s*$", line)
+            if not m:
+                continue
+            off, rtype, sym = int(m.group(1), 16), m.group(2), m.group(3)
+            # Everything the object asks us to patch must be a map-fd load we
+            # understand — e.g. an outlined helper yields an R_BPF_64_32
+            # pseudo-call this array cannot carry (helpers stay inline_always)
+            if rtype != "R_BPF_64_64" or sym not in ("cfg_map", "cnt_map"):
+                sys.exit("unsupported relocation %s against '%s' at 0x%x — the "
+                         "program must stay self-contained (mark helpers "
+                         "inline_always; only the two map-fd loads may relocate)"
+                         % (rtype, sym, off))
+            relocs.setdefault(off, sym)
         return data, relocs
     finally:
         os.unlink(binpath)
@@ -73,8 +87,6 @@ def main():
     n = len(data) // 8
     idx = {}
     for off, sym in relocs.items():
-        if sym not in ("cfg_map", "cnt_map"):
-            continue
         i = off // 8
         code, dst, src, off_f, imm = decode(data, i)
         code2, _, _, _, _ = decode(data, i + 1)

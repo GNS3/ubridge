@@ -155,7 +155,7 @@ pure map state — enabling or changing one never reloads the program.
 ```
 tc nth_drop    <if> <n | off>              # drop every Nth packet (exact)
 tc quota_drop  <if> <bytes> <pct> | off    # after <bytes> of traffic, drop pct%
-tc window_drop <if> <start_ms> <len_ms> <pct> | off   # recurring time window
+tc window_drop <if> <start_ms> <outage_ms> <pct> [<period_ms> [<jitter_ms>]] | off
 tc flow_drop   <if> <mask> <target> | off  # flow-hash select (hash % target == 0 drops)
 ```
 
@@ -169,12 +169,18 @@ drop wins):
   (only traffic that survived nth); once the running total reaches
   `<bytes>`, each further packet drops with probability `pct` (100 =
   hard cutoff after the quota).
-- `window_drop <start_ms> <len_ms> <pct>`: a recurring
-  `[start, start+len)` window on the monotonic clock — the first window
-  opens `start_ms` from the command; inside it packets drop with `pct`,
-  outside they pass. The program advances the window by one `len` when it
-  expires (no loop — if traffic pauses across several windows, the first
-  packet lands "inside").
+- `window_drop <start_ms> <outage_ms> <pct> [<period_ms> [<jitter_ms>]]`:
+  without `period`, a **single** `[start, start+outage)` outage on the
+  monotonic clock (opening `start_ms` from the command) — packets pass
+  before *and after* it. With `period` (≥ `outage`), outages recur every
+  cycle: inside the outage drop with `pct`, in the rest of the cycle pass
+  — deterministic link flap. With `jitter` (> 0, ≤ 1000000000 ms), each
+  new cycle's outage and period are re-drawn uniformly in nominal ±
+  `jitter` (whole-ms grid, clamped so a cycle never overlaps its
+  successor; `jitter 0` draws nothing and is exactly the fixed schedule)
+  — randomized flap that cannot let protocols sync to a beat. The program
+  advances whole cycles in a bounded loop, so traffic pausing across many
+  cycles still lands in the right one.
 - `flow_drop <mask> <target>`: `<mask>` is the decimal bitmask of header
   fields feeding a Jenkins one-at-a-time hash — `1`=source MAC, `2`=dest
   MAC, `4`=L4 source port, `8`=L4 dest port, `16`=IPv4 protocol (ports only
@@ -258,8 +264,8 @@ capability and keeps them on the relay datapath.
 | Code | Meaning |
 |------|---------|
 | `100` | OK |
-| `203` | Bad number of parameters (netem takes 4–32; bpf_drop add 4, flush 2; ebpf modes 2–4 per verb) / dangling value |
-| `204` | Invalid value; `reorder requires delay`; `unknown distribution '<v>'`; duplicate `loss`; bpf_drop prio/verb errors; ebpf mode value errors |
+| `203` | Bad number of parameters (netem takes 4–32; bpf_drop add 4, flush 2; ebpf modes 2–6 per verb — `window_drop` takes 4–6 to set) / dangling value |
+| `204` | Invalid value; `reorder requires delay`; `unknown distribution '<v>'`; duplicate `loss`; bpf_drop prio/verb errors; ebpf mode value errors (`window period` must be ≥ outage length, `window jitter` ≤ 1000000000) |
 | `207` | Netlink/kernel failure (`Could not set netem / add bpf_drop / set <mode> / reset qdisc on <if>: <strerror>`; ENODEV; a missing qdisc on reset is `100`, not an error) |
 | `209` | `Cannot compile filter '<expr>': <pcap error>` — bpf_drop expression failed to compile |
 | `210` | `uBridge lacks CAP_BPF (...)` — the kernel requires CAP_BPF for stateful filters and this ubridge does not have it |
@@ -328,14 +334,22 @@ capability and keeps them on the relay datapath.
   is the usual `RTM_NEWTFILTER` at prio 1 with `TCA_BPF_FD` +
   `TCA_BPF_FLAGS = TCA_BPF_FLAG_ACT_DIRECT` (direct-action — the program's
   `TC_ACT_SHOT/OK` return IS the verdict, no gact).
-- The program is verifier-friendly by construction: no loops, every packet
-  access bounds-checked, L4 ports only for TCP/UDP over IPv4 with the
-  header verified present, 32-bit modulo only (BPF has no native 64-bit
-  mod). Counters (`packets`/`bytes`/`nth_state`) use atomic adds, so the
+- The program is verifier-friendly by construction: no unbounded loops
+  (the window cycle catch-up is bounded — the verifier accepts bounded
+  loops on kernels ≥ 5.3, and the CAP_BPF requirement above already gates
+  on ≥ 5.8), every packet access bounds-checked, L4 ports only for TCP/UDP
+  over IPv4 with the header verified present, 32-bit modulo only (BPF has
+  no native 64-bit mod). Every helper is force-inlined
+  (`always_inline`): an outlined one would emit an intra-program call
+  relocation (`R_BPF_64_32`) the committed-insn pipeline does not carry —
+  `tools/gen_tc_impair.py` refuses the object loudly in that case.
+  Counters (`packets`/`bytes`/`nth_state`) use atomic adds, so the
   every-Nth count is exact across CPUs; the PRNG state rides in the
-  counters map (seeded at load, never zero). `struct __sk_buff` is
-  hand-written minimally in the program — its `data`/`data_end` offsets
-  are compile-time-asserted against the uapi from the native side.
+  counters map (seeded at load, never zero), and the jittered window
+  draws go through the same stream (`lo + (rnd·span) >> 32` on the
+  whole-ms grid — multiply-shift, no 64-bit modulo). `struct __sk_buff`
+  is hand-written minimally in the program — its `data`/`data_end`
+  offsets are compile-time-asserted against the uapi from the native side.
 - Uses ubridge's netlink library (`src/netlink/nl.c`); helpers return a
   **negative errno**; command handlers report `strerror(-err)`.
 
@@ -384,9 +398,12 @@ capability and keeps them on the relay datapath.
   program shared across modes, teardown on last off / reset, and behavioral
   checks on a veth — **nth exact pattern** (payload sequence numbers:
   survivors are exactly seq % n ≠ 0), counter reset on re-set, byte-quota
-  threshold at pct 0/100 extremes, window active vs future-start, and
-  flow-hash determinism against a **Python mirror of the program's Jenkins
-  fold** (src MACs picked to hash ≡ 0 / ≢ 0 mod target).
+  threshold at pct 0/100 extremes, **window semantics** (single window
+  drops while active and *passes after expiry*; recurring period drops
+  in two cycles and passes in the gap between them, anchored on the
+  monotonic clock; a jittered schedule produces both dropped and passed
+  bursts), and flow-hash determinism against a **Python mirror of the
+  program's Jenkins fold** (src MACs picked to hash ≡ 0 / ≢ 0 mod target).
 - `test_precision.py` — the F precision tier, the statistical assertions
   (the slowest suite, ~15 s, runs last): gemodel loss within ±5pp of the
   Markov steady state ((1-h)·p/(p+r) — drops only happen in the BAD state,
@@ -416,7 +433,7 @@ make
 cd tests/tc
 sudo python3 run_all.py          # or: unshare -Urn python3 run_all.py
 # test_basic 18/18, test_netem_ext 64/64, test_bpf_drop 32/32,
-# test_ebpf 35/35 (28/28 degraded without CAP_BPF), test_precision 10/10
+# test_ebpf 44/44 (35/35 degraded without CAP_BPF), test_precision 10/10
 ```
 
 Not covered locally (needs real traffic + a time budget, CI-root tier):

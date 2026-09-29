@@ -1140,11 +1140,18 @@ static int ebpf_cfg_all_off(const struct tc_impair_cfg *c)
            && (c->flow_mask == 0 || c->flow_target == 0);
 }
 
+/* what a mode command wants reset/reseeded in CNT before the cfg update */
+struct ebpf_resets {
+    int nth;      /* zero nth_state */
+    int quota;    /* zero packets/bytes */
+    int window;   /* reseed the current-cycle window lengths from cfg */
+};
+
 /* Common tail of every mode command: apply cfg, reset that mode's
  * counters, tear the whole thing down when the last mode went off. */
 static int ebpf_apply(hypervisor_conn_t *conn, struct nl_handler *nlh,
                       struct ebpf_if *e, const char *mode, const char *ifname,
-                      int reset_nth, int reset_quota, int was_loaded)
+                      const struct ebpf_resets *res, int was_loaded)
 {
     int ret;
 
@@ -1156,8 +1163,11 @@ static int ebpf_apply(hypervisor_conn_t *conn, struct nl_handler *nlh,
         return 0;
     }
 
-    if (reset_nth || reset_quota)
-        tc_ebpf_cnt_reset(e->cnt_fd, reset_nth, reset_quota);   /* best effort */
+    if (res->nth || res->quota)
+        tc_ebpf_cnt_reset(e->cnt_fd, res->nth, res->quota);     /* best effort */
+    if (res->window)
+        tc_ebpf_cnt_set_window(e->cnt_fd, e->cfg.win_len_ns,
+                               e->cfg.win_period_ns);           /* best effort */
     ret = tc_ebpf_map_update(e->cfg_fd, &e->cfg);
     if (ret < 0) {
         hypervisor_send_reply(conn, HSC_ERR_DELETE, 1,
@@ -1171,19 +1181,21 @@ static int ebpf_apply(hypervisor_conn_t *conn, struct nl_handler *nlh,
 /*
  * Shared dispatch for the four mode commands. argv after the command:
  *   <if> <mode-specific values...> | <if> off
- * set_fn fills e->cfg (validation, 204 on bad values) and the reset flags.
+ * set_fn fills cfg (validation, 204 on bad values) and the reset/reseed
+ * flags; argc lets a mode take optional trailing arguments.
  */
 static int cmd_ebpf_mode(hypervisor_conn_t *conn, int argc, char *argv[],
                          const char *mode,
-                         int (*set_fn)(hypervisor_conn_t *conn, char **argv,
-                                       struct tc_impair_cfg *cfg,
-                                       int *reset_nth, int *reset_quota))
+                         int (*set_fn)(hypervisor_conn_t *conn, int argc,
+                                       char **argv, struct tc_impair_cfg *cfg,
+                                       struct ebpf_resets *res))
 {
     struct nl_handler nlh;
     struct ebpf_if *e;
     const char *ifname = argv[0];
     const char *errmsg = NULL;
-    int ifindex, reset_nth = 0, reset_quota = 0, was_loaded, ret;
+    struct ebpf_resets res = { 0, 0, 0 };
+    int ifindex, was_loaded, ret;
 
     if (strcmp(argv[1], "off") == 0) {
         if (argc != 2) {
@@ -1207,13 +1219,15 @@ static int cmd_ebpf_mode(hypervisor_conn_t *conn, int argc, char *argv[],
          * state is torn down when this was the last active mode) */
         if (strcmp(mode, "nth_drop") == 0) {
             e->cfg.nth = 0;
-            reset_nth = 1;
+            res.nth = 1;
         } else if (strcmp(mode, "quota_drop") == 0) {
             e->cfg.quota_bytes = 0;
             e->cfg.quota_pct = 0;
-            reset_quota = 1;
+            res.quota = 1;
         } else if (strcmp(mode, "window_drop") == 0) {
             e->cfg.win_len_ns = 0;
+            e->cfg.win_period_ns = 0;
+            e->cfg.win_jitter_ns = 0;
             e->cfg.win_pct = 0;
         } else {
             e->cfg.flow_mask = 0;
@@ -1225,7 +1239,7 @@ static int cmd_ebpf_mode(hypervisor_conn_t *conn, int argc, char *argv[],
                                   "Could not set %s on %s: %s", mode, ifname, strerror(-ret));
             return -1;
         }
-        ebpf_apply(conn, &nlh, e, mode, ifname, reset_nth, reset_quota, 1);
+        ebpf_apply(conn, &nlh, e, mode, ifname, &res, 1);
         netlink_close(&nlh);
         return 0;
     }
@@ -1243,7 +1257,7 @@ static int cmd_ebpf_mode(hypervisor_conn_t *conn, int argc, char *argv[],
         else
             memset(&scratch, 0, sizeof(scratch));
 
-        if (set_fn(conn, argv, &scratch, &reset_nth, &reset_quota) < 0)
+        if (set_fn(conn, argc, argv, &scratch, &res) < 0)
             return -1;                        /* set_fn already replied 204 */
 
         if (ifindex == 0) {
@@ -1275,20 +1289,20 @@ static int cmd_ebpf_mode(hypervisor_conn_t *conn, int argc, char *argv[],
         }
 
         e->cfg = scratch;
-        ebpf_apply(conn, &nlh, e, mode, ifname, reset_nth, reset_quota, was_loaded);
+        ebpf_apply(conn, &nlh, e, mode, ifname, &res, was_loaded);
         netlink_close(&nlh);
         return 0;
     }
 }
 
 /* tc nth_drop <if> <n | off> */
-static int nth_set(hypervisor_conn_t *conn, char **argv,
-                   struct tc_impair_cfg *cfg, int *reset_nth, int *reset_quota)
+static int nth_set(hypervisor_conn_t *conn, int argc, char **argv,
+                   struct tc_impair_cfg *cfg, struct ebpf_resets *res)
 {
     char *end;
     long v;
 
-    (void)reset_quota;
+    (void)argc;
     v = strtol(argv[1], &end, 10);
     if (end == argv[1] || *end != '\0' || v < 1 || v > 1000000) {
         hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1,
@@ -1296,18 +1310,18 @@ static int nth_set(hypervisor_conn_t *conn, char **argv,
         return -1;
     }
     cfg->nth = (unsigned int)v;
-    *reset_nth = 1;
+    res->nth = 1;
     return 0;
 }
 
 /* tc quota_drop <if> <bytes> <pct> | off */
-static int quota_set(hypervisor_conn_t *conn, char **argv,
-                     struct tc_impair_cfg *cfg, int *reset_nth, int *reset_quota)
+static int quota_set(hypervisor_conn_t *conn, int argc, char **argv,
+                     struct tc_impair_cfg *cfg, struct ebpf_resets *res)
 {
     char *end;
     unsigned long long bytes;
 
-    (void)reset_nth;
+    (void)argc;
     if (!isdigit((unsigned char)argv[1][0]))
         goto bad_bytes;
     bytes = strtoull(argv[1], &end, 10);
@@ -1319,7 +1333,7 @@ static int quota_set(hypervisor_conn_t *conn, char **argv,
         return -1;
     }
     cfg->quota_bytes = bytes;
-    *reset_quota = 1;
+    res->quota = 1;
     return 0;
 
 bad_bytes:
@@ -1328,16 +1342,22 @@ bad_bytes:
     return -1;
 }
 
-/* tc window_drop <if> <start_ms> <len_ms> <pct> | off */
-static int window_set(hypervisor_conn_t *conn, char **argv,
-                      struct tc_impair_cfg *cfg, int *reset_nth, int *reset_quota)
+/*
+ * tc window_drop <if> <start_ms> <outage_ms> <pct> [<period_ms> [<jitter_ms>]] | off
+ *
+ * period omitted: a single [start, start+outage) window — packets pass
+ * before AND after it. With period: outages recur every cycle; jitter
+ * re-draws each cycle's outage/period uniformly in nominal ± jitter
+ * (0 = the fixed schedule). jitter is capped at 1e9 ms so the program's
+ * multiply-shift draw cannot overflow on the ms grid.
+ */
+static int window_set(hypervisor_conn_t *conn, int argc, char **argv,
+                      struct tc_impair_cfg *cfg, struct ebpf_resets *res)
 {
     char *end;
-    unsigned long long start_ms, len_ms;
+    unsigned long long start_ms, len_ms, period_ms = 0, jitter_ms = 0;
     struct timespec ts;
 
-    (void)reset_nth;
-    (void)reset_quota;
     if (!isdigit((unsigned char)argv[1][0])) {
         hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1,
                               "invalid window start '%s'", argv[1]);
@@ -1359,30 +1379,57 @@ static int window_set(hypervisor_conn_t *conn, char **argv,
                               "invalid window percent '%s' (0-100)", argv[3]);
         return -1;
     }
+    if (argc >= 5) {
+        if (!isdigit((unsigned char)argv[4][0]))
+            goto bad_period;
+        period_ms = strtoull(argv[4], &end, 10);
+        if (end == argv[4] || *end != '\0' || period_ms == 0
+            || period_ms > 1000000000000ULL || period_ms < len_ms)
+            goto bad_period;
+        if (argc == 6) {
+            if (!isdigit((unsigned char)argv[5][0]))
+                goto bad_jitter;
+            jitter_ms = strtoull(argv[5], &end, 10);
+            if (end == argv[5] || *end != '\0' || jitter_ms > 1000000000ULL)
+                goto bad_jitter;
+        }
+    }
 
-    /* first window starts start_ms from now; the program then advances it
-     * by len (monotonic clock, same base as bpf_ktime_get_ns) */
+    /* first window starts start_ms from now; the program then advances
+     * start by one (drawn) period per cycle (monotonic clock, same base
+     * as bpf_ktime_get_ns) */
     clock_gettime(CLOCK_MONOTONIC, &ts);
     cfg->win_start_ns = ((unsigned long long)ts.tv_sec * 1000000000ULL + ts.tv_nsec)
                         + start_ms * 1000000ULL;
     cfg->win_len_ns = len_ms * 1000000ULL;
+    cfg->win_period_ns = period_ms * 1000000ULL;
+    cfg->win_jitter_ns = jitter_ms * 1000000ULL;
+    res->window = 1;
     return 0;
 
 bad_len:
     hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1,
                           "invalid window length '%s'", argv[2]);
     return -1;
+bad_period:
+    hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1,
+                          "invalid window period '%s' (>= outage length)", argv[4]);
+    return -1;
+bad_jitter:
+    hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1,
+                          "invalid window jitter '%s' (0-1000000000)", argv[5]);
+    return -1;
 }
 
 /* tc flow_drop <if> <mask> <target> | off */
-static int flow_set(hypervisor_conn_t *conn, char **argv,
-                    struct tc_impair_cfg *cfg, int *reset_nth, int *reset_quota)
+static int flow_set(hypervisor_conn_t *conn, int argc, char **argv,
+                    struct tc_impair_cfg *cfg, struct ebpf_resets *res)
 {
     char *end;
     long mask, target;
 
-    (void)reset_nth;
-    (void)reset_quota;
+    (void)argc;
+    (void)res;
     mask = strtol(argv[1], &end, 10);
     if (end == argv[1] || *end != '\0' || mask < 1 || mask > 0x1F) {
         hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1,
@@ -1429,12 +1476,12 @@ static int cmd_quota_drop(hypervisor_conn_t *conn, int argc, char *argv[])
 
 static int cmd_window_drop(hypervisor_conn_t *conn, int argc, char *argv[])
 {
-    if (argc != 4 && strcmp(argv[1], "off") != 0) {
+    if (strcmp(argv[1], "off") != 0 && (argc < 4 || argc > 6)) {
         hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1,
-                              "Bad number of parameters (%d with min/max=4/4)", argc);
+                              "Bad number of parameters (%d with min/max=4/6)", argc);
         return -1;
     }
-    if (argc != 2 && strcmp(argv[1], "off") == 0) {
+    if (strcmp(argv[1], "off") == 0 && argc != 2) {
         hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1,
                               "Bad number of parameters (%d with min/max=2/2)", argc);
         return -1;
@@ -1685,7 +1732,9 @@ static hypervisor_cmd_t tc_cmd_array[] = {
    /* eBPF stateful impairment, one shared program at clsact prio 1 */
    { "nth_drop", 2, 2, cmd_nth_drop, NULL },
    { "quota_drop", 2, 3, cmd_quota_drop, NULL },
-   { "window_drop", 2, 4, cmd_window_drop, NULL },
+   /* window: <if> <start_ms> <outage_ms> <pct> [<period_ms> [<jitter_ms>]]
+    * (4-6 args) or <if> off (2) */
+   { "window_drop", 2, 6, cmd_window_drop, NULL },
    { "flow_drop", 2, 3, cmd_flow_drop, NULL },
    { "reset", 1, 1, cmd_reset, NULL },
    { "capabilities", 0, 0, cmd_capabilities, NULL },

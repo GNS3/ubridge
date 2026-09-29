@@ -46,23 +46,30 @@ struct tc_impair_cfg {
     unsigned int nth;              /* 0 = off, else drop every Nth packet */
     unsigned long long quota_bytes;/* 0 = off */
     unsigned int quota_pct;        /* random drop % after quota reached */
-    unsigned long long win_start_ns; /* recurring window start (monotonic) */
-    unsigned long long win_len_ns; /* 0 = off */
+    unsigned long long win_start_ns; /* current window's start (monotonic) */
+    unsigned long long win_len_ns; /* outage length; 0 = mode off */
+    unsigned long long win_period_ns; /* 0 = single window; else cycle length */
+    unsigned long long win_jitter_ns; /* 0 = deterministic; else uniform ± per cycle */
     unsigned int win_pct;          /* random drop % inside the window */
     unsigned int flow_mask;        /* TC_IMPAIR_FLOW_* bitmask */
     unsigned int flow_target;      /* required hash remainder, 0 = off */
 };
 
 /*
- * CNT: the first three fields are the frozen counters (spec B.1). prng_state
- * carries the "prandom seeded via map" requirement: userspace seeds it
- * (| 1 — the generator must never see zero) and the program advances it
- * atomically, so percentage drops are reproducible for a given seed.
+ * CNT: the first three fields are the frozen counters (spec B.1). The two
+ * win_*_cur_ns fields hold the current cycle's drawn window lengths (equal
+ * to the nominals while jitter is 0); userspace re-seeds them on every
+ * window_drop set. prng_state carries the "prandom seeded via map"
+ * requirement: userspace seeds it (| 1 — the generator must never see zero)
+ * and the program advances it atomically, so percentage drops are
+ * reproducible for a given seed.
  */
 struct tc_impair_cnt {
     unsigned long long packets;    /* quota machinery (packets past nth) */
     unsigned long long bytes;      /* quota machinery */
     unsigned long long nth_state;  /* packets seen since nth (re)armed */
+    unsigned long long win_outage_cur_ns; /* current cycle's outage length */
+    unsigned long long win_period_cur_ns; /* current cycle's period length */
     unsigned long long prng_state; /* xorshift64* state, userspace-seeded */
 };
 
