@@ -57,7 +57,7 @@ tc netem set <if>
 | `distribution <name>` | one of the four | jitter distribution; `normal`/`pareto`/`paretonormal` embed the same tables iproute2 ships as `*.dist`, `uniform` (default) sends no table. Only has an effect together with `jitter` > 0 |
 | `loss <pct>` | 0–100 | random packet loss |
 | `loss … correl <pct>` | 0–100 | loss correlation, directly after `loss` |
-| `loss gemodel <p> [<r> [<1-h>]]` | each 0–100 | Gilbert-Elliott loss model; defaults `r=0`, `1-h=0`. `p` = P(good→bad), `r` = P(bad→good), `1-h` = drop probability while bad (so `loss gemodel 100 0 100` drops everything after the first packet). Mutually exclusive with plain `loss` |
+| `loss gemodel <p> [<r> [<1-h>]]` | each 0–100 | Gilbert-Elliott loss model; defaults `r=0`, `1-h=0`. `p` = P(good→bad), `r` = P(bad→good), `1-h` = drop probability while bad (so `loss gemodel 100 0 100` drops everything after the first packet). Long-run loss rate = `(1-h)·p/(p+r)` — the GOOD→BAD transition packet itself passes. Mutually exclusive with plain `loss` |
 | `dup <pct>` | 0–100 | random duplication |
 | `corrupt <pct>` | 0–100 | random corruption |
 | `reorder <pct>` | 0–100 | reordering probability; **requires `delay`** (nothing is visibly reordered without latency) |
@@ -380,6 +380,15 @@ capability and keeps them on the relay datapath.
   threshold at pct 0/100 extremes, window active vs future-start, and
   flow-hash determinism against a **Python mirror of the program's Jenkins
   fold** (src MACs picked to hash ≡ 0 / ≢ 0 mod target).
+- `test_precision.py` — the F precision tier, the statistical assertions
+  (the slowest suite, ~15 s, runs last): gemodel loss within ±5pp of the
+  Markov steady state ((1-h)·p/(p+r) — drops only happen in the BAD state,
+  the transition packet itself passes), rate within ±10% measured as
+  received byte throughput (span between first and last arrival so startup
+  burst credit cannot skew), delay+jitter+reorder observability (median
+  delay inside delay±jitter, delay mdev, arrival inversions), and netem
+  `seed` determinism — identical drop bitmaps across a reset + re-set with
+  the same seed.
 
 Requires `CAP_NET_ADMIN` — run under sudo (CI kernel job) or `unshare -Urn`.
 The **`tc`/`ip` CLI tools are a test-only dependency** (kernel-state
@@ -399,7 +408,8 @@ no-CAP_BPF path is fully asserted instead.
 make
 cd tests/tc
 sudo python3 run_all.py          # or: unshare -Urn python3 run_all.py
-# test_basic 18/18, test_netem_ext 64/64, test_bpf_drop 32/32, test_ebpf 28+/28+
+# test_basic 18/18, test_netem_ext 64/64, test_bpf_drop 32/32,
+# test_ebpf 35/35 (28/28 degraded without CAP_BPF), test_precision 10/10
 ```
 
 Not covered locally (needs real traffic + a time budget, CI-root tier):
