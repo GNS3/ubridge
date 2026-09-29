@@ -44,7 +44,7 @@
 
 /* verifier log for BPF_PROG_LOAD failures (only printed on error). Big:
  * a rejected loop prints one line PER explored iteration, which overflows
- * a small buffer and turns the verdict into ENOSPC. */
+ * a small buffer and turns the verdict into ENOSPC/E2BIG. */
 static char bpf_log[262144];
 
 /* The freestanding program reads ctx->data / ctx->data_end through a
@@ -134,10 +134,10 @@ int tc_ebpf_load(int *prog_fd, int *cfg_fd, int *cnt_fd)
     attr.license = (unsigned long)"GPL";
 
     /* First attempt WITHOUT a verifier log: a supplied-but-too-small log
-     * buffer turns even a SUCCESSFUL verification into ENOSPC and no fd
-     * (the log is one line per explored insn — the bounded catch-up loop
-     * alone makes it ~33k lines / megabytes, no sane buffer holds it).
-     * Only on failure re-run with the log to capture the verdict. */
+     * buffer turns even a SUCCESSFUL verification into ENOSPC (or E2BIG)
+     * and no fd — the log is one line per explored insn, and a loop is
+     * walked iteration by iteration, so no sane buffer holds it. Only on
+     * failure re-run with the log to capture the verdict. */
     pfd = bpf_call(BPF_PROG_LOAD, &attr);
     if (pfd < 0) {
         int verdict = errno;
@@ -150,7 +150,8 @@ int tc_ebpf_load(int *prog_fd, int *cfg_fd, int *cnt_fd)
         if (pfd < 0) {
             size_t n = strlen(bpf_log);
 
-            fprintf(stderr, "tc_ebpf: BPF_PROG_LOAD failed: %s\n", strerror(verdict));
+            fprintf(stderr, "tc_ebpf: BPF_PROG_LOAD failed: %s (errno %d)\n",
+                    strerror(verdict), verdict);
             if (n > 0)
                 fprintf(stderr, "tc_ebpf: verifier log (tail): %s\n",
                         n > 1600 ? bpf_log + n - 1600 : bpf_log);
@@ -230,7 +231,9 @@ int tc_ebpf_cnt_set_window(int cnt_fd, unsigned long long outage_ns,
  * Capability probe: load the REAL program (maps + verifier acceptance on
  * this kernel) and throw it away. Result cached; any failure — EPERM for
  * a missing CAP_BPF, EINVAL/EOVERFLOW for a kernel the program does not
- * verify on — means ebpf=0 and the controller stays on the relay path.
+ * verify on (see tc_impair.bpf.c's catch-up loop for a rejection this
+ * probe is the first to see) — means ebpf=0 and the controller stays on
+ * the relay path.
  */
 int tc_ebpf_supported(void)
 {

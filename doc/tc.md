@@ -179,8 +179,9 @@ drop wins):
   `jitter` (whole-ms grid, clamped so a cycle never overlaps its
   successor; `jitter 0` draws nothing and is exactly the fixed schedule)
   — randomized flap that cannot let protocols sync to a beat. The program
-  advances whole cycles in a bounded loop (4096 cycles per packet), so
-  traffic pausing across many cycles still lands in the right one.
+  advances whole cycles in a small bounded loop (128 cycles per packet,
+  the walk resumable by each further packet), so traffic pausing across
+  many cycles still lands in the right one.
 - `flow_drop <mask> <target>`: `<mask>` is the decimal bitmask of header
   fields feeding a Jenkins one-at-a-time hash — `1`=source MAC, `2`=dest
   MAC, `4`=L4 source port, `8`=L4 dest port, `16`=IPv4 protocol (ports only
@@ -334,12 +335,21 @@ capability and keeps them on the relay datapath.
   is the usual `RTM_NEWTFILTER` at prio 1 with `TCA_BPF_FD` +
   `TCA_BPF_FLAGS = TCA_BPF_FLAG_ACT_DIRECT` (direct-action — the program's
   `TC_ACT_SHOT/OK` return IS the verdict, no gact).
-- The program is verifier-friendly by construction: no unbounded loops
-  (the window cycle catch-up is capped at 4096 trips — the verifier
-  brute-force explores a constant-bound loop's full trip count and rejects
-  jump sequences beyond 8192, so small caps verify on any kernel ≥ 5.3,
-  and the CAP_BPF requirement above already gates on ≥ 5.8), every packet
-  access bounds-checked, L4 ports only for TCP/UDP
+- The program is verifier-friendly by construction: no unbounded loops,
+  and the **only** loop is kept tiny (the window cycle catch-up is capped
+  at `WIN_CATCHUP_MAX` = 128 trips). A constant-bound loop is walked in
+  full by the verifier — clang's count-down induction variable stays an
+  exact scalar, so states never converge and nothing is pruned — at ~7
+  insns and 3 jump sequences per trip, and kernels enforcing
+  `BPF_COMPLEXITY_LIMIT_JMP_SEQ` (8192) reject the **whole** program past
+  that budget, which would take all four modes down at once since they
+  share this one program (a 4096-trip cap did exactly that on such
+  kernels: *The sequence of 8193 jumps is too complex*; newer kernels
+  accept it, so it shows only on some hosts — `tests/tc/test_ebpf.py`
+  guards the cap statically for that reason). 128 × 3 = 384 jump
+  sequences, a 21× margin, and a bigger cap would buy nothing anyway: the
+  catch-up is resumable, so a pause of any length re-syncs a packet at a
+  time. Every packet access is bounds-checked, L4 ports only for TCP/UDP
   over IPv4 with the header verified present, 32-bit modulo only (BPF has
   no native 64-bit mod). Every helper is force-inlined
   (`always_inline`): an outlined one would emit an intra-program call
@@ -393,7 +403,12 @@ capability and keeps them on the relay datapath.
   survive), the full-restore reset, `tc capabilities` (`cbpf=1`), and
   behavioral checks on a veth pair (match dropped / non-match passes /
   multi-prio OR / flush restores traffic) with raw AF_PACKET injection.
-- `test_ebpf.py` — the P6b stateful modes, split by capability. Without
+- `test_ebpf.py` — the P6b stateful modes, split by capability.
+  **Unconditionally** (no `tc`, no capability): a static budget check of
+  the committed instruction array — exactly one loop, a small body, and
+  `WIN_CATCHUP_MAX` × jumps-per-trip under a quarter of
+  `BPF_COMPLEXITY_LIMIT_JMP_SEQ` — because that rejection only shows on
+  kernels enforcing the budget (see the implementation notes). Without
   CAP_BPF (e.g. `unshare -Urn`): the validation contract (204s before any
   load), argc/207 errors, idempotent `off`, and the **exact 210 string**
   for every enable. With CAP_BPF (real sudo): prio-1 attachment, one
@@ -435,7 +450,7 @@ make
 cd tests/tc
 sudo python3 run_all.py          # or: unshare -Urn python3 run_all.py
 # test_basic 18/18, test_netem_ext 64/64, test_bpf_drop 32/32,
-# test_ebpf 44/44 (35/35 degraded without CAP_BPF), test_precision 10/10
+# test_ebpf 47/47 (38/38 degraded without CAP_BPF), test_precision 10/10
 ```
 
 Not covered locally (needs real traffic + a time budget, CI-root tier):
