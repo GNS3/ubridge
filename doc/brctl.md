@@ -52,13 +52,13 @@ getcap $(which ubridge) # verify
 
 | Command | Args | Description |
 |---------|------|-------------|
-| `create <bridge>` | 1 | Create a Linux bridge (`RTM_NEWLINK`, kind=bridge, `NLM_F_CREATE|EXCL`). Duplicate → `EEXIST`. Hardened with `link l2only on` before the reply: the fabric the anchors are enslaved to must not flood its own link-local to every port. `brctl addip` is IPv4-only, so the L3 paths are unaffected. |
+| `create <bridge>` | 1 | Create a Linux bridge (`RTM_NEWLINK`, kind=bridge, `NLM_F_CREATE|EXCL`). Duplicate → `EEXIST`. Hardened before the reply — first with `link l2only on`, because the fabric the anchors are enslaved to must not flood its own link-local to every port (the `brctl addip` L3 paths are IPv4-only, so they are unaffected); then with multicast snooping turned **off**, see below. Both roll the bridge back if they fail. |
 | `delete <bridge>` | 1 | Delete a Linux bridge (`RTM_DELLINK`). Missing → `ENODEV`. **Refused with `EBUSY` while any port is still enslaved** — release the ports first; the last party out deletes the bridge (see the note below). |
 | `addif <bridge> <port>` | 2 | Enslave a port to the bridge (`RTM_SETLINK` + `IFLA_MASTER`) **and bring the port UP**. Port must pre-exist. |
 | `delif <bridge> <port>` | 2 | Release a port from a bridge. Verifies the port is actually on the given bridge; else `-EINVAL`. |
 | `addip <bridge> <ip/prefix>` | 2 | Assign an IPv4 address (`RTM_NEWADDR`) and bring the bridge UP. CIDR must include a `/` and prefix ≤ 32. |
 | `delip <bridge> <ip/prefix>` | 2 | Remove an IPv4 address from a bridge (`RTM_DELADDR`). Bad CIDR → `204`; missing bridge/IP → `207`. |
-| `setup <bridge> <ip/prefix>` | 2 | `create` + `addip` in one step. Validates the CIDR **before** creating; rolls back the bridge if `addip` fails. |
+| `setup <bridge> <ip/prefix>` | 2 | `create` + `addip` in one step. Validates the CIDR **before** creating; rolls back the bridge if `addip` fails. Applies **neither** hardening `create` applies — it is the only path to a bare `br_addbr`, so the bridge it makes keeps multicast snooping on and IPv6 address generation enabled. It is an L3 bridge with an address, not a bare L2 fabric; ask for `create` + `link l2only` explicitly if that is what you want. |
 | `show <bridge>` | 1 | Query the bridge's IPv4 address/prefix and operational flags (`UP`/`RUNNING`). |
 
 > **`delete` while ports are attached.** The kernel does *not* refuse this for
@@ -79,6 +79,23 @@ getcap $(which ubridge) # verify
 > attached between the dump and the `RTM_DELLINK` is still detached (the
 > historical behaviour, not a regression).
 
+> **Multicast snooping is off on a bridge that `create` made.** The kernel
+> enables it by default, and it is the one thing that makes a bridge emit:
+> while it is on, the bridge joins the all-snoopers groups and reports them on
+> every bring-up — measured at 0.5–1.7 s in and *repeating*, not a one-shot
+> burst, as `224.0.0.22` (IGMP) and `ff02::16` (MLD), source-less
+> (`0.0.0.0` / `::`) from the bridge's own MAC. Turning it off is what lets a
+> link bridge be silent at all, and it is also the honest model: a cable
+> floods multicast rather than pruning it to whoever last joined.
+> `mcastsnoop <bridge> on` restores both the snooping and the reports. See
+> [`link.md`](link.md) for the hardened-anchor picture this belongs to.
+>
+> This is a **per-bridge attribute that `create` sets**, not a global switch
+> and not a change to the kernel's own default: the kernel still hands every
+> new bridge snooping on, so a bridge made any other way — `setup`, or
+> `ip link add type bridge` — keeps it, and every bridge can be flipped back
+> independently.
+
 ### Bridge-level parameters (10)
 
 All set attributes via `RTM_NEWLINK` + `IFLA_LINKINFO{kind=bridge, INFO_DATA{attr}}`.
@@ -93,7 +110,7 @@ All set attributes via `RTM_NEWLINK` + `IFLA_LINKINFO{kind=bridge, INFO_DATA{att
 | `setageing <bridge> <s>` | `IFLA_BR_AGEING_TIME` | 0–1000000 (seconds; 0 = never age) |
 | `vlanfiltering <bridge> on\|off` | `IFLA_BR_VLAN_FILTERING` | `on`/`off` |
 | `setvlanproto <bridge> <v>` | `IFLA_BR_VLAN_PROTOCOL` (u16) | `0x8100` (802.1Q) or `0x88a8` (802.1ad) |
-| `mcastsnoop <bridge> on\|off` | `IFLA_BR_MCAST_SNOOPING` | `on`/`off` |
+| `mcastsnoop <bridge> on\|off` | `IFLA_BR_MCAST_SNOOPING` | `on`/`off` (a `create` bridge starts **off**; any other bridge starts **on** — see the note above) |
 | `setgroupfwd <bridge> <n>` | `IFLA_BR_GROUP_FWD_MASK` | 0–65535 |
 
 > Time-valued attributes (`setfd`/`sethello`/`setmaxage`/`setageing`) are

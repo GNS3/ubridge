@@ -157,8 +157,20 @@ bring-up — an MLDv2 report (dst `ff02::16`, source `::`, hop-by-hop Router
 Alert) and, on a bridge, the IPv4 twin: an IGMP report (dst `224.0.0.22`,
 source `0.0.0.0`) from the bridge's own MAC. Neither carries an address of the
 device, so neither can make the host answer ND or ARP for one; the neighbour
-discovery, DAD and router solicitations are what is gone. Measured with
-`capture start_kernel` — see `tests/link/test_l2only.py`.
+discovery, DAD and router solicitations are what is gone.
+
+On a bridge those two *are* multicast snooping: the kernel enables it by
+default, and what it makes the bridge join is exactly those all-snoopers
+groups. `brctl create` now turns it off, so a link bridge emits nothing at
+all and the `bridge with two attached ports` role is held to literal silence
+rather than to "no identity chatter". Turning it off is also the honest model
+— a cable floods multicast, it does not prune to whoever last joined. `brctl
+mcastsnoop <bridge> on` restores the reports along with the snooping.
+
+Measured on 7.2 over the full `brctl create` → `link set up` → `addif` ×2 →
+`delif` ×2 sequence: 5 frames with snooping on, repeating rather than the
+one-shot burst §E.2 assumes (0.5 s to 1.7 s in), and 0 with it off. Measured
+with `capture start_kernel` — see `tests/link/test_l2only.py`.
 
 ## Status codes
 

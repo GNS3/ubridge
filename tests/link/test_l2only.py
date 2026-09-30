@@ -42,12 +42,18 @@ all noted in doc/link.md:
   capture" — see doc/capture.md.
 * **Hardening does not stop group membership reports.** A hardened anchor
   still emits one or two MLDv2 reports at bring-up (dst ff02::16, source `::`,
-  hop-by-hop Router Alert) and, on a bridge, the IPv4 twin — an IGMP report
-  (dst 224.0.0.22, source 0.0.0.0) from the bridge's own MAC. Group membership
-  is not address generation, and neither report carries an address of the
-  device, so neither can make the host answer ND/ARP for one. The identity
-  traffic (NS/NA/RS/RA) is what must be — and is — gone; the reports are
-  allowed by the checks below and named in their detail.
+  hop-by-hop Router Alert) and, on an unhardened bridge, the IPv4 twin — an
+  IGMP report (dst 224.0.0.22, source 0.0.0.0). Group membership is not
+  address generation, and neither report carries an address of the device, so
+  neither can make the host answer ND/ARP for one. The identity traffic
+  (NS/NA/RS/RA) is what must be — and is — gone; the reports are allowed by
+  the checks below and named in their detail.
+* **On a bridge those reports are multicast snooping**, which `brctl create`
+  turns off, so the bridge role is the one place held to *literal* silence
+  rather than to "no identity traffic": `allow_group=False` below. Measured
+  over the full `create` → `link set up` → `addif` ×2 → `delif` ×2 sequence,
+  a bridge with snooping on emits 5 such frames over 0.5–1.7 s — repeating,
+  not the one-shot burst the first bullet assumes — and none with it off.
 """
 import fcntl
 import os
@@ -113,6 +119,12 @@ def wait_addrs(dev, family="-6", want=False, timeout=4.0):
 def addrgenmode(dev):
     """The device's IPv6 address generation mode, as `ip -d link` reports it."""
     m = re.search(r"addrgenmode\s+(\S+)", _ip("-d", "-o", "link", "show", dev))
+    return m.group(1) if m else "?"
+
+
+def bridge_attr(dev, key):
+    """A bridge attribute as `ip -d link` reports it (e.g. `mcast_snooping`)."""
+    m = re.search(r"\b%s\s+(\S+)" % re.escape(key), _ip("-d", "-o", "link", "show", dev))
     return m.group(1) if m else "?"
 
 
@@ -197,8 +209,11 @@ def is_group_maintenance(rec):
 
     Neither carries an address of the device — source `::` / `0.0.0.0` — so
     neither can make the host answer ND/ARP for one, and both are sent even
-    with address generation off. They are the one thing hardening does not
-    (and need not) remove; see doc/link.md.
+    with address generation off. They are what hardening does not remove on
+    the anchors. A bridge is the exception: `brctl create` turns multicast
+    snooping off, which is where a bridge's own pair of these comes from, so
+    the bridge role does not use this exemption (see `allow_group` in
+    idle_checks). See doc/link.md.
     """
     if rec["src"] in ("0" * 32, "00000000"):
         if rec["eth"] == "86dd" and (
@@ -250,8 +265,14 @@ def keep_capture(role):
         return "?"
 
 
-def idle_checks(c, r, role, dev, bring_up, baseline_ok):
-    """§E.2 for one role: no identity chatter, and idle once settled."""
+def idle_checks(c, r, role, dev, bring_up, baseline_ok, allow_group=True):
+    """§E.2 for one role: no identity chatter, and idle once settled.
+
+    `allow_group=False` holds the role to literal silence instead of only to
+    "no identity traffic". The bridge role needs it: with multicast snooping
+    off it has no group membership of its own to report, so any frame at all
+    is a defect there.
+    """
     recs = capture(c, dev, bring_up)
     if recs is None:
         r.skip("%s: idle silence (§E.2)" % role, "capture start_kernel unavailable")
@@ -261,11 +282,18 @@ def idle_checks(c, r, role, dev, bring_up, baseline_ok):
                "the unhardened control emitted nothing, so silence proves nothing")
         return
 
-    noise = [x for x in recs if not is_group_maintenance(x)]
+    if allow_group:
+        noise = [x for x in recs if not is_group_maintenance(x)]
+        label = "%s: no ND/DAD/RS after hardening (§E.2)" % role
+        quiet = "group reports only: %s" % describe(recs)
+    else:
+        noise = list(recs)
+        label = "%s: silent, not even a group report (§E.2)" % role
+        quiet = "none"
     settled = [x for x in recs if x["t"] >= SETTLED_AT]
-    r.check("%s: no ND/DAD/RS after hardening (§E.2)" % role, not noise,
+    r.check(label, not noise,
             "%s (capture kept: %s)" % (describe(noise), keep_capture(role))
-            if noise else "group reports only: %s" % describe(recs))
+            if noise else quiet)
     r.check("%s: idle and settled, nothing for %ds (§E.2)"
             % (role, WINDOW - SETTLED_AT), not settled,
             "%s (capture kept: %s)" % (describe(settled), keep_capture(role))
@@ -462,12 +490,19 @@ def bridge_role(c, r, baseline_ok):
     r.check("bridge: addrgenmode none", addrgenmode(BR) == "none", addrgenmode(BR))
     env_check(r, "bridge: no IPv6 address (§E.1)", not addrs(BR, "-6"), fmt(addrs(BR, "-6")))
     r.check("bridge: no IPv4 address (§E.1)", not addrs(BR, "-4"), fmt(addrs(BR, "-4")))
+    # Snooping off is what makes the bridge's own group reports go away, so it
+    # is checked here and not just implied by the silence below.
+    r.check("bridge: multicast snooping off on create",
+            bridge_attr(BR, "mcast_snooping") == "0",
+            bridge_attr(BR, "mcast_snooping"))
 
     # The ports are hardened too, so anything captured on the bridge is the
-    # bridge's own.
+    # bridge's own. allow_group=False: with no snooping there is no group
+    # membership left for the bridge to report, so silence here is literal.
     c.send("link set %s down" % BR)
     idle_checks(c, r, "bridge with two ports", BR,
-                lambda: c.send("link set %s up" % BR), baseline_ok)
+                lambda: c.send("link set %s up" % BR), baseline_ok,
+                allow_group=False)
 
 
 # --------------------------------------------------------------------------

@@ -1033,6 +1033,23 @@ static int cmd_create(hypervisor_conn_t *conn, int argc, char *argv[])
     err = link_harden_l2only(bridge);
     if (err < 0) {
         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set L2-only on bridge %s: %s", bridge, strerror(-err));
+        br_delbr(bridge);
+        return -1;
+    }
+
+    /* Multicast snooping is on by default and is the one thing that makes a
+     * bridge emit: while it is on the bridge joins the all-snoopers groups and
+     * reports them on every bring-up — measured at 0.5-1.7 s in, and repeating
+     * rather than one-shot, as 224.0.0.22 (IGMP) and ff02::16 (MLD) with a
+     * sourceless 0.0.0.0/:: from the bridge's own MAC. That is precisely the
+     * chatter link l2only exists to remove, so the bridge role cannot reach
+     * silence while snooping is on. Off also matches what a link bridge
+     * models: a cable floods multicast, it does not prune to whoever last
+     * happened to join. `brctl mcastsnoop <bridge> on` puts it back. */
+    err = br_set_bridge_attr(bridge, IFLA_BR_MCAST_SNOOPING, 0);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not disable multicast snooping on bridge %s: %s", bridge, strerror(-err));
+        br_delbr(bridge);
         return -1;
     }
 
