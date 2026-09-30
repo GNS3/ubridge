@@ -166,6 +166,16 @@ forget it. See [`link.md`](link.md) for what hardening does and does not
 remove. With a uBridge that predates it the anchors keep the old behaviour and
 `link l2only` answers `202-Unknown command`.
 
+`brctl create` additionally turns multicast snooping **off** on the bridge it
+makes — the bridge's own IGMP/MLD group reports were its last remaining
+emission. Also nothing for gns3server to issue, and also nothing a caller can
+forget: it is off on a `create` bridge, still on for one made by `brctl setup`
+(snooping is a per-bridge attribute, and the kernel's own default — on — is
+untouched), and `brctl mcastsnoop <bridge> on` restores it. The one behaviour
+to know: multicast in an emulated segment is now always flooded, never pruned
+to whichever node last joined a group, which is what a cable does. See
+[`brctl.md`](brctl.md).
+
 ### brctl — kernel bridge (link plumbing)
 | When | Commands |
 |------|----------|
