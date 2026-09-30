@@ -25,10 +25,12 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <net/if.h>
 
 #include "ubridge.h"
 #include "nio.h"
 #include "nio_udp.h"
+#include "nio_tap.h"
 #include "hypervisor.h"
 #include "hypervisor_iol_bridge.h"
 #include "pcap_capture.h"
@@ -39,7 +41,8 @@ iol_bridge_t *iol_bridge_list = NULL;
 
 /* Serializes IOL delay-line pointer access between the relay listeners
  * (iol_delay_route) and command handlers that destroy delay lines
- * (cmd_delete_nio_udp / create_iol_port_entry / cmd_reset_packet_filters).
+ * (cmd_delete_nio_udp / cmd_delete_nio_tap / create_iol_port_entry /
+ * cmd_reset_packet_filters).
  *
  * Deliberately a separate mutex from global_lock: those command handlers
  * cancel+join the NIO listener while running under global_lock (the hypervisor
@@ -78,6 +81,45 @@ static ssize_t iol_nio_send_cb(void *ctx, const void *pkt, size_t len)
       nio->bytes_out += sent;
    }
    return sent;
+}
+
+/* Stop and free everything a port's destination NIO owns: the NIO listener,
+ * both delay lines, capture, filters and the NIO itself (which closes a UDP
+ * socket or a TAP anchor fd — the persistent TAP device survives, its
+ * lifecycle belongs to the server's tap module). No-op for a port holding
+ * no NIO. */
+static void iol_port_release(iol_nio_t *iol_nio)
+{
+   /* stop any previous NIO thread. Guard the cancel on tid, not on
+    * destination_nio: after iol_bridge stop (or if the port was never
+    * started) the listener is joined and tid == 0, while destination_nio is
+    * retained so the port can be restarted — pthread_cancel(0) segfaults. */
+   if (iol_nio->destination_nio != NULL) {
+      if (iol_nio->tid != 0) {
+         pthread_cancel(iol_nio->tid);
+         pthread_join(iol_nio->tid, NULL);
+         iol_nio->tid = 0;
+      }
+      /* Tear down the delay lines under iol_delay_lock, serialized against the
+       * listeners' iol_delay_route. The cancel+join above already stopped this
+       * port's NIO listener, but the IOL bridge listener (bridge_tid) is still
+       * live and may be in iol_delay_route on delay_line_iol. */
+      pthread_mutex_lock(&iol_delay_lock);
+      delay_line_t *old_nio = iol_nio->delay_line_nio;
+      iol_nio->delay_line_nio = NULL;
+      delay_line_t *old_iol = iol_nio->delay_line_iol;
+      iol_nio->delay_line_iol = NULL;
+      delay_line_destroy(old_nio);
+      delay_line_destroy(old_iol);
+      pthread_mutex_unlock(&iol_delay_lock);
+      free_pcap_capture(iol_nio->capture);
+      free_packet_filters(iol_nio->packet_filters);
+      free_nio(iol_nio->destination_nio);
+   }
+
+   iol_nio->capture = NULL;
+   iol_nio->packet_filters = NULL;
+   iol_nio->destination_nio = NULL;
 }
 
 /* Lazily sync *dl to the delay config (have_delay / lat / jit, snapshotted by
@@ -154,11 +196,20 @@ void *iol_nio_listener(void *data)
         /* Put received bytes after the (absent) IOU header */
         drop_packet = FALSE;
         bytes_received = nio_recv(nio, &pkt[IOL_HDR_SIZE], MAX_MTU);
-        if (bytes_received == -1) {
-            perror("recv");
-            if (errno == ECONNREFUSED || errno == ENETDOWN)
-               continue;
-            exit(EXIT_FAILURE);
+        if (bytes_received <= 0) {
+            if (bytes_received == -1) {
+                perror("recv");
+                /* EIO: read on a TAP anchor whose interface is administratively
+                 * DOWN — a steady state of the anchor design (port anchored but
+                 * no link attached, or the link suspended). ECONNREFUSED /
+                 * ENETDOWN: transient UDP conditions already tolerated. */
+                if (errno == ECONNREFUSED || errno == ENETDOWN || errno == EIO)
+                   continue;
+                exit(EXIT_FAILURE);
+            }
+            /* a zero-length read carries no frame: counting or forwarding it
+             * would fabricate header-only packets for the instance */
+            continue;
         }
 
         if (bytes_received > MAX_MTU) {
@@ -320,17 +371,20 @@ void *iol_bridge_listener(void *data)
           continue;
 
        bytes_sent = nio->send(nio->dptr, &pkt[IOL_HDR_SIZE], bytes_received);
-       nio->packets_out++;
-       nio->bytes_out += bytes_sent;
        if (bytes_sent == -1) {
           perror("send");
 
           /* EINVAL can be caused by sending to a blackhole route, this happens if a NIC link status changes */
-          if (errno == ECONNREFUSED || errno == ENETDOWN || errno == EINVAL)
+          /* EIO: a write to an administratively DOWN TAP anchor — a steady
+           * state of the anchor design (port anchored but no link attached,
+           * or the link suspended). Drop the frame and carry on. */
+          if (errno == ECONNREFUSED || errno == ENETDOWN || errno == EINVAL || errno == EIO)
              continue;
 
           exit(EXIT_FAILURE);
        }
+       nio->packets_out++;
+       nio->bytes_out += bytes_sent;
     }
 
   printf("IOL bridge listener thread for %s with ID %d has stopped\n", bridge->name, bridge->application_id);
@@ -557,21 +611,19 @@ static int cmd_delete_bridge(hypervisor_conn_t *conn, int argc, char *argv[])
              pthread_cancel(bridge->bridge_tid);
              pthread_join(bridge->bridge_tid, NULL);
              bridge->bridge_tid = 0;
-
-             for (i = 0; i < MAX_PORTS; i++) {
-                if (bridge->port_table[i].destination_nio != NULL) {
-                    pthread_cancel(bridge->port_table[i].tid);
-                    pthread_join(bridge->port_table[i].tid, NULL);
-                    bridge->port_table[i].tid = 0;
-                    delay_line_destroy(bridge->port_table[i].delay_line_nio);
-                    delay_line_destroy(bridge->port_table[i].delay_line_iol);
-                    free_pcap_capture(bridge->port_table[i].capture);
-                    free_packet_filters(bridge->port_table[i].packet_filters);
-                    free_nio(bridge->port_table[i].destination_nio);
-                }
-             }
-             free(bridge->port_table);
           }
+
+          /* Release every port whether running or not. The stopped path
+           * used to skip this and leak the port NIOs — a leaked TAP anchor
+           * fd keeps the persistent device attached (a second TUNSETIFF
+           * attach answers EBUSY, TUNSETPERSIST 0 answers EBADFD), so the
+           * server's `tap delete` could never clean up after a
+           * stop → delete. iol_port_release guards the listener cancel on
+           * tid, which is 0 for every port once the bridge is stopped. */
+          for (i = 0; i < MAX_PORTS; i++) {
+              iol_port_release(&bridge->port_table[i]);
+          }
+          free(bridge->port_table);
 
           /* close after delay lines are torn down (their release threads
            * sendto this socket) */
@@ -805,35 +857,9 @@ static int create_iol_port_entry(hypervisor_conn_t *conn, iol_bridge_t *bridge, 
    /* channel number */
    iol_nio->header[IOL_CHANNEL] = 0;
 
-   /* stop any previous NIO thread. Guard the cancel on tid, not on
-    * destination_nio: after iol_bridge stop (or if the port was never
-    * started) the listener is joined and tid == 0, while destination_nio is
-    * retained so the port can be restarted — pthread_cancel(0) segfaults. */
-   if (iol_nio->destination_nio != NULL) {
-      if (iol_nio->tid != 0) {
-         pthread_cancel(iol_nio->tid);
-         pthread_join(iol_nio->tid, NULL);
-         iol_nio->tid = 0;
-      }
-      /* Tear down the delay lines under iol_delay_lock, serialized against the
-       * listeners' iol_delay_route. The cancel+join above already stopped this
-       * port's NIO listener, but the IOL bridge listener (bridge_tid) is still
-       * live and may be in iol_delay_route on delay_line_iol. */
-      pthread_mutex_lock(&iol_delay_lock);
-      delay_line_t *old_nio = iol_nio->delay_line_nio;
-      iol_nio->delay_line_nio = NULL;
-      delay_line_t *old_iol = iol_nio->delay_line_iol;
-      iol_nio->delay_line_iol = NULL;
-      delay_line_destroy(old_nio);
-      delay_line_destroy(old_iol);
-      pthread_mutex_unlock(&iol_delay_lock);
-      free_pcap_capture(iol_nio->capture);
-      free_packet_filters(iol_nio->packet_filters);
-      free_nio(iol_nio->destination_nio);
-   }
+   /* release whatever NIO the port held before (swap semantics) */
+   iol_port_release(iol_nio);
 
-   iol_nio->capture = NULL;
-   iol_nio->packet_filters = NULL;
    iol_nio->destination_nio = nio;
    /* start the NIO thread if the bridge is already running */
    if (bridge->running) {
@@ -903,37 +929,94 @@ static int cmd_delete_nio_udp(hypervisor_conn_t *conn, int argc, char *argv[])
       return (-1);
    }
 
-   /* stop any previous NIO thread. Guard the cancel on tid, not on
-    * destination_nio: after iol_bridge stop (or if the port was never
-    * started) the listener is joined and tid == 0, while destination_nio is
-    * retained so the port can be restarted — pthread_cancel(0) segfaults. */
-   if (iol_nio->destination_nio != NULL) {
-      if (iol_nio->tid != 0) {
-         pthread_cancel(iol_nio->tid);
-         pthread_join(iol_nio->tid, NULL);
-         iol_nio->tid = 0;
-      }
-      /* Tear down the delay lines under iol_delay_lock, serialized against the
-       * listeners' iol_delay_route. The cancel+join above already stopped this
-       * port's NIO listener, but the IOL bridge listener (bridge_tid) is still
-       * live and may be in iol_delay_route on delay_line_iol. */
-      pthread_mutex_lock(&iol_delay_lock);
-      delay_line_t *old_nio = iol_nio->delay_line_nio;
-      iol_nio->delay_line_nio = NULL;
-      delay_line_t *old_iol = iol_nio->delay_line_iol;
-      iol_nio->delay_line_iol = NULL;
-      delay_line_destroy(old_nio);
-      delay_line_destroy(old_iol);
-      pthread_mutex_unlock(&iol_delay_lock);
-      free_pcap_capture(iol_nio->capture);
-      free_packet_filters(iol_nio->packet_filters);
-      free_nio(iol_nio->destination_nio);
+   iol_port_release(iol_nio);
+
+   hypervisor_send_reply(conn, HSC_INFO_OK,1, "NIO UDP deleted from IOL bridge '%s'", argv[0]);
+   return (0);
+}
+
+/* iol_bridge add_nio_tap <bridge> <iol_id> <bay> <unit> <tap_name>
+ *
+ * Terminate a port on a pre-existing persistent TAP anchor (created — and
+ * hardened — by the server's `tap create`; the device's lifecycle belongs to
+ * the server). uBridge opens it by name and plays, on that TAP, the role the
+ * QEMU process plays on its own TAP: everything keyed on the interface name
+ * (brctl addif, tc, capture start_kernel, marker add_kernel, link set up/down
+ * for carrier/suspend) works on the anchor regardless of who holds the fd. */
+static int cmd_add_nio_tap(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+   nio_t *nio;
+   iol_bridge_t *bridge;
+
+   bridge = find_bridge(argv[0]);
+   if (bridge == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_UNK_OBJ, 1, "bridge '%s' doesn't exist", argv[0]);
+      return (-1);
    }
 
-   iol_nio->capture = NULL;
-   iol_nio->packet_filters = NULL;
-   iol_nio->destination_nio = NULL;
-   hypervisor_send_reply(conn, HSC_INFO_OK,1, "NIO UDP deleted from IOL bridge '%s'", argv[0]);
+   if (strlen(argv[4]) >= IFNAMSIZ) {
+      hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "TAP name '%s' is too long (max %d chars)", argv[4], IFNAMSIZ - 1);
+      return (-1);
+   }
+
+   /* Require an existing device (same reasoning as the tap module's
+    * tap_require_existing): TUNSETIFF on an absent name silently creates a
+    * transient TAP that dies with the fd — an anchor that vanishes on detach
+    * is worse than a clear error. */
+   if (if_nametoindex(argv[4]) == 0) {
+      hypervisor_send_reply(conn, HSC_ERR_UNK_OBJ, 1, "TAP device '%s' doesn't exist", argv[4]);
+      return (-1);
+   }
+
+   /* By-name TUNSETIFF (IFF_TAP | IFF_NO_PI, default carrier): attaches a
+    * second fd to the persistent device. No owner or persistence ioctl — the
+    * device is persistent and owned already. */
+   nio = create_nio_tap(argv[4]);
+   if (!nio) {
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "unable to open NIO TAP '%s' for IOL bridge '%s'", argv[4], argv[0]);
+      return (-1);
+   }
+
+   if (create_iol_port_entry(conn, bridge, atoi(argv[1]), atoi(argv[2]), atoi(argv[3]), nio) == -1)
+      return (-1);
+
+   hypervisor_send_reply(conn, HSC_INFO_OK,1, "NIO TAP added to IOL bridge '%s'", argv[0]);
+   return (0);
+}
+
+/* iol_bridge delete_nio_tap <bridge> <bay> <unit>
+ *
+ * Same body as cmd_delete_nio_udp, but the persistent TAP device itself
+ * survives — the server deletes it with `tap delete` when the node stops,
+ * exactly as it does for QEMU anchors. Deleting a port that holds no NIO is
+ * a no-op 100. */
+static int cmd_delete_nio_tap(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+   iol_nio_t *iol_nio;
+   iol_bridge_t *bridge;
+   unsigned char port_bay;
+   unsigned char port_unit;
+   unsigned char port_key;
+
+   bridge = find_bridge(argv[0]);
+   if (bridge == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_UNK_OBJ, 1, "bridge '%s' doesn't exist", argv[0]);
+      return (-1);
+   }
+
+   port_bay = atoi(argv[1]);
+   port_unit = atoi(argv[2]);
+   port_key = port_bay + port_unit * 16;
+   if (port_key > MAX_PORTS) {
+      hypervisor_send_reply(conn, HSC_ERR_UNK_OBJ, 1, "Port number %d exceeding %d on bridge '%s'", port_key, MAX_PORTS, bridge->name);
+      return (-1);
+   }
+
+   iol_nio = &bridge->port_table[port_key];
+
+   iol_port_release(iol_nio);
+
+   hypervisor_send_reply(conn, HSC_INFO_OK,1, "NIO TAP deleted from IOL bridge '%s'", argv[0]);
    return (0);
 }
 
@@ -1205,6 +1288,8 @@ static hypervisor_cmd_t iol_bridge_cmd_array[] = {
    { "rename", 2, 2, cmd_rename_bridge, NULL },
    { "add_nio_udp", 7, 7, cmd_add_nio_udp, NULL },
    { "delete_nio_udp", 3, 3, cmd_delete_nio_udp, NULL },
+   { "add_nio_tap", 5, 5, cmd_add_nio_tap, NULL },
+   { "delete_nio_tap", 3, 3, cmd_delete_nio_tap, NULL },
    { "start_capture", 4, 5, cmd_start_capture_bridge, NULL },
    { "stop_capture", 3, 3, cmd_stop_capture_bridge, NULL },
    { "add_packet_filter", 4, 15, cmd_add_packet_filter, NULL },
