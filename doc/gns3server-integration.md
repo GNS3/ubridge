@@ -235,6 +235,65 @@ capture stop_kernel                          # idempotent
 Singleton (one active kernel capture per ubridge). Standard pcap output,
 identical writer to `bridge start_capture`.
 
+### iol_bridge — IOU/IOL port anchors
+
+An IOU instance has no host netdev: its wire is the Unix-datagram fabric in
+`/tmp/netio<uid>/` and every port ends on a destination NIO. The older NIO is a
+UDP tunnel (`add_nio_udp` — the relay datapath, unchanged); the newer one is a
+persistent TAP **anchor**, on which ubridge plays the same role QEMU plays on
+its own TAP, so the port can join a kernel bridge and pick up `tc`, markers and
+`capture start_kernel` like any other anchor.
+
+| When | Command |
+|------|---------|
+| Node start, per Ethernet bay/unit | `tap create gi{node[:8]}e{bay}p{unit}` → `iol_bridge add_nio_tap <bridge> <iol_id> <bay> <unit> <anchor>` |
+| Node stop | `iol_bridge delete <bridge>` (releases every anchor fd) → `tap delete <anchor>` |
+
+| Code | Meaning |
+|------|---------|
+| `100` | added / deleted (deleting a port that holds no NIO is also `100`) |
+| `203` | wrong argument count |
+| `204` | anchor name longer than 15 chars (`IFNAMSIZ-1`) |
+| `206` | `iol_id` equals the bridge's own id, or the TAP fd cannot be opened |
+| `208` | the bridge does not exist, **or the anchor device does not exist** |
+| `202` | old ubridge, command unknown — keep IOU on the UDP datapath |
+
+The `*_tap` commands answer `208` for a missing bridge where the older
+`*_udp` ones answer `214`; old commands are frozen, so handle both.
+
+**The anchor must already exist.** `add_nio_tap` never creates a device:
+`TUNSETIFF` on an absent name would silently create a transient TAP that dies
+with the fd, so it answers `208` instead. Create it with `tap create` first.
+
+**One fd per TAP — this fixes the teardown order.** While a port is attached
+ubridge holds the anchor's fd: a second attach answers `EBUSY`, and `tap
+delete` with another fd open answers `EBADFD` → `207`. Tear the process side
+down first (`iol_bridge delete`, or `delete_nio_tap` for a single port), then
+`tap delete` — the same order QEMU anchors already use. `delete_nio_tap`
+releases only the fd; the persistent device stays for the server to delete.
+
+**UDP ↔ TAP swapping is free.** Both add commands work on the same port, in any
+order, repeatedly; the previous NIO's socket/fd and listener are released
+first. That is the datapath-switch path.
+
+**A DOWN anchor is a steady state, not an error.** A write to an admin-DOWN
+TAP fails with `EIO` and is dropped (one `perror` line per frame); a read
+returns `EIO`, and a zero-length read is skipped rather than forwarded, so no
+header-only packets are fabricated for the instance. Suspend = `link set
+<anchor> down` is therefore safe — the tolerance ships with `add_nio_tap`,
+there is no build where an anchor exists without it.
+
+Note also that deleting an `iol_bridge` that is **not running** used to leak
+its port NIOs, which left the anchor's fd attached and made the following
+`tap delete` fail with `207` permanently. `iol_bridge delete` now releases
+every port unconditionally.
+
+Capability probe, in the shape §"Capability gating" of the TAP-anchor spec
+asks for: scratch bridge + scratch TAP, `add_nio_tap`, `delete_nio_tap`,
+`iol_bridge delete`, `tap delete`; a `202` on the add means an old build. No
+`start` is needed — a port accepts a NIO on a stopped bridge, and the anchor
+only has to exist.
+
 ---
 
 ## 3. marker — match signaling + filtered capture (main contract)
@@ -406,7 +465,13 @@ into one pcap (classic pcap would lose per-packet link identity).
   continues until the filter is deleted). `marker pause` is the lighter mute: it
   stops signals but keeps the sink, so `marker resume` is instant — prefer it for
   transient UI toggles.
-- ubridge exit → all pcaps closed.
+- **Anchor order.** Whoever holds a TAP's fd must let go before the device is
+  deleted: `iol_bridge delete` (or `delete_nio_tap`) first, then `tap delete`.
+  A second `TUNSETIFF` attach answers `EBUSY` and `tap delete` with another fd
+  open answers `EBADFD` → `207`. Same rule as for QEMU, where killing the
+  process comes first.
+- ubridge exit → all pcaps closed, and every TAP fd it held is closed with the
+  process (the persistent devices stay).
 
 ---
 
@@ -422,6 +487,12 @@ tc netem set <if> [delay <ms>] [jitter <ms>] [loss <%>] [dup <%>] [corrupt <%>]
 tc reset <if>
 # capture
 capture start_kernel <if> <pcap> [dlt]                               capture stop_kernel
+# iol_bridge (IOU/IOL ports; the anchor must already exist via `tap create`)
+iol_bridge create <name> <app_id>          iol_bridge delete <name>          iol_bridge start|stop <name>
+iol_bridge add_nio_udp <br> <iol_id> <bay> <unit> <lport> <rhost> <rport>
+iol_bridge delete_nio_udp <br> <bay> <unit>
+iol_bridge add_nio_tap <br> <iol_id> <bay> <unit> <tap>              # anchor, opened by name
+iol_bridge delete_nio_tap <br> <bay> <unit>                          # fd only; device survives
 # link (l2only is applied by the creators — gns3server never issues it)
 link l2only <iface> [on|off]                                         link veth <name> <peer>
 # marker
