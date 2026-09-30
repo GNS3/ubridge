@@ -40,7 +40,7 @@ import subprocess
 import sys
 import time
 
-from helpers import (Ubridge, Results, HOST, ubridge_binary, ensure_netio_dir,
+from helpers import (Ubridge, Results, HOST, ubridge_binary, prepare_env,
                      iol_sock, iol_frame, fake_iol, free_udp_port,
                      IOL_HDR_SIZE, cleanup_iol_sock)
 
@@ -150,9 +150,7 @@ def main():
         print("  [SKIP] needs CAP_NET_ADMIN (run under sudo or unshare -Urn)")
         return 0
 
-    # a fresh netns starts with lo down; the UDP-swap phase talks to HOST
-    subprocess.run(["ip", "link", "set", "lo", "up"], capture_output=True)
-    ensure_netio_dir()
+    prepare_env()
     iol = fake_iol(IOL_ID)
     with UbridgeErr(PORT, ubridge_binary(), ERRLOG) as ub:
         c = ub.connect()

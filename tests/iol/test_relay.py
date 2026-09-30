@@ -17,7 +17,7 @@ instance over the netio unix socket.
 import socket
 import time
 
-from helpers import (Ubridge, Results, HOST, ubridge_binary, ensure_netio_dir,
+from helpers import (Ubridge, Results, HOST, ubridge_binary, prepare_env,
                      iol_sock, iol_frame, fake_iol, free_udp_port,
                      IOL_HDR_SIZE, cleanup_iol_sock)
 
@@ -39,7 +39,7 @@ def _drain(s, n=4, timeout=0.4):
 
 def main():
     r = Results()
-    ensure_netio_dir()
+    prepare_env()
     iol = fake_iol(IOL_ID)
     with Ubridge(port=PORT, binary=ubridge_binary()) as ub:
         c = ub.connect()
