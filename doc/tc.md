@@ -250,7 +250,7 @@ an old ubridge without this command gets the same treatment):
 
 ```
 tc capabilities
-100-netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;ebpf=1;cbpf=1
+100-netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;ebpf=1;cbpf=1;ebpf_modes=nth,quota,window,flow
 ```
 
 Both classifier capabilities are **probed for real** (cached):
@@ -260,6 +260,15 @@ verify on) reports `0`; `cbpf` creates a throwaway dummy link, attaches
 clsact plus a one-instruction never-matching cBPF filter, and deletes the
 dummy again. The controller hides the corresponding filter types per
 capability and keeps them on the relay datapath.
+
+`ebpf_modes` is a **build fact**, orthogonal to those runtime probes: the
+same binary flips `ebpf` between users and kernels, while the mode set
+changes only with the binary. Without it the controller cannot tell an
+`ebpf=1` build with pre-correction window semantics from a correct one —
+a mode is usable iff `ebpf=1` **and** its token is listed. A build that
+does not emit the field at all predates it and gets legacy treatment;
+an incompatible mode revision renames its token (`window` → `window2`)
+rather than versioning it in place.
 
 ## Status codes
 
@@ -496,7 +505,7 @@ make
 cd tests/tc
 sudo python3 run_all.py          # or: unshare -Urn python3 run_all.py
 # test_basic 18/18, test_netem_ext 64/64, test_bpf_drop 32/32,
-# test_ebpf 47/47 (38/38 degraded without CAP_BPF), test_precision 10/10
+# test_ebpf 48/48 (39/39 degraded without CAP_BPF), test_precision 10/10
 ```
 
 Not covered locally (needs real traffic + a time budget, CI-root tier):

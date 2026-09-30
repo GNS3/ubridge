@@ -220,10 +220,11 @@ def main():
 
                 # --- capabilities --------------------------------------------
                 # cbpf=1 since part C (bpf_drop); ebpf varies with CAP_BPF
-                # (0 e.g. under unshare, 1 with it) — match the shape
+                # (0 e.g. under unshare, 1 with it); ebpf_modes is a build
+                # constant — match the shape
                 res = c.send("tc capabilities")
                 r.check("capabilities string",
-                        re.match(r"^100-netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;ebpf=[01];cbpf=1$", res) is not None,
+                        re.match(r"^100-netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;ebpf=[01];cbpf=1;ebpf_modes=nth,quota,window,flow$", res) is not None,
                         res)
 
                 # --- error contract ------------------------------------------

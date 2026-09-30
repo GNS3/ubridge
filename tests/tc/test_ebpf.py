@@ -40,7 +40,8 @@ VB = PREFIX + "vb"
 REPO_UBRIDGE = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "ubridge"))
 
 CAPS_RE = re.compile(
-    r"^100-netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;ebpf=([01]);cbpf=1$")
+    r"^100-netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;"
+    r"ebpf=([01]);cbpf=1;ebpf_modes=(nth,quota,window,flow)$")
 NO_CAP_210 = ("210-uBridge lacks CAP_BPF (setcap cap_bpf,cap_net_admin,cap_net_raw=ep) "
               "and the kernel requires it for stateful filters")
 
@@ -169,7 +170,11 @@ def main():
             try:
                 caps = c.send("tc capabilities")
                 m = CAPS_RE.match(caps)
-                r.check("capabilities shape (ebpf=[01];cbpf=1)", m is not None, caps)
+                r.check("capabilities shape (ebpf=[01];cbpf=1;ebpf_modes=...)", m is not None, caps)
+                # build fact, orthogonal to the runtime ebpf probe: the list
+                # is emitted even when the program cannot load here
+                r.check("ebpf_modes listed regardless of ebpf",
+                        m is not None and m.group(2) == "nth,quota,window,flow", caps)
                 ebpf_ok = bool(m and m.group(1) == "1")
                 if not ebpf_ok:
                     print("  [INFO] ebpf=0 here (no CAP_BPF) — behavioral section self-skips")

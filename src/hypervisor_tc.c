@@ -1707,11 +1707,21 @@ static int tc_cbpf_capable(void)
  * kernel new enough); cbpf = a classic cls_bpf filter installs. An old
  * ubridge without this command at all keeps the controller on the relay
  * datapath.
+ *
+ * ebpf_modes is a BUILD fact, deliberately orthogonal to those runtime
+ * probes: the same binary flips ebpf between users/kernels, while the mode
+ * set changes only with the binary (an ebpf=1 build with pre-correction
+ * window semantics is indistinguishable from a correct one without it).
+ * A mode is usable iff ebpf=1 AND its token is listed; a build that does
+ * not emit the field at all predates it and gets legacy treatment. An
+ * incompatible mode revision renames its token (window -> window2) rather
+ * than versioning it in place.
  */
 static int cmd_capabilities(hypervisor_conn_t *conn, int argc, char *argv[])
 {
     hypervisor_send_reply(conn, HSC_INFO_OK, 1,
-                          "netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;ebpf=%d;cbpf=%d",
+                          "netem=delay,jitter,loss,dup,corrupt,rate,reorder,gemodel,dist,seed,limit;"
+                          "ebpf=%d;cbpf=%d;ebpf_modes=nth,quota,window,flow",
                           tc_ebpf_supported(), tc_cbpf_capable());
     return 0;
 }
