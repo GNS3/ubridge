@@ -10,6 +10,8 @@ No CAP_NET_ADMIN (AF_UNIX + ephemeral UDP only); no IOL image. Codes:
 100 ok / 204 bad param / 206 create / 209 start / 210 stop / 213 rename /
 214 not found.
 """
+import subprocess
+
 from helpers import (Ubridge, Results, ubridge_binary, ensure_netio_dir,
                      free_udp_port)
 
@@ -18,6 +20,10 @@ PORT = 13170
 
 def main():
     r = Results()
+    # A fresh netns (unshare -Urn) starts with lo down, and binding a UDP NIO
+    # to 127.0.0.1 then fails with EADDRNOTAVAIL — which add_nio_udp reports
+    # as a generic 206. No-op on a normal system.
+    subprocess.run(["ip", "link", "set", "lo", "up"], capture_output=True)
     ensure_netio_dir()
     with Ubridge(port=PORT, binary=ubridge_binary()) as ub:
         c = ub.connect()
