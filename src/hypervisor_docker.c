@@ -49,6 +49,7 @@
 #include "ubridge.h"
 #include "hypervisor.h"
 #include "hypervisor_docker.h"
+#include "hypervisor_link.h"
 #include "netlink/nl.h"
 
 struct link_req {
@@ -194,6 +195,15 @@ static int cmd_create_veth_pair(hypervisor_conn_t *conn, int argc, char *argv[])
 
     if (netdev_set_flag(conn, if1, IFF_UP)) {
         fprintf(stderr, "failed to enable interface '%s'", if1);
+        goto out;
+    }
+
+    /* Host end only: if1 stays in the root namespace as the anchor, while if2
+     * moves into a container netns and keeps its normal IPv6 behaviour. */
+    err = link_harden_l2only(if1);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1,
+                              "could not set L2-only on %s: %s", if1, strerror(-err));
         goto out;
     }
 

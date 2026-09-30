@@ -36,6 +36,7 @@
 #include "ubridge.h"
 #include "hypervisor.h"
 #include "hypervisor_brctl.h"
+#include "hypervisor_link.h"
 
 
 /*
@@ -909,6 +910,15 @@ static int cmd_create(hypervisor_conn_t *conn, int argc, char *argv[])
 
     if (err < 0) {
         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not create bridge %s: %s", bridge, strerror(-err));
+        return -1;
+    }
+
+    /* The fabric the anchors are enslaved to: the bridge's own link-local
+     * would flood to every port. (brctl addip is IPv4-only, so nothing the
+     * L3 paths configure is affected.) */
+    err = link_harden_l2only(bridge);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set L2-only on bridge %s: %s", bridge, strerror(-err));
         return -1;
     }
 

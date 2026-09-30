@@ -52,7 +52,7 @@ getcap $(which ubridge) # verify
 
 | Command | Args | Description |
 |---------|------|-------------|
-| `create <bridge>` | 1 | Create a Linux bridge (`RTM_NEWLINK`, kind=bridge, `NLM_F_CREATE|EXCL`). Duplicate → `EEXIST`. |
+| `create <bridge>` | 1 | Create a Linux bridge (`RTM_NEWLINK`, kind=bridge, `NLM_F_CREATE|EXCL`). Duplicate → `EEXIST`. Hardened with `link l2only on` before the reply: the fabric the anchors are enslaved to must not flood its own link-local to every port. `brctl addip` is IPv4-only, so the L3 paths are unaffected. |
 | `delete <bridge>` | 1 | Delete a Linux bridge (`RTM_DELLINK`). Missing → `ENODEV`. |
 | `addif <bridge> <port>` | 2 | Enslave a port to the bridge (`RTM_SETLINK` + `IFLA_MASTER`) **and bring the port UP**. Port must pre-exist. |
 | `delif <bridge> <port>` | 2 | Release a port from a bridge. Verifies the port is actually on the given bridge; else `-EINVAL`. |

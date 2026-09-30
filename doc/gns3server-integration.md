@@ -157,6 +157,15 @@ daemon; data-plane impairment/capture must therefore also live in the kernel.
 
 `set_owner` is **required** so an unprivileged QEMU can open the persistent TAP.
 
+Since the L2-anchor work, `tap create` hardens the TAP itself (`link l2only
+on`: no IPv6 link-local, so the kernel neither advertises nor answers ND on
+the emulated segment) before its success reply. Same for the other creators —
+`docker create_veth` (host end), `link veth` (both ends), `brctl create` — so
+**no call site changed**: nothing for gns3server to issue, and a caller cannot
+forget it. See [`link.md`](link.md) for what hardening does and does not
+remove. With a uBridge that predates it the anchors keep the old behaviour and
+`link l2only` answers `202-Unknown command`.
+
 ### brctl — kernel bridge (link plumbing)
 | When | Commands |
 |------|----------|
@@ -369,6 +378,8 @@ tc netem set <if> [delay <ms>] [jitter <ms>] [loss <%>] [dup <%>] [corrupt <%>]
 tc reset <if>
 # capture
 capture start_kernel <if> <pcap> [dlt]                               capture stop_kernel
+# link (l2only is applied by the creators — gns3server never issues it)
+link l2only <iface> [on|off]                                         link veth <name> <peer>
 # marker
 marker sink <host> <port>          marker node <id>                  marker off                     marker status
 marker pause                      marker resume

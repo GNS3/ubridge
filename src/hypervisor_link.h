@@ -23,4 +23,8 @@
 
 int hypervisor_link_init(void);
 
+/* Shared helpers (also used by the tap / docker / brctl creators) */
+int link_set_l2only(const char *iface, int on);
+int link_harden_l2only(const char *iface);
+
 #endif /* !HYPERVISOR_LINK_H_ */

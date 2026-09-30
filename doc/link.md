@@ -1,8 +1,8 @@
 # link module — generic interface management
 
 The `link` hypervisor module manages generic network interfaces (veth pairs,
-IP assignment, link state) entirely through netlink — no `ip` command, no
-ioctl. It is exposed via the hypervisor text protocol as
+IP assignment, link state, L2-only hardening) entirely through netlink — no
+`ip` command, no ioctl. It is exposed via the hypervisor text protocol as
 `link <command> [args...]`.
 
 It exists alongside `brctl` (bridge-specific) to avoid confusing bridge
@@ -100,6 +100,66 @@ link set v-host down
 Invalid state (not `up`/`down`) → `204/EINVAL`. Missing interface →
 `206/ENODEV`.
 
+### `link l2only <iface> [on|off]`
+
+Make an **existing** device pure L2: no IPv6 link-local address and no IPv6
+stack activity on it. Default state is `on`.
+
+| Arg | Description |
+|-----|-------------|
+| `<iface>` | An existing device. A missing name fails (`208/ENODEV`) and never creates a transient device. |
+| `on` / `off` | `on` = suppress IPv6 address generation and stack activity; `off` = restore the kernel default. |
+
+Why: a host-side anchor that is UP gets an IPv6 link-local address from the
+kernel with no user-space actor involved, and with it MLD reports, DAD
+neighbour solicitations and router solicitations. On an emulated link those
+frames flood into the segment and the host **answers** ND for its own
+link-local, so an emulated IPv6 router can form an adjacency with the host —
+a phantom neighbour. The anchors gns3-server creates (`tap create`,
+`docker create_veth` host end, `link veth` both ends, `brctl create`) apply
+this themselves, before their success reply; gns3-server never issues
+`link l2only` directly and a caller cannot forget it.
+
+```
+link l2only gq1234abcd
+100-L2-only set on gq1234abcd
+link l2only gq1234abcd on
+100-L2-only set on gq1234abcd          # idempotent, same reply
+link l2only gq1234abcd off
+100-L2-only cleared on gq1234abcd
+```
+
+Implementation: `RTM_SETLINK` with `IFLA_AF_SPEC{ AF_INET6 {
+IFLA_INET6_ADDR_GEN_MODE } }` (what `ip link set dev X addrgenmode none`
+sends). The address the kernel already assigned is **not** removed by that —
+it survives the mode change and even a down/up cycle (measured on 7.2) — so an
+anchor that was brought UP before this call is cleaned up explicitly with
+`RTM_DELADDR`. Both the mode and the absence of a link-local are read back
+with `RTM_GETLINK` before `100` is sent, so a caller may treat `100` as
+verified rather than requested.
+
+`off` writes the kernel's built-in default back (`eui64`); the kernel
+re-provisions the link-local on the next down/up cycle, not on the mode change
+itself.
+
+Without the attribute (old kernel) the creators log and continue — device
+creation never fails because of this hardening — while an explicit
+`link l2only` reports it. Never `/proc/sys/net/ipv6/conf/<if>/disable_ipv6`:
+those files are root-owned mode 0644, so a setcap'd non-root ubridge can be
+refused by the DAC check despite holding `CAP_NET_ADMIN`.
+
+Bad state → `204/EINVAL`. Missing interface → `208/ENODEV`. Any other netlink
+error → `206`.
+
+What hardening does **not** remove: the device's own group-membership reports.
+Group membership is not address generation, and one or two still go out at
+bring-up — an MLDv2 report (dst `ff02::16`, source `::`, hop-by-hop Router
+Alert) and, on a bridge, the IPv4 twin: an IGMP report (dst `224.0.0.22`,
+source `0.0.0.0`) from the bridge's own MAC. Neither carries an address of the
+device, so neither can make the host answer ND or ARP for one; the neighbour
+discovery, DAD and router solicitations are what is gone. Measured with
+`capture start_kernel` — see `tests/link/test_l2only.py`.
+
 ## Status codes
 
 | Code | Meaning |
@@ -109,6 +169,7 @@ Invalid state (not `up`/`down`) → `204/EINVAL`. Missing interface →
 | `204` | Invalid parameter value |
 | `206` | Unable to create object |
 | `207` | Unable to delete object |
+| `208` | Unknown object (no such device) |
 
 ## Typical workflow
 
@@ -138,6 +199,10 @@ No `ip` command, no root — ubridge does it all via netlink.
 - **Shared helpers** — `parse_cidr()` and `br_set_address()` are defined in
   `hypervisor_brctl.c` and exported via `hypervisor_brctl.h`, so both
   `brctl` (bridge IPs) and `link` (generic IPs) share one implementation.
+  The other direction: `link_set_l2only()` / `link_harden_l2only()` are
+  defined here and exported via `hypervisor_link.h`, because the hardening
+  belongs to this module while the creators that must apply it live in
+  `tap`, `docker` and `brctl`.
 - **Error handling** — all helpers return a **negative errno** (not `-1`);
   command handlers report `strerror(-err)`.
 - **VETH_INFO_PEER nesting** — the trickiest part. The peer info is a
