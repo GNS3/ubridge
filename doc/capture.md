@@ -34,6 +34,16 @@ capture start_kernel tap-gns3-e0 /tmp/cap.pcap
 Only **one** kernel capture at a time (singleton); a second `start_kernel`
 while one is active → `209/EALREADY`. Missing interface → `208/ENODEV`.
 
+**`<if>` must be UP before the capture starts.** A capture started while the
+interface is DOWN receives nothing for its whole life — not even the frames
+the interface emits once it comes up (measured on 7.2): the packet socket's
+protocol hook is armed at bind time for an interface that is up, and it is not
+re-armed on the later up-transition. There is no error and no empty-file
+warning; the pcap just stays header-only. This matters for measuring an
+interface's own bring-up traffic: bring it up, then start the capture — the
+kernel's address/DAD/RS burst and its retransmissions still land in the
+window, which is how `tests/link/test_l2only.py` measures anchor silence.
+
 ### `capture stop_kernel`
 
 Stop the active capture (cancel + join the thread, close the socket and pcap
