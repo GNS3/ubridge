@@ -44,3 +44,6 @@ __pycache__/
 
 # lsp
 .clangd
+
+# Dependency files emitted by -MMD (Makefile)
+*.d
