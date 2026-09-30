@@ -173,6 +173,40 @@ remove. With a uBridge that predates it the anchors keep the old behaviour and
 | Runtime re-link | `brctl delif <br> <tap>` then `brctl addif <newbr> <tap>` |
 | Link delete | `brctl delif` on both ends, then `brctl delete <br>` |
 
+`brctl delete` answers `207`/`EBUSY` while any port is still enslaved, so the
+`delif` on both ends is what makes the delete succeed rather than mere hygiene:
+the **last party out deletes the bridge**. This is what makes a single-sided
+node stop/start survivable — the stopping side's port goes away with its veth,
+its `delete` is refused, so the bridge stays up carrying the peer's port and
+that side re-attaches to the bridge it still finds on restart.
+
+Treating that refusal as fatal would break the case it exists for, so the
+failure has to be tolerated. gns3server does it by **exception type**
+(`contextlib.suppress(UbridgeError)` around the `delif`/`delete` calls in
+`kernel_datapath.py`), *not* by matching the message, and so also swallows
+genuine failures ranging from a missing bridge to `EPERM`. That is deliberate:
+on a concurrent teardown the losing side's delete must be ignored either way,
+and the backstop is both ends retrying plus an e2e assertion that no bridge is
+left behind.
+
+The reply names the errno regardless:
+
+```
+207-Could not delete bridge <br>: Device or resource busy (EBUSY, ports still attached)
+```
+
+because `strerror(EBUSY)` alone reads as a transient fault rather than as "a
+peer still owns this bridge". **The wording is not a contract** — nothing
+depends on it — it is a signal for a human reading a log, or for a client that
+does match on text; it may change without notice.
+
+Per-port state — VLAN membership, PVID, port parameters — lives on the *port*
+device, not on the bridge. A bridge surviving a single-sided restart therefore
+keeps the peer's port configuration, while the restarting side's freshly
+created port comes back at defaults. Anything that configures a port must
+re-apply on **every** attach (never gated on "the bridge was newly created"),
+and must only ever touch its own end, never the peer's.
+
 (Full STP/VLAN/port-param set in [`brctl.md`](brctl.md); its [§ Limitations](brctl.md#limitations) note the default-PVID-1 cleanup step, QinQ scope (outer-tag only; standard EtherTypes 0x8100/0x88a8 only), and the absence of FDB read/flush.)
 
 ### tc — netem impairment

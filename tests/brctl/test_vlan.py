@@ -125,6 +125,9 @@ def main():
                     c.code("brctl vlan_add regtestv1 ubtest 400") == "206")
             r.check("delete regtestv1", c.code("brctl delete regtestv1") == "100")
 
+            # delete is refused (EBUSY) while a port is still enslaved
+            r.check("delif ubtest", c.code("brctl delif regtestv0 ubtest") == "100")
+
         r.check("delete regtestv0", c.code("brctl delete regtestv0") == "100")
         c.close()
 

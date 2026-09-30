@@ -53,13 +53,31 @@ getcap $(which ubridge) # verify
 | Command | Args | Description |
 |---------|------|-------------|
 | `create <bridge>` | 1 | Create a Linux bridge (`RTM_NEWLINK`, kind=bridge, `NLM_F_CREATE|EXCL`). Duplicate → `EEXIST`. Hardened with `link l2only on` before the reply: the fabric the anchors are enslaved to must not flood its own link-local to every port. `brctl addip` is IPv4-only, so the L3 paths are unaffected. |
-| `delete <bridge>` | 1 | Delete a Linux bridge (`RTM_DELLINK`). Missing → `ENODEV`. |
+| `delete <bridge>` | 1 | Delete a Linux bridge (`RTM_DELLINK`). Missing → `ENODEV`. **Refused with `EBUSY` while any port is still enslaved** — release the ports first; the last party out deletes the bridge (see the note below). |
 | `addif <bridge> <port>` | 2 | Enslave a port to the bridge (`RTM_SETLINK` + `IFLA_MASTER`) **and bring the port UP**. Port must pre-exist. |
 | `delif <bridge> <port>` | 2 | Release a port from a bridge. Verifies the port is actually on the given bridge; else `-EINVAL`. |
 | `addip <bridge> <ip/prefix>` | 2 | Assign an IPv4 address (`RTM_NEWADDR`) and bring the bridge UP. CIDR must include a `/` and prefix ≤ 32. |
 | `delip <bridge> <ip/prefix>` | 2 | Remove an IPv4 address from a bridge (`RTM_DELADDR`). Bad CIDR → `204`; missing bridge/IP → `207`. |
 | `setup <bridge> <ip/prefix>` | 2 | `create` + `addip` in one step. Validates the CIDR **before** creating; rolls back the bridge if `addip` fails. |
 | `show <bridge>` | 1 | Query the bridge's IPv4 address/prefix and operational flags (`UP`/`RUNNING`). |
+
+> **`delete` while ports are attached.** The kernel does *not* refuse this for
+> us: `RTM_DELLINK` on a bridge that still has ports succeeds —
+> `br_dev_delete()` detaches each one (`del_nbp()`) and then unregisters the
+> bridge — which silently strands a peer whose port was still enslaved. So
+> `br_delbr` counts the ports itself (an `RTM_GETLINK` dump, matching
+> `IFLA_MASTER` against the bridge ifindex) and answers `EBUSY` while any
+> remain. A bridge shared by two endpoints therefore outlives whichever one
+> releases its port first, and that side re-attaches on restart to the bridge
+> it still finds instead of building a new empty one beside an orphaned peer.
+> Deliberately netlink, never `/sys/class/net/<bridge>/brif`: sysfs shows the
+> *initial* network namespace, so the sysfs view is wrong for a ubridge
+> running in another one (and for the test suites, which run under
+> `unshare -Urn`).
+>
+> The check is best-effort — rtnetlink has no "delete if empty", so a port
+> attached between the dump and the `RTM_DELLINK` is still detached (the
+> historical behaviour, not a regression).
 
 ### Bridge-level parameters (10)
 
@@ -145,6 +163,14 @@ of `vlan_add` (ranges), with the native VLAN added `pvid untagged`.
   kernel's `eth_type_vlan()` recognizes only 0x8100 and 0x88a8, so the bridge
   cannot use the legacy ones as `vlan_protocol` regardless. Standard QinQ is
   0x88a8.
+- **`delete` cannot be forced.** Because `delete` refuses while any port is
+  enslaved, a bridge stays until its last port is released — there is no
+  force variant. A port whose device outlives its owner (a persistent TAP, a
+  physical anchor) therefore keeps the bridge alive until something releases
+  it, where the pre-`EBUSY` behaviour would have torn the bridge down and
+  detached it. Recover by `delif`-ing the stale port (`brctl show` /
+  `ip -o link show master <bridge>` reveals it), or by deleting the port
+  device itself, which drops it from the bridge.
 - **No MAC (FDB) table read/flush.** There is no `fdb_show` / `fdb_flush`. The
   kernel bridge learns and ages MAC entries itself; ubridge has never exposed
   mac-table access and gns3-server does not consume it, so it was deliberately
@@ -225,7 +251,7 @@ python3 test_basic.py
 python3 run_all.py
 ```
 
-Nine suites (168 tests in total):
+Nine suites (175 tests in total):
 
 | Suite | Tests | Scope |
 |-------|-------|-------|
@@ -233,13 +259,17 @@ Nine suites (168 tests in total):
 | `test_boundary` | 64 | Boundary values for all ranged parameters, kernel-side verification |
 | `test_concurrency` | 6 | Multi-client create races, show under churn |
 | `test_robustness` | 20 | Malformed input, overlong names, IPv6, crash-freedom |
-| `test_state` | 12 | addif/addip idempotency, UP/DOWN transitions, ports on delete |
+| `test_state` | 18 | addif/addip idempotency, UP/DOWN transitions, `delete` refused while ports are attached, the two-sided survive/reunite case |
 | `test_stress` | 3 | 500 create/delete cycles, fd stability |
 | `test_no_privs` | 4 | No-cap binary rejects mutations, survives gracefully |
-| `test_vlan` | 28 | Per-port VLAN add/del/show/range, kernel-side verification, error paths |
+| `test_vlan` | 29 | Per-port VLAN add/del/show/range, kernel-side verification, error paths |
 | `test_vlan_perf` | 10 | `vlan_show` over the full VID range (4094), timed |
 
-All 168 tests pass on the reference kernel (7.1.2-1-default).
+All 175 tests pass on the reference kernel (7.1.2-1-default).
+
+> The three `test_vlan` "kernel: …" read-back checks need iproute2's `bridge`
+> command (`bridge vlan show dev <port>`); without it they fail on any binary,
+> so install `bridge-utils`/iproute2 before reading the suite total.
 
 ### Kernel verification reference
 

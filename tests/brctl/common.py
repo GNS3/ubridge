@@ -15,7 +15,17 @@ def ubridge_binary():
     Prefers the installed binary (which has cap_net_admin via `make install`);
     falls back to the in-repo build (no caps — used by test_no_privs). Works
     whether run from the repo root or from tests/brctl/.
+
+    `UBRIDGE_BINARY` overrides the search, as in tests/link: point it at the
+    in-repo build to exercise changes that are not installed yet — e.g. under
+    `unshare -Urn`, where root in the new user namespace holds CAP_NET_ADMIN
+    and the suite can run without `make install`.
     """
+    override = os.environ.get("UBRIDGE_BINARY")
+    if override:
+        if not os.path.exists(override):
+            raise RuntimeError("UBRIDGE_BINARY=%s does not exist" % override)
+        return override
     _here = os.path.dirname(os.path.abspath(__file__))
     for path in (
         "/usr/local/bin/ubridge",

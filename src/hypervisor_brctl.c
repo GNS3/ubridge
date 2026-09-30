@@ -85,7 +85,115 @@ static int br_addbr(const char *bridge)
 }
 
 /*
+ * Count the ports currently enslaved to the bridge with the given ifindex,
+ * via an RTM_GETLINK dump (an enslaved port carries IFLA_MASTER = its bridge).
+ * Netlink rather than /sys/class/net/<bridge>/brif on purpose: sysfs shows the
+ * *initial* network namespace, so a sysfs view is wrong for any ubridge running
+ * in another one — including the test suites, which run under `unshare -Urn`.
+ * Returns the port count (>= 0) or a negative errno on failure (NOT -1).
+ */
+static int br_count_ports(int br_ifindex)
+{
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL, *reply = NULL;
+    struct ifinfomsg *ifi;
+    int ret, count = 0;
+
+    ret = netlink_open(&nlh, NETLINK_ROUTE);
+    if (ret < 0)
+        return ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        netlink_close(&nlh);
+        return -ENOMEM;
+    }
+
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_UNSPEC;
+
+    msg->nlmsghdr.nlmsg_type = RTM_GETLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+
+    ret = netlink_send(&nlh, msg);
+    if (ret < 0)
+        goto out;
+
+    while (1) {
+        reply->nlmsghdr.nlmsg_len = NLMSG_ALIGN(NLMSG_GOOD_SIZE);
+        int r = netlink_rcv(&nlh, reply);
+        if (r < 0) {
+            /* netlink_rcv returns the negative errno directly; errno is not
+             * reliably set on this path (cf. br_vlan_dump). */
+            ret = r;
+            goto out;
+        }
+        if (r == 0)
+            break;
+
+        struct nlmsghdr *nh;
+        int len = r;
+        for (nh = (struct nlmsghdr *)reply; NLMSG_OK(nh, len); nh = NLMSG_NEXT(nh, len)) {
+            if (nh->nlmsg_type == NLMSG_DONE) {
+                ret = count;
+                goto out;
+            }
+            if (nh->nlmsg_type == NLMSG_ERROR) {
+                /* A dump never carries NLMSG_ERROR on success — treat it as a
+                 * real failure rather than as end-of-dump. */
+                struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(nh);
+                ret = err->error ? err->error : -EIO;
+                goto out;
+            }
+            if (nh->nlmsg_type != RTM_NEWLINK)
+                continue;
+
+            struct ifinfomsg *ifi_r = (struct ifinfomsg *)NLMSG_DATA(nh);
+            int attrlen = nh->nlmsg_len - NLMSG_LENGTH(sizeof(struct ifinfomsg));
+            struct rtattr *rta = IFLA_RTA(ifi_r);
+            while (RTA_OK(rta, attrlen)) {
+                if (rta->rta_type == IFLA_MASTER) {
+                    int master;
+                    memcpy(&master, RTA_DATA(rta), sizeof(master));
+                    if (master == br_ifindex)
+                        count++;
+                    break;
+                }
+                rta = RTA_NEXT(rta, attrlen);
+            }
+        }
+    }
+
+    ret = count;
+out:
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    netlink_close(&nlh);
+    return ret;
+}
+
+/*
  * Delete a Linux bridge device (RTM_DELLINK via if_nametoindex).
+ *
+ * Refuses with -EBUSY while any port is still enslaved.  The kernel does not
+ * refuse for us: br_dev_delete() detaches every port (del_nbp()) and then
+ * unregisters the bridge, so an RTM_DELLINK on a bridge that still carries a
+ * peer's port succeeds and silently strands that port on a bridge that no
+ * longer exists.  Releasing our own port first and suppressing the EBUSY makes
+ * the last party out the deleter, so a single-sided node restart leaves the
+ * bridge — and the peer's port — intact, and the restarting side re-attaches
+ * to the bridge it finds.  Without this, one side's stop/start orphans the
+ * other side's port and the link stays dead until the peer itself is touched.
+ *
+ * The check is best-effort: rtnetlink has no "delete if empty", so a port
+ * attached between the dump and the RTM_DELLINK is still detached (i.e. the
+ * pre-existing behaviour, not a regression).
+ *
  * Returns 0 on success or a negative errno on failure (NOT -1).
  */
 static int br_delbr(const char *bridge)
@@ -98,6 +206,12 @@ static int br_delbr(const char *bridge)
     ifindex = if_nametoindex(bridge);
     if (ifindex == 0)
         return -ENODEV;
+
+    ret = br_count_ports(ifindex);
+    if (ret < 0)
+        return ret;
+    if (ret > 0)
+        return -EBUSY;
 
     ret = netlink_open(&nlh, NETLINK_ROUTE);
     if (ret < 0)
@@ -933,7 +1047,18 @@ static int cmd_delete(hypervisor_conn_t *conn, int argc, char *argv[])
     int err = br_delbr(bridge);
 
     if (err < 0) {
-        hypervisor_send_reply(conn, HSC_ERR_DELETE, 1, "Could not delete bridge %s: %s", bridge, strerror(-err));
+        /* Name the errno on the in-use path: strerror(EBUSY) renders as
+         * "Device or resource busy", which reads as a transient fault rather
+         * than as "a peer still owns this bridge". For a human reading a log,
+         * or a client that does match on text — gns3server suppresses by
+         * exception type, so nothing in-tree depends on this. Deliberately
+         * not a contract: the wording may change. */
+        if (err == -EBUSY)
+            hypervisor_send_reply(conn, HSC_ERR_DELETE, 1,
+                "Could not delete bridge %s: %s (EBUSY, ports still attached)",
+                bridge, strerror(-err));
+        else
+            hypervisor_send_reply(conn, HSC_ERR_DELETE, 1, "Could not delete bridge %s: %s", bridge, strerror(-err));
         return -1;
     }
 
@@ -1086,7 +1211,11 @@ static int cmd_setup(hypervisor_conn_t *conn, int argc, char *argv[])
     err = br_set_address(bridge, ip, mask);
     if (err < 0) {
         /* setup is create+addip in one shot; roll back the bridge on
-         * failure so we don't leave a half-configured bridge behind. */
+         * failure so we don't leave a half-configured bridge behind.
+         * The bridge was created by this very command, so it has no ports
+         * unless a concurrent addif raced us — in which case br_delbr
+         * refuses (EBUSY) and the rollback is skipped rather than detaching
+         * a port someone else just attached. */
         br_delbr(bridge);
         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not add IP %s to bridge %s: %s", cidr, bridge, strerror(-err));
         return -1;
