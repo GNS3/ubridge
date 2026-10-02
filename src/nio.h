@@ -24,13 +24,20 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <sys/un.h>
-#include <net/if.h>
 #include <pcap.h>
 
 #define m_min(a,b) (((a) < (b)) ? (a) : (b))
 
 #define NIO_MAX_PKT_SIZE    65535
 #define NIO_DEV_MAXLEN      64
+
+/* IFNAMSIZ without pulling <net/if.h> into every NIO user: it collides with
+ * <linux/if.h> (IFF_* redeclarations) in files that include the linux header
+ * first (nio_linux_raw.c via <linux/if_packet.h>). Both headers define it as
+ * 16; whichever arrives first wins, the fallback covers the rest. */
+#ifndef IFNAMSIZ
+#define IFNAMSIZ 16
+#endif
 
 enum {
     NIO_TYPE_UDP = 1,
