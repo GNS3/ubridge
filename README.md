@@ -491,7 +491,10 @@ brctl delete br0
 ```
 
 - **brctl addif** *\<bridge_name\>* *\<port_interface\>*:
-    Enslave an interface to a bridge and automatically bring it UP.
+    Enslave an interface to a bridge, automatically bring it UP, and open
+    link-local forwarding on the port (`group_fwd_mask 0xfffd`: LACP, LLDP,
+    EAPOL and the other reserved addresses cross the bridge like a cable;
+    MAC PAUSE stays excepted — the kernel drops it unconditionally).
 
 ``` {.bash}
 brctl addif br0 tap0
@@ -617,6 +620,18 @@ brctl setgroupfwd br0 0
 These commands modify bridge port attributes via the kernel's
 IFLA_PROTINFO interface. The port interface must already be
 enslaved to the bridge.
+
+- **brctl setportgroupfwd** *\<bridge_name\>* *\<port\>* *\<0-65535\>*:
+    Set the per-port link-local forwarding mask. `addif` sets 65533 (0xfffd)
+    by default; this is the escape hatch back to stock kernel behaviour
+    (0) or any custom mask. The kernel rejects masks with bit 1 (MAC PAUSE)
+    set — 65534/65535 fail with 206. Last-writer-wins: a fresh `addif`
+    re-applies the default.
+
+``` {.bash}
+brctl setportgroupfwd br0 tap0 0
+100-group_fwd_mask 0x0 set on tap0
+```
 
 - **brctl setportprio** *\<bridge_name\>* *\<port\>* *\<0-63\>*:
     Set the STP port priority (kernel limit; the parser accepts 0-255
