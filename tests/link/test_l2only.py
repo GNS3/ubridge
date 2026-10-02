@@ -1,4 +1,4 @@
-"""L2-only host anchors — `link l2only` and the four creators that apply it.
+"""L2-only host anchors — `link l2only` and the five creators that apply it.
 
 Spec: `gns3-server/docs/design/ubridge-l2-anchor-spec.md` (uBridge side, §E).
 A host-side anchor that is UP gets an IPv6 link-local address from the kernel
@@ -12,7 +12,9 @@ What is verified here:
   and that a missing device is never created as a side effect (§E.4);
 * every creator leaves its device with `addrgenmode none` and no address
   (§E.1) — tap create, docker create_veth (host end), link veth (both ends),
-  brctl create — with the container/VM side deliberately untouched (§E.5);
+  brctl create, and the transient TAP `bridge add_nio_tap` creates for a free
+  name — with the container/VM side deliberately untouched (§E.5), and an
+  attach to a pre-existing device left strictly alone (§B);
 * an anchor that was already UP is cleaned up, not just "no new addresses"
   (§A): the link-local the kernel assigned is deleted, and stays gone, while
   the other device of the pair keeps its address;
@@ -73,6 +75,8 @@ C, D = "l2o-c", "l2o-d"                  # control pair, hardening undone
 TAP = "l2o-t"
 DH, DG = "l2o-dh", "l2o-dg"              # docker create_veth: host / guest end
 BR, P1, P2, X1, X2 = "l2o-br", "l2o-p1", "l2o-p2", "l2o-x1", "l2o-x2"
+BT, BTU = "l2o-bt", "l2o-btu"            # bridge add_nio_tap: created / pre-existing
+BTBR = "l2o-btb"                         # scratch bridge holding the two
 PCAP = "/tmp/ubridge-l2only-%d.pcap" % PORT
 
 WINDOW = 8          # seconds captured per role
@@ -335,6 +339,9 @@ def cleanup(c):
     c.send("docker delete_veth %s" % DH)
     c.send("brctl delete %s" % BR)
     c.send("tap delete %s" % TAP)
+    c.send("bridge delete %s" % BTBR)
+    _ip("link", "del", BT)    # transient: already gone once the fd is released
+    _ip("link", "del", BTU)
 
 
 # --------------------------------------------------------------------------
@@ -412,7 +419,7 @@ def contract(c, r):
 
 
 # --------------------------------------------------------------------------
-# §B/§E.1/§E.2/§E.5 — the four creators, each in its normal role
+# §B/§E.1/§E.2/§E.5 — the five creators, each in its normal role
 # --------------------------------------------------------------------------
 
 def veth_role(c, r, baseline_ok):
@@ -474,6 +481,40 @@ def tap_role(c, r, baseline_ok):
         idle_checks(c, r, "TAP with an open fd", TAP,
                     lambda: c.send("link set %s up" % TAP), baseline_ok)
         os.close(fd)
+
+
+def bridge_tap_role(c, r):
+    """bridge add_nio_tap: the §B table's fifth creator. TUNSETIFF's by-name
+    branch *creates* a transient TAP when the name is free (cloud's
+    bridge-interface path, and the create-if-missing half of the swap
+    contract); that device is hardened like tap create hardens its persistent
+    one. An attach to a pre-existing device is left strictly alone — a
+    user-owned TAP keeps its address (the gate that makes this safe)."""
+    c.send("bridge delete %s" % BTBR)
+    r.check("bridge create -> 100", c.code("bridge create %s" % BTBR) == "100")
+    r.check("bridge add_nio_tap on a free name -> 100",
+            c.code("bridge add_nio_tap %s %s" % (BTBR, BT)) == "100")
+    c.send("link set %s up" % BT)
+    r.check("created TAP: addrgenmode none", addrgenmode(BT) == "none", addrgenmode(BT))
+    env_check(r, "created TAP: no IPv6 address (§E.1)", not addrs(BT, "-6"), fmt(addrs(BT, "-6")))
+    r.check("created TAP: no IPv4 address (§E.1)", not addrs(BT, "-4"), fmt(addrs(BT, "-4")))
+
+    # The gate: a pre-existing device must not be hardened on attach. Build
+    # one outside ubridge, give it an identity, then attach.
+    c.send("link delete %s" % BTU)
+    _ip("tuntap", "add", BTU, "mode", "tap")
+    c.send("link set %s up" % BTU)
+    _ip("-6", "addr", "add", "2001:db8::1/64", "dev", BTU)
+    mode_before = addrgenmode(BTU)
+    r.check("pre-existing TAP: has its address before the attach",
+            any("2001:db8::1" in a for a in addrs(BTU, "-6")), fmt(addrs(BTU, "-6")))
+    r.check("bridge add_nio_tap on the pre-existing TAP -> 100",
+            c.code("bridge add_nio_tap %s %s" % (BTBR, BTU)) == "100")
+    r.check("attach left the address alone (§B gate)",
+            any("2001:db8::1" in a for a in addrs(BTU, "-6")), fmt(addrs(BTU, "-6")))
+    r.check("attach left addrgenmode alone (§B gate)",
+            addrgenmode(BTU) == mode_before,
+            "%s -> %s" % (mode_before, addrgenmode(BTU)))
 
 
 def bridge_role(c, r, baseline_ok):
@@ -578,6 +619,7 @@ def main():
             veth_role(c, r, baseline_ok)
             docker_role(c, r)
             tap_role(c, r, baseline_ok)
+            bridge_tap_role(c, r)
             bridge_role(c, r, baseline_ok)
             print("--- an anchor that was already UP ---")
             already_up(c, r)

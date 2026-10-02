@@ -38,7 +38,7 @@ python3 run_all.py
 | Suite | What it covers |
 |-------|----------------|
 | `test_basic.py` | veth create (both ends exist, duplicate → 206, overlong name → 204), set up/down (+ kernel flag verification), addr (kernel IP verification, brings iface UP, bad CIDR/prefix → 204), delete (removes both ends, missing → 207), param-count errors. |
-| `test_l2only.py` | `link l2only` per the L2-anchor spec §E and the creators that apply it: command contract (208/204/203/100, default `on`, idempotency, no transient device), `addrgenmode none` + no address after each of the four creators, an already-UP anchor is cleaned up (and only the named device is touched), `off` reverts and the link-local returns on the next down/up, and idle silence per role (veth with peer up / TAP with an fd / bridge with two ports) against an unhardened control. |
+| `test_l2only.py` | `link l2only` per the L2-anchor spec §E and the creators that apply it: command contract (208/204/203/100, default `on`, idempotency, no transient device), `addrgenmode none` + no address after each of the five creators (including the transient TAP `bridge add_nio_tap` creates for a free name, while an attach to a pre-existing device keeps its address), an already-UP anchor is cleaned up (and only the named device is touched), `off` reverts and the link-local returns on the next down/up, and idle silence per role (veth with peer up / TAP with an fd / bridge with two ports) against an unhardened control. |
 
 ## Conventions
 

@@ -120,6 +120,13 @@ a phantom neighbour. The anchors gns3-server creates (`tap create`,
 this themselves, before their success reply; gns3-server never issues
 `link l2only` directly and a caller cannot forget it.
 
+The rule covers *creating* an anchor, not *opening* one: the transient TAP
+`bridge add_nio_tap` creates for a free name is hardened too (its by-name
+`TUNSETIFF` is the create-if-missing path cloud's bridge interfaces use, and
+the legacy ini-config TAP path lands in the same code). An attach to a
+device that already exists is left strictly alone — a user-owned TAP named
+by the caller keeps its addresses.
+
 ```
 link l2only gq1234abcd
 100-L2-only set on gq1234abcd

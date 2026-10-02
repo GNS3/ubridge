@@ -334,7 +334,12 @@ that), so it cannot gain an existence check. For an anchor, the server
 creates it first (`tap create` — hardened, starts DOWN) and only then adds
 it; a name swept away between the two leaves ubridge holding a transient
 device that vanishes at teardown, so serialize per node and sweep by
-node-scoped name prefixes.
+node-scoped name prefixes. A TAP this open *creates* is hardened L2-only
+(the transient device is a host-side data-plane device like any other
+anchor, and the ini-config path lands in the same code); an attach never
+touches a device that already exists. For a persistent anchor this is
+redundant — `tap create` already hardened it — and for the cloud-owned
+transient it is the hardening's only source.
 
 **Zero-length reads are skipped (behavioral fix).** `nio_recv` used to
 collapse a legitimate 0 (an empty datagram from the container, a no-data TAP
