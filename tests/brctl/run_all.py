@@ -11,6 +11,7 @@ SUITES = [
     "test_state",
     "test_stress",
     "test_no_privs",
+    "test_linklocal",
     "test_vlan",
     "test_vlan_perf",
 ]
