@@ -61,6 +61,7 @@ The modules that are currently defined are given below:
 - docker : Docker management 
 - brctl : Linux bridge management
 - link : generic interface management
+- vxlan : kernel VXLAN device lifecycle (kernel data plane)
 - tap : persistent TAP device lifecycle (kernel data plane)
 - tc : kernel netem link impairment — delay/jitter/loss/dup/corrupt plus
   rate/reorder/loss-gemodel/distribution/seed/limit — `bpf_drop`
