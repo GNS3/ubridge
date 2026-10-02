@@ -20,6 +20,7 @@
 
 #include <string.h>
 #include <assert.h>
+#include <net/if.h>
 
 #include "ubridge.h"
 #include "nio.h"
@@ -382,6 +383,62 @@ static int cmd_delete_nio_udp(hypervisor_conn_t *conn, int argc, char *argv[])
 
    hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "UDP nio missing in '%s'", argv[0]);
    return (-1);
+}
+
+/* bridge delete_nio_tap <bridge> <tap_name>
+ *
+ * Release the TAP NIO opened by name — the fd closes, the interface itself
+ * survives (persistent anchors are the server's to delete with `tap delete`;
+ * transient cloud TAPs die with the fd, which is also correct). The NIO is
+ * matched on the kernel-resolved name stored at add time, so a name the
+ * kernel truncated to IFNAMSIZ-1 cannot fail to match its own NIO.
+ *
+ * Refuses while the bridge is running with the same 214 as delete_nio_udp:
+ * the relay threads hold the source/destination NIO pointers for their whole
+ * life, so freeing under them is a use-after-free, not a reordering concern.
+ * The swap path is stop -> delete -> add -> start, and stop already keeps
+ * every NIO — that is what preserves the unix-socket binding across swaps. */
+static int cmd_delete_nio_tap(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+   nio_t *nio = NULL;
+   bridge_t *bridge;
+
+   bridge = find_bridge(argv[0]);
+   if (bridge == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' doesn't exist", argv[0]);
+      return (-1);
+   }
+
+   if (bridge->running == TRUE) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "bridge '%s' is running", argv[0]);
+      return (-1);
+   }
+
+   if (strlen(argv[1]) >= IFNAMSIZ) {
+      hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "TAP name '%s' is too long (max %d chars)", argv[1], IFNAMSIZ - 1);
+      return (-1);
+   }
+
+   if (bridge->source_nio != NULL && bridge->source_nio->type == NIO_TYPE_TAP &&
+       strcmp(bridge->source_nio->u.nio_tap.name, argv[1]) == 0)
+      nio = bridge->source_nio;
+   else if (bridge->destination_nio != NULL && bridge->destination_nio->type == NIO_TYPE_TAP &&
+            strcmp(bridge->destination_nio->u.nio_tap.name, argv[1]) == 0)
+      nio = bridge->destination_nio;
+
+   if (nio == NULL) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "TAP nio '%s' missing in '%s'", argv[1], argv[0]);
+      return (-1);
+   }
+
+   if (nio == bridge->source_nio)
+      bridge->source_nio = NULL;
+   else
+      bridge->destination_nio = NULL;
+   free_nio(nio);
+
+   hypervisor_send_reply(conn, HSC_INFO_OK, 1, "NIO TAP removed from bridge '%s'", argv[0]);
+   return (0);
 }
 
 static int cmd_add_nio_unix(hypervisor_conn_t *conn, int argc, char *argv[])
@@ -753,6 +810,7 @@ static hypervisor_cmd_t bridge_cmd_array[] = {
    { "delete_nio_udp", 4, 4, cmd_delete_nio_udp, NULL },
    { "add_nio_unix", 3, 3, cmd_add_nio_unix, NULL },
    { "add_nio_tap", 2, 3, cmd_add_nio_tap, NULL },
+   { "delete_nio_tap", 2, 2, cmd_delete_nio_tap, NULL },
    { "set_nio_tap_carrier", 2, 2, cmd_set_nio_tap_carrier, NULL },
    { "add_nio_ethernet", 2, 2, cmd_add_nio_ethernet, NULL },
    { "add_nio_linux_raw", 2, 2, cmd_add_nio_linux_raw, NULL },

@@ -60,6 +60,7 @@ static int nio_tap_open(char *tap_devname, int carrier)
          close(fd);
          return(-1);
       }
+      strcpy(tap_devname, ifr.ifr_name);
    } else {
       if ((fd = open("/dev/net/tun", O_RDWR)) < 0)
          return(-1);
@@ -131,6 +132,11 @@ nio_t *create_nio_tap_with_carrier(char *tap_name, int carrier)
       free_nio(nio);
       return NULL;
    }
+
+   /* nio_tap_open writes the kernel-resolved name back into the buffer —
+      what the kernel actually created (a too-long request is silently
+      truncated to IFNAMSIZ-1), or the name a /dev path resolved to. */
+   strcpy(nio_tap->name, tap_name);
 
    nio->type = NIO_TYPE_TAP;
    nio->send = (void *)nio_tap_send;

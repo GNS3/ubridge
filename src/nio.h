@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <sys/un.h>
+#include <net/if.h>
 #include <pcap.h>
 
 #define m_min(a,b) (((a) < (b)) ? (a) : (b))
@@ -48,6 +49,10 @@ typedef struct {
 
 typedef struct {
     int fd;
+    /* kernel-resolved interface name (empty until the device is opened) — the
+       key delete_nio_tap matches on, so a name the kernel truncated to
+       IFNAMSIZ-1 can never fail to match its own NIO */
+    char name[IFNAMSIZ];
 } nio_tap_t;
 
 typedef struct {
