@@ -61,6 +61,7 @@ SRC += src/nio_linux_raw.c             \
        src/hypervisor_iol_bridge.c     \
        src/hypervisor_brctl.c          \
        src/hypervisor_link.c           \
+       src/hypervisor_vxlan.c          \
        src/hypervisor_tap.c            \
        src/hypervisor_tc.c             \
        src/tc_netem_dist.c             \
