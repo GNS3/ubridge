@@ -131,6 +131,7 @@ hypervisor cmd_list bridge
 101 add_nio_unix (min/max args: 3/3)
 101 delete_nio_udp (min/max args: 4/4)
 101 remove_nio_udp (min/max args: 4/4)
+101 delete_nio_tap (min/max args: 2/2)
 101 add_nio_udp (min/max args: 4/4)
 101 rename (min/max args: 2/2)
 101 reset_stats (min/max args: 1/1)
@@ -248,6 +249,18 @@ bridge add_nio_unix br0 "/tmp/local" "/tmp/remote"
 ``` {.bash}
 bridge add_nio_tap br0 tap0
 100-NIO TAP added to bridge 'br0'
+```
+
+- **bridge delete_nio_tap** *\<bridge_name\>* *\<tap_device\>*:
+    Release the TAP NIO opened by that name — the fd closes, the interface
+    itself survives (persistent TAPs are deleted via the `tap` module). The
+    NIO is matched by the kernel-resolved interface name, and the bridge must
+    not be running (stop it first, as with `delete_nio_udp`; `start` keeps
+    every NIO, so the swap is stop → delete → add → start).
+
+``` {.bash}
+bridge delete_nio_tap br0 tap0
+100-NIO TAP removed from bridge 'br0'
 ```
 
 - **bridge set_nio_tap_carrier** *\<bridge_name\>* *\<on|off\>*:

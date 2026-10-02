@@ -3,8 +3,10 @@ name: Test uBridge
 # Runs the black-box regression suites under tests/ on every PR targeting
 # master. Splits into two jobs by privilege:
 #
-#   * userspace — marker / delay / packet_filter / iol. Pure UDP + libpcap, no caps.
-#   * kernel    — brctl / link / tap / tc / capture / nio_raw / docker. Need CAP_NET_ADMIN.
+#   * userspace — marker / delay / packet_filter / iol / bridge. Pure UDP +
+#     libpcap + AF_UNIX, no caps (the tap-dependent suites self-skip).
+#   * kernel    — brctl / link / tap / tc / capture / nio_raw / docker / bridge.
+#     Need CAP_NET_ADMIN.
 #
 # The ubuntu-latest runner is a real Azure VM (not a container), so file
 # capabilities (setcap), dummy/tap/veth interfaces and network namespaces
@@ -39,7 +41,7 @@ jobs:
   # friction. Run right after `make`, against the in-repo ./ubridge.
   # ---------------------------------------------------------------------
   userspace:
-    name: Userspace (marker, delay, packet_filter, iol)
+    name: Userspace (marker, delay, packet_filter, iol, bridge)
     runs-on: ubuntu-latest
 
     steps:
@@ -64,6 +66,9 @@ jobs:
       - name: iol suite
         run: cd tests/iol && python3 run_all.py
 
+      - name: bridge suite (zero-length; tap suites self-skip unprivileged)
+        run: cd tests/bridge && python3 run_all.py
+
   # ---------------------------------------------------------------------
   # Kernel suites — CAP_NET_ADMIN via file capabilities.
   #
@@ -79,7 +84,7 @@ jobs:
   # and also touch kernel state directly, so the whole process runs as root.
   # ---------------------------------------------------------------------
   kernel:
-    name: Kernel (brctl, link, tap, tc, capture, nio_raw, docker)
+    name: Kernel (brctl, link, tap, tc, capture, nio_raw, docker, bridge)
     runs-on: ubuntu-latest
 
     steps:
@@ -109,6 +114,9 @@ jobs:
 
       - name: tap suite
         run: cd tests/tap && sudo python3 run_all.py
+
+      - name: bridge suite (tap anchors: swap, relay, DOWN anchor)
+        run: cd tests/bridge && sudo python3 run_all.py
 
       - name: tc suite
         run: cd tests/tc && sudo python3 run_all.py

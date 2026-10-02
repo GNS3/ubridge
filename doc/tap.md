@@ -13,7 +13,10 @@ with `set_owner`.
 
 `tap` does **not** add TAPs to bridges (that's `brctl addif`) and does **not**
 open a TAP as an NIO relay (that's the `bridge` module's `add_nio_tap`, which
-opens a non-persistent TAP tied to a bridge). `tap` is purely lifecycle.
+opens a non-persistent TAP tied to a bridge — create-if-missing, by design;
+`bridge delete_nio_tap` releases that fd, and the persistent devices `tap`
+manages are never created or deleted by the `bridge` module). `tap` is purely
+lifecycle.
 
 ## Transport
 
