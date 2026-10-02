@@ -86,8 +86,11 @@ ssize_t nio_recv(nio_t *nio, void *pkt, size_t max_len)
    if (!nio)
      return (-1);
 
-   /* Receive the packet */
-   if ((len = nio->recv(nio->dptr, pkt, max_len)) <= 0)
+   /* Receive the packet. 0 is not an error: a datagram NIO read an empty
+      datagram, a TAP reported no data — the caller decides (the relay loops
+      skip it). Collapsing it into -1 made every caller treat a zero-length
+      read as a failure with whatever errno was lying around. */
+   if ((len = nio->recv(nio->dptr, pkt, max_len)) < 0)
       return (-1);
 
    return(len);
