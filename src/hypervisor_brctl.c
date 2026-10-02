@@ -19,6 +19,7 @@
  */
 
 #include <unistd.h>
+#include <stdio.h>
 #include <string.h>
 #include <strings.h>
 #include <assert.h>
@@ -242,10 +243,18 @@ static int br_delbr(const char *bridge)
     return ret;
 }
 
+/* bit 0 STP (harmless: already forwarded while STP is off), bit 2 LACP,
+ * bit 3 802.1X EAPOL, bit 14 LLDP; bit 1 MAC PAUSE must stay clear or the
+ * kernel rejects the whole value with EINVAL. */
+#define LINK_LOCAL_FWD_MASK 0xfffdu
+
+static int br_set_port_attr_u16(const char *bridge, const char *port, int attr, unsigned short val);
+
 /*
- * Enslave a port interface to a bridge (RTM_SETLINK + IFLA_MASTER) and
- * bring the port up (RTM_SETLINK + IFF_UP), matching the legacy ioctl
- * implementation which set SIOCSIFFLAGS|IFF_UP after adding the port.
+ * Enslave a port interface to a bridge (RTM_SETLINK + IFLA_MASTER), bring
+ * the port up (RTM_SETLINK + IFF_UP) and open up link-local forwarding on
+ * the port (IFLA_BRPORT_GROUP_FWD_MASK, best-effort), matching the legacy
+ * ioctl implementation which set SIOCSIFFLAGS|IFF_UP after adding the port.
  * Returns 0 on success or a negative errno on failure (NOT -1).
  */
 static int br_enslave_if(const char *bridge, const char *port)
@@ -309,6 +318,28 @@ static int br_enslave_if(const char *bridge, const char *port)
     nlmsg_free(msg);
     nlmsg_free(reply);
     netlink_close(&nlh);
+    if (ret < 0)
+        return ret;
+
+    /* Step 3 – link-local transparency.  A Linux bridge stands in for a cable
+     * here: LACP/LLDP/EAPOL/STP must cross it.  The kernel restricts the
+     * *bridge-level* mask to bits 3..15 (BR_GROUPFWD_RESTRICTED), so LACP is
+     * only reachable per port.  0xfffd = every reserved address except MAC
+     * PAUSE (bit 1), which the kernel refuses and hard-drops anyway.
+     * Best-effort: kernels before 4.15 have no such port attribute, and the
+     * cable simply keeps today's behaviour there. */
+    /* UBRIDGE_INJECT_FWD_MASK_FAILURE: test hook (tests/brctl/test_linklocal.py,
+     * T3) — force the write to fail and prove the addif verdict is unchanged. */
+    if (getenv("UBRIDGE_INJECT_FWD_MASK_FAILURE"))
+        ret = -EINVAL;
+    else
+        ret = br_set_port_attr_u16(bridge, port, IFLA_BRPORT_GROUP_FWD_MASK,
+                                   LINK_LOCAL_FWD_MASK);
+    if (ret < 0) {
+        fprintf(stderr, "brctl: %s: group_fwd_mask not set (%s)\n",
+                port, strerror(-ret));
+        ret = 0;  /* best-effort (R4): a failed mask write never fails addif */
+    }
     return ret;
 }
 
@@ -1427,6 +1458,27 @@ static int cmd_setgroupfwd(hypervisor_conn_t *conn, int argc, char *argv[])
     return 0;
 }
 
+/* brctl setportgroupfwd <bridge> <port> <mask> — per-port link-local
+ * forwarding mask (0-65535).  The kernel rejects bit 1 (MAC PAUSE) with
+ * EINVAL, which surfaces here unchanged.  Last-writer-wins: brctl addif
+ * re-applies the LINK_LOCAL_FWD_MASK default on every (re-)attach. */
+static int cmd_setportgroupfwd(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *port = argv[1];
+    long mask;
+    if (parse_long(argv[2], 0, 65535, &mask) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid group_fwd_mask %s (expected 0-65535)", argv[2]);
+        return -1;
+    }
+    int err = br_set_port_attr_u16(argv[0], port, IFLA_BRPORT_GROUP_FWD_MASK, (unsigned short)mask);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set group_fwd_mask on %s: %s", port, strerror(-err));
+        return -1;
+    }
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "group_fwd_mask 0x%lx set on %s", mask, port);
+    return 0;
+}
+
 /* brctl setportprio <bridge> <port> <0-255> */
 static int cmd_setportprio(hypervisor_conn_t *conn, int argc, char *argv[])
 {
@@ -2066,6 +2118,7 @@ static hypervisor_cmd_t brctl_cmd_array[] = {
    { "mcastsnoop", 2, 2, cmd_mcastsnoop, NULL },
    { "setgroupfwd", 2, 2, cmd_setgroupfwd, NULL },
    /* port-level parameters */
+   { "setportgroupfwd", 3, 3, cmd_setportgroupfwd, NULL },
    { "setportprio", 3, 3, cmd_setportprio, NULL },
    { "setpathcost", 3, 3, cmd_setpathcost, NULL },
    { "setportstate", 3, 3, cmd_setportstate, NULL },
