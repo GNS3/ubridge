@@ -84,7 +84,7 @@ jobs:
   # and also touch kernel state directly, so the whole process runs as root.
   # ---------------------------------------------------------------------
   kernel:
-    name: Kernel (brctl, link, tap, tc, capture, nio_raw, docker, bridge)
+    name: Kernel (brctl, link, vxlan, tap, tc, capture, nio_raw, docker, bridge)
     runs-on: ubuntu-latest
 
     steps:
@@ -111,6 +111,9 @@ jobs:
 
       - name: link suite (unprivileged user + capped binary)
         run: cd tests/link && python3 run_all.py
+
+      - name: vxlan suite (unprivileged user + capped binary)
+        run: cd tests/vxlan && python3 run_all.py
 
       - name: tap suite
         run: cd tests/tap && sudo python3 run_all.py
