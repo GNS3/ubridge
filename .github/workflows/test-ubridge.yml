@@ -118,7 +118,7 @@ jobs:
       - name: tap suite
         run: cd tests/tap && sudo python3 run_all.py
 
-      - name: bridge suite (tap anchors: swap, relay, DOWN anchor)
+      - name: "bridge suite (tap anchors: swap, relay, DOWN anchor)"
         run: cd tests/bridge && sudo python3 run_all.py
 
       - name: tc suite
