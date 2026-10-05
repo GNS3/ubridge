@@ -340,8 +340,8 @@ def cleanup(c):
     c.send("brctl delete %s" % BR)
     c.send("tap delete %s" % TAP)
     c.send("bridge delete %s" % BTBR)
-    _ip("link", "del", BT)    # transient: already gone once the fd is released
-    _ip("link", "del", BTU)
+    c.send("tap delete %s" % BTU)   # the §B gate fixture (persistent); the
+                                    # attach fd is released by the delete above
 
 
 # --------------------------------------------------------------------------
@@ -500,18 +500,23 @@ def bridge_tap_role(c, r):
     r.check("created TAP: no IPv4 address (§E.1)", not addrs(BT, "-4"), fmt(addrs(BT, "-4")))
 
     # The gate: a pre-existing device must not be hardened on attach. Build
-    # one outside ubridge, give it an identity, then attach.
-    c.send("link delete %s" % BTU)
-    _ip("tuntap", "add", BTU, "mode", "tap")
-    c.send("link set %s up" % BTU)
-    _ip("-6", "addr", "add", "2001:db8::1/64", "dev", BTU)
+    # the fixture through ubridge — every privileged step in this suite goes
+    # through the capped binary, and raw `ip` is unprivileged in CI. tap
+    # create hardens what it makes, so give the device an identity back: the
+    # kernel's default generator plus an address of its own.
+    r.check("fixture: tap create -> 100", c.code("tap create %s" % BTU) == "100")
+    r.check("fixture: link l2only off -> 100",
+            c.code("link l2only %s off" % BTU) == "100")
+    r.check("fixture: link addr -> 100",
+            c.code("link addr %s 10.99.0.1/24" % BTU) == "100")
     mode_before = addrgenmode(BTU)
-    r.check("pre-existing TAP: has its address before the attach",
-            any("2001:db8::1" in a for a in addrs(BTU, "-6")), fmt(addrs(BTU, "-6")))
+    r.check("pre-existing TAP: address + kernel-default addrgenmode before the attach",
+            any("10.99.0.1" in a for a in addrs(BTU, "-4")) and mode_before == "eui64",
+            "%s, %s" % (fmt(addrs(BTU, "-4")), mode_before))
     r.check("bridge add_nio_tap on the pre-existing TAP -> 100",
             c.code("bridge add_nio_tap %s %s" % (BTBR, BTU)) == "100")
     r.check("attach left the address alone (§B gate)",
-            any("2001:db8::1" in a for a in addrs(BTU, "-6")), fmt(addrs(BTU, "-6")))
+            any("10.99.0.1" in a for a in addrs(BTU, "-4")), fmt(addrs(BTU, "-4")))
     r.check("attach left addrgenmode alone (§B gate)",
             addrgenmode(BTU) == mode_before,
             "%s -> %s" % (mode_before, addrgenmode(BTU)))
