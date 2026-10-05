@@ -24,7 +24,27 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "brctl"))
-from common import Ubridge, Results  # noqa: E402
+from common import Ubridge, Results as _Results  # noqa: E402
+
+
+class Results(_Results):
+    """Results that can also record a skip (reported, never counted as a
+    pass — same shape as the link suite's)."""
+
+    def __init__(self):
+        _Results.__init__(self)
+        self.skips = []
+
+    def skip(self, name, reason):
+        self.skips.append((name, reason))
+
+    def summary(self):
+        for name, reason in self.skips:
+            print("  [SKIP] %s  -- %s" % (name, reason))
+        ok = _Results.summary(self)
+        if self.skips:
+            print("(%d check(s) skipped)" % len(self.skips))
+        return ok
 
 PREFIX = "ubtx-"
 PORT = 13042
@@ -151,6 +171,16 @@ def main():
         _run([IP, "link", "set", n, "up"])
     i_ub, i_tc = socket.if_nametoindex(IFN), socket.if_nametoindex(IFT)
 
+    # The `seed` keyword is recent in iproute2 (absent from 6.1, which
+    # Ubuntu 24.04 still ships): a CLI that predates it answers
+    # `What is "seed"?` and can neither build the comparison command nor
+    # print the attribute. Probe once; the kernel-side effect of the seed
+    # is covered by the determinism check in test_precision.
+    _run([TC, "qdisc", "del", "dev", IFN, "root"])
+    cli_seed = _run([TC, "qdisc", "add", "dev", IFN, "root", "netem",
+                     "seed", "1", "limit", "10"]).returncode == 0
+    _run([TC, "qdisc", "del", "dev", IFN, "root"])
+
     try:
         with Ubridge(port=PORT, binary=REPO_UBRIDGE) as ub:
             c = ub.connect()
@@ -183,6 +213,12 @@ def main():
                      ["delay", "10ms", "seed", "42", "limit", "2000"]),
                 ]
                 for label, ub_params, tc_params in cases:
+                    if "seed" in ub_params.split() and not cli_seed:
+                        r.skip("%s: accepted" % label,
+                               "the local tc CLI has no netem seed (old iproute2)")
+                        r.skip("%s: kernel bytes == tc CLI" % label,
+                               "the local tc CLI has no netem seed (old iproute2)")
+                        continue
                     res = c.send("tc netem set %s %s" % (IFN, ub_params))
                     rt = _tc_qdisc_replace(IFT, tc_params)
                     ok = res.startswith("100-") and rt.returncode == 0
@@ -206,8 +242,14 @@ def main():
                 r.check("show: gemodel p/r/1-h", "loss gemodel p 25% r 50% 1-h 25%" in q, q.strip()[:120])
                 c.send("tc netem set %s delay 10 rate 10mbit seed 42 limit 2000" % IFN)
                 q = qshow(IFN)
-                r.check("show: rate + seed + limit",
-                        "rate 10Mbit" in q and "seed 42" in q and "limit 2000" in q, q.strip()[:120])
+                if cli_seed:
+                    r.check("show: rate + seed + limit",
+                            "rate 10Mbit" in q and "seed 42" in q and "limit 2000" in q, q.strip()[:120])
+                else:
+                    r.check("show: rate + limit",
+                            "rate 10Mbit" in q and "limit 2000" in q, q.strip()[:120])
+                    r.skip("show: seed 42",
+                           "the local tc CLI has no netem seed (the attribute is still set)")
 
                 # uniform sends no distribution table at all
                 c.send("tc netem set %s delay 100 jitter 10 distribution uniform" % IFN)

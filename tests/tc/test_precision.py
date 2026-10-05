@@ -114,6 +114,30 @@ def main():
                 pass
             return got
 
+        def start_reader():
+            """Receive CONCURRENTLY with an injection: a qdisc with no delay
+            releases every survivor as one immediate burst, and a receive
+            buffer that cannot hold the burst counts its own drops as netem
+            loss (measured: a 128 KB rmem inflated a 30% target to 86%).
+            Returns (live, stop, thread); `live` collects (seq, ts)."""
+            live, stop = [], threading.Event()
+
+            def run():
+                while not stop.is_set():
+                    try:
+                        rx.settimeout(0.2)
+                        data, _ = rx.recvfrom(2048)
+                        idx = data.find(MARK)
+                        if idx >= 0:
+                            live.append((struct.unpack_from("<I", data, idx + len(MARK))[0],
+                                         time.monotonic()))
+                    except socket.timeout:
+                        pass
+
+            th = threading.Thread(target=run)
+            th.start()
+            return live, stop, th
+
         with Ubridge(port=PORT, binary=REPO_UBRIDGE) as ub:
             c = ub.connect()
             try:
@@ -131,13 +155,21 @@ def main():
                 # the 2-state Markov flux balance pi_G*p = pi_B*r:
                 #   rate = (1-h) * p / (p + r)
                 # so p=43, r=100, 1-h=100 targets 43/143 = 30.07%.
+                # Receive concurrently with a lightly paced injection: with
+                # no delay the survivors arrive as a burst, and an unpaced
+                # Python sender starves the reader thread long enough to
+                # overflow a small socket buffer (see start_reader).
                 N = 2000
                 p_, r_, one_minus_h = 0.43, 1.0, 1.0
                 target_pct = 100.0 * one_minus_h * p_ / (p_ + r_)
                 r.check("gemodel: set p=43 r=100 1-h=100",
                         fresh("limit %d loss gemodel 43 100 100" % (N + 100)), "")
-                inject_p(N, b"")
-                got = drain(2.0)
+                live, stop, th = start_reader()
+                inject_p(N, b"", gap=0.0003)
+                time.sleep(0.5)          # delivery is immediate; a short tail
+                stop.set()
+                th.join()
+                got = {seq for seq, _ in live}
                 lost_pct = 100.0 * (N - len(got)) / N
                 r.check("gemodel: measured loss %.1f%% within %.1f±5pp" % (lost_pct, target_pct),
                         abs(lost_pct - target_pct) <= 5.0,
@@ -169,23 +201,7 @@ def main():
                 N = 200
                 r.check("reorder: set delay 100 jitter 40 reorder 25",
                         fresh("delay 100 jitter 40 reorder 25"), "")
-                live = []
-                stop = threading.Event()
-
-                def reader():
-                    while not stop.is_set():
-                        try:
-                            rx.settimeout(0.2)
-                            data, _ = rx.recvfrom(2048)
-                            idx = data.find(MARK)
-                            if idx >= 0:
-                                seq = struct.unpack_from("<I", data, idx + len(MARK))[0]
-                                live.append((seq, time.monotonic()))
-                        except socket.timeout:
-                            pass
-
-                th = threading.Thread(target=reader)
-                th.start()
+                live, stop, th = start_reader()
                 sent = inject_p(N, b"", gap=0.005)
                 time.sleep(0.5)          # let the delay tail arrive
                 stop.set()

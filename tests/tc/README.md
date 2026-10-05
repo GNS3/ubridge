@@ -16,6 +16,11 @@ filters, the P6b eBPF stateful modes, and `tc capabilities`).
   inherited into `unshare`) may not include it. The suites fall back to
   `/usr/sbin/tc` and `/sbin/tc` and only skip when the tool is truly absent
   (a vacuous pass — CI, which installs iproute2, is the real gate).
+- The `seed` keyword is newer than some distros' `tc` (iproute2 6.1 — what
+  Ubuntu 24.04 ships — lacks it): `test_netem_ext` probes for it once and
+  skips the two `seed+limit` byte-compare checks when the CLI cannot
+  express it. The kernel-side effect of the seed is still covered —
+  `test_precision`'s determinism check needs no CLI.
 
 The tests run ubridge themselves (control socket /tmp/ubridge-test-*.sock)
 and tear it down when done. They drive the **in-repo** `./ubridge` (run `make`
