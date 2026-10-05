@@ -20,8 +20,9 @@
 
 /*
  * GENERATED FILE — the eBPF impairment program's instructions, extracted
- * from the committed object src/tc_impair.bpf.o (built from
- * src/tc_impair.bpf.c, freestanding: no CO-RE, no BTF-typed pointers).
+ * from the object `make bpf` compiles from src/tc_impair.bpf.c
+ * (freestanding: no CO-RE, no BTF-typed pointers; the object itself is a
+ * transient build artifact, not committed).
  * Regenerate with `make bpf` (needs clang + binutils); the normal build
  * just compiles this file, so no clang/libbpf at build or run time.
  *

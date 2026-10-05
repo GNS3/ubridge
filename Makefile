@@ -107,9 +107,11 @@ $(DEBUG_TARGET): $(DEBUG_OBJ)
 
 all: $(NAME)
 
-# Regenerate the committed eBPF artifacts (developer-only; the normal build
-# compiles the committed src/tc_ebpf_insns.c and needs neither clang nor
-# libbpf). Requires clang (bpf target) + binutils (objcopy/readelf).
+# Regenerate the committed eBPF instruction array (developer-only; the normal
+# build compiles the committed src/tc_ebpf_insns.c and needs neither clang nor
+# libbpf). Compiles src/tc_impair.bpf.c to a transient, git-ignored object
+# (src/tc_impair.bpf.o) and materialises it as C — requires clang + binutils
+# (objcopy/readelf).
 bpf:
 	clang -target bpf -O2 -Wall -c src/tc_impair.bpf.c -o src/tc_impair.bpf.o
 	python3 tools/gen_tc_impair.py
@@ -118,6 +120,7 @@ debug: $(DEBUG_TARGET)
 
 clean:
 	-rm -f $(OBJ)
+	-rm -f src/tc_impair.bpf.o
 	-rm -f $(OBJ:.o=.d) $(DEBUG_OBJ:.o=.d)
 	-rm -f $(NAME)
 	-rm -f *~

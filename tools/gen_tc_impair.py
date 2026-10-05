@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Regenerate src/tc_ebpf_insns.c from src/tc_impair.bpf.o.
 
-The compiled object is committed; this script materialises its tc_impair
-section as a plain instruction array the build compiles without any clang
-or libbpf dependency (same pattern as the embedded netem distribution
-tables in src/tc_netem_dist.c). Only needed when tc_impair.bpf.c changes:
+The object is a transient build artifact (git-ignored, compiled by the
+`bpf` target); the committed artifact is the instruction array this script
+writes — plain C the build compiles without any clang or libbpf dependency
+(same pattern as the embedded netem distribution tables in
+src/tc_netem_dist.c). Only needed when tc_impair.bpf.c changes:
 
     make bpf        # compiles the object AND regenerates the array
 
@@ -126,8 +127,9 @@ def main():
 
 /*
  * GENERATED FILE — the eBPF impairment program's instructions, extracted
- * from the committed object src/tc_impair.bpf.o (built from
- * src/tc_impair.bpf.c, freestanding: no CO-RE, no BTF-typed pointers).
+ * from the object `make bpf` compiles from src/tc_impair.bpf.c
+ * (freestanding: no CO-RE, no BTF-typed pointers; the object itself is a
+ * transient build artifact, not committed).
  * Regenerate with `make bpf` (needs clang + binutils); the normal build
  * just compiles this file, so no clang/libbpf at build or run time.
  *
