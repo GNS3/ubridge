@@ -53,6 +53,14 @@ _Static_assert(offsetof(struct __sk_buff, data) == 76, "min_skb data offset");
 _Static_assert(offsetof(struct __sk_buff, data_end) == 80, "min_skb data_end offset");
 _Static_assert(sizeof(struct bpf_insn) == 8, "bpf_insn size");
 
+/* The CFG/CNT layout is the map ABI between this TU and the embedded BPF
+ * program: pin the offsets the committed instructions were compiled
+ * against (tc_impair.h forces the alignment the BPF target has). */
+_Static_assert(offsetof(struct tc_impair_cfg, quota_bytes) == 8, "cfg quota offset");
+_Static_assert(offsetof(struct tc_impair_cfg, win_start_ns) == 24, "cfg window offset");
+_Static_assert(sizeof(struct tc_impair_cfg) == 72, "cfg size");
+_Static_assert(sizeof(struct tc_impair_cnt) == 48, "cnt size");
+
 #ifndef __NR_bpf
 #define __NR_bpf 321            /* x86_64 */
 #endif
