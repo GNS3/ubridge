@@ -363,7 +363,7 @@ static int cmd_delete_nio_udp(hypervisor_conn_t *conn, int argc, char *argv[])
    if (bridge->source_nio != NULL && bridge->source_nio->type == NIO_TYPE_UDP) {
        nio_udp = &bridge->source_nio ->u.nio_udp;
 
-       if (nio_udp->local_port == atoi(argv[1]) && nio_udp->remote_port == atoi(argv[3]) && strcmp(nio_udp->remote_host, argv[2]) != -1) {
+       if (nio_udp->local_port == atoi(argv[1]) && nio_udp->remote_port == atoi(argv[3]) && strcmp(nio_udp->remote_host, argv[2]) == 0) {
            free_nio(bridge->source_nio);
            bridge->source_nio = NULL;
            hypervisor_send_reply(conn, HSC_INFO_OK,1, "NIO UDP removed from bridge '%s'", argv[0]);
@@ -373,7 +373,7 @@ static int cmd_delete_nio_udp(hypervisor_conn_t *conn, int argc, char *argv[])
    if (bridge->destination_nio != NULL && bridge->destination_nio->type == NIO_TYPE_UDP) {
        nio_udp = &bridge->destination_nio ->u.nio_udp;
 
-       if (nio_udp->local_port == atoi(argv[1]) && nio_udp->remote_port == atoi(argv[3]) && strcmp(nio_udp->remote_host, argv[2]) != -1) {
+       if (nio_udp->local_port == atoi(argv[1]) && nio_udp->remote_port == atoi(argv[3]) && strcmp(nio_udp->remote_host, argv[2]) == 0) {
            free_nio(bridge->destination_nio);
            bridge->destination_nio = NULL;
            hypervisor_send_reply(conn, HSC_INFO_OK,1, "NIO UDP removed from bridge '%s'", argv[0]);
