@@ -244,8 +244,16 @@ def main():
                     drain(0.6)
                     res = c.send("tc netem set %s loss 50 seed 42" % VB)
                     assert res.startswith("100-"), res
+                    # receive concurrently, like the gemodel/rate cases: with
+                    # no delay the survivors arrive as a burst, and a serial
+                    # drain on a small rmem drops its own frames — its drops
+                    # would contaminate the bitmap being compared
+                    live, stop, th = start_reader()
                     inject_p(N, b"")
-                    return {seq for seq, _ in drain(1.5)}
+                    time.sleep(1.0)
+                    stop.set()
+                    th.join()
+                    return {seq for seq, _ in live}
 
                 got1 = seeded_run()
                 got2 = seeded_run()
