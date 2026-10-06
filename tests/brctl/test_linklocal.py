@@ -188,7 +188,8 @@ def main():
                         c2.code("brctl addif llreg2 llregc") == "100")
                 m = sysfs_mask("llregc")
                 if m is not None:
-                    r.check("T3 mask left untouched (0)", m == "0", m)
+                    # the kernel prints the mask as %#x, not decimal
+                    r.check("T3 mask left untouched (0x0)", m == "0x0", m)
                 else:
                     print("  [NOTE] sysfs not visible (namespaced run) "
                           "— T3 mask check skipped")

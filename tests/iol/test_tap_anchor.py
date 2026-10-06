@@ -78,6 +78,14 @@ class UbridgeErr(Ubridge):
             os.unlink(self.sock_path)
         except FileNotFoundError:
             pass
+        # fs.protected_regular=2 (the Tumbleweed/systemd default) makes even
+        # root's O_CREAT open of another user's file in the sticky /tmp fail
+        # with EACCES — a leftover from an unprivileged run would wedge this
+        # suite; remove it first so it is re-runnable across user/root.
+        try:
+            os.unlink(self.errlog)
+        except FileNotFoundError:
+            pass
         self._errf = open(self.errlog, "w")
         self.proc = subprocess.Popen(
             [self.binary, "-U", self.sock_path],
