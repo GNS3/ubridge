@@ -145,10 +145,15 @@ static int br_count_ports(int br_ifindex)
                 goto out;
             }
             if (nh->nlmsg_type == NLMSG_ERROR) {
-                /* A dump never carries NLMSG_ERROR on success — treat it as a
-                 * real failure rather than as end-of-dump. */
+                /* err == 0 is a success ack — some kernels end a dump with
+                 * one instead of NLMSG_DONE (same policy as
+                 * l2only_link_local); a real error is a failure. */
                 struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(nh);
-                ret = err->error ? err->error : -EIO;
+                if (err->error == 0) {
+                    ret = count;
+                    goto out;
+                }
+                ret = err->error;
                 goto out;
             }
             if (nh->nlmsg_type != RTM_NEWLINK)
