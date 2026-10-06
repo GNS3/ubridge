@@ -53,7 +53,7 @@
 static int link_veth_pair(const char *name, const char *peer)
 {
     struct nl_handler nlh;
-    struct nlmsg *msg = NULL, *reply = NULL;
+    struct nlmsg *msg = NULL;
     struct ifinfomsg *ifi;
     struct rtattr *linkinfo, *infodata, *veth_peer;
     int ret;
@@ -62,10 +62,7 @@ static int link_veth_pair(const char *name, const char *peer)
     if (ret < 0) return ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    if (!msg || !reply) {
-        nlmsg_free(msg);
-        nlmsg_free(reply);
+    if (!msg) {
         netlink_close(&nlh);
         return -ENOMEM;
     }
@@ -98,9 +95,7 @@ static int link_veth_pair(const char *name, const char *peer)
     nla_end_nested(msg, infodata);
     nla_end_nested(msg, linkinfo);
 
-    ret = netlink_transaction(&nlh, msg, reply);
-    nlmsg_free(msg);
-    nlmsg_free(reply);
+    ret = nl_xact(&nlh, msg);
     netlink_close(&nlh);
     return ret;
 }
@@ -113,7 +108,7 @@ static int link_veth_pair(const char *name, const char *peer)
 static int link_set_state(const char *iface, int up)
 {
     struct nl_handler nlh;
-    struct nlmsg *msg = NULL, *reply = NULL;
+    struct nlmsg *msg = NULL;
     struct ifinfomsg *ifi;
     int ret, ifindex;
 
@@ -124,10 +119,7 @@ static int link_set_state(const char *iface, int up)
     if (ret < 0) return ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    if (!msg || !reply) {
-        nlmsg_free(msg);
-        nlmsg_free(reply);
+    if (!msg) {
         netlink_close(&nlh);
         return -ENOMEM;
     }
@@ -143,9 +135,7 @@ static int link_set_state(const char *iface, int up)
     msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
     msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
 
-    ret = netlink_transaction(&nlh, msg, reply);
-    nlmsg_free(msg);
-    nlmsg_free(reply);
+    ret = nl_xact(&nlh, msg);
     netlink_close(&nlh);
     return ret;
 }
@@ -159,7 +149,7 @@ static int link_set_state(const char *iface, int up)
 static int link_delete(const char *iface)
 {
     struct nl_handler nlh;
-    struct nlmsg *msg = NULL, *reply = NULL;
+    struct nlmsg *msg = NULL;
     struct ifinfomsg *ifi;
     int ret, ifindex;
 
@@ -170,10 +160,7 @@ static int link_delete(const char *iface)
     if (ret < 0) return ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    if (!msg || !reply) {
-        nlmsg_free(msg);
-        nlmsg_free(reply);
+    if (!msg) {
         netlink_close(&nlh);
         return -ENOMEM;
     }
@@ -187,9 +174,7 @@ static int link_delete(const char *iface)
     msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
     msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
 
-    ret = netlink_transaction(&nlh, msg, reply);
-    nlmsg_free(msg);
-    nlmsg_free(reply);
+    ret = nl_xact(&nlh, msg);
     netlink_close(&nlh);
     return ret;
 }
@@ -224,18 +209,14 @@ static int link_delete(const char *iface)
  * device without IFLA_INET6_ADDR_GEN_MODE). */
 static int l2only_set_gen_mode(struct nl_handler *nlh, int ifindex, unsigned char mode)
 {
-    struct nlmsg *msg = NULL, *reply = NULL;
+    struct nlmsg *msg = NULL;
     struct ifinfomsg *ifi;
     struct rtattr *af_spec, *af6;
     int ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    if (!msg || !reply) {
-        nlmsg_free(msg);
-        nlmsg_free(reply);
+    if (!msg)
         return -ENOMEM;
-    }
 
     ifi = (struct ifinfomsg *)nlmsg_data(msg);
     memset(ifi, 0, sizeof(*ifi));
@@ -257,9 +238,7 @@ static int l2only_set_gen_mode(struct nl_handler *nlh, int ifindex, unsigned cha
     nla_end_nested(msg, af6);
     nla_end_nested(msg, af_spec);
 
-    ret = netlink_transaction(nlh, msg, reply);
-    nlmsg_free(msg);
-    nlmsg_free(reply);
+    ret = nl_xact(nlh, msg);
     return ret;
 }
 
@@ -341,17 +320,13 @@ out:
 static int l2only_del_addr(struct nl_handler *nlh, int ifindex, const struct in6_addr *addr,
                            unsigned char prefixlen, unsigned char scope)
 {
-    struct nlmsg *msg = NULL, *reply = NULL;
+    struct nlmsg *msg = NULL;
     struct ifaddrmsg *ifa;
     int ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    if (!msg || !reply) {
-        nlmsg_free(msg);
-        nlmsg_free(reply);
+    if (!msg)
         return -ENOMEM;
-    }
 
     ifa = (struct ifaddrmsg *)nlmsg_data(msg);
     memset(ifa, 0, sizeof(*ifa));
@@ -367,9 +342,7 @@ static int l2only_del_addr(struct nl_handler *nlh, int ifindex, const struct in6
     nla_put_buffer(msg, IFA_LOCAL, addr, sizeof(*addr));
     nla_put_buffer(msg, IFA_ADDRESS, addr, sizeof(*addr));
 
-    ret = netlink_transaction(nlh, msg, reply);
-    nlmsg_free(msg);
-    nlmsg_free(reply);
+    ret = nl_xact(nlh, msg);
     return ret;
 }
 

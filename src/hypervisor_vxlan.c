@@ -194,7 +194,7 @@ static int vxlan_parse_kv(struct vxlan_params *p, const char *kv)
 static int vxlan_add(const char *name, const struct vxlan_params *p)
 {
     struct nl_handler nlh;
-    struct nlmsg *msg = NULL, *reply = NULL;
+    struct nlmsg *msg = NULL;
     struct ifinfomsg *ifi;
     struct rtattr *linkinfo, *infodata;
     int ret, dev_ifindex = 0;
@@ -210,10 +210,7 @@ static int vxlan_add(const char *name, const struct vxlan_params *p)
         return ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    if (!msg || !reply) {
-        nlmsg_free(msg);
-        nlmsg_free(reply);
+    if (!msg) {
         netlink_close(&nlh);
         return -ENOMEM;
     }
@@ -268,9 +265,7 @@ static int vxlan_add(const char *name, const struct vxlan_params *p)
     nla_end_nested(msg, infodata);
     nla_end_nested(msg, linkinfo);
 
-    ret = netlink_transaction(&nlh, msg, reply);
-    nlmsg_free(msg);
-    nlmsg_free(reply);
+    ret = nl_xact(&nlh, msg);
     netlink_close(&nlh);
     return ret;
 }
@@ -287,7 +282,7 @@ static int vxlan_add(const char *name, const struct vxlan_params *p)
 static int vxlan_del(const char *name)
 {
     struct nl_handler nlh;
-    struct nlmsg *msg = NULL, *reply = NULL;
+    struct nlmsg *msg = NULL;
     struct ifinfomsg *ifi;
     int ret, ifindex;
 
@@ -300,10 +295,7 @@ static int vxlan_del(const char *name)
         return ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    if (!msg || !reply) {
-        nlmsg_free(msg);
-        nlmsg_free(reply);
+    if (!msg) {
         netlink_close(&nlh);
         return -ENOMEM;
     }
@@ -317,9 +309,7 @@ static int vxlan_del(const char *name)
     msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
     msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
 
-    ret = netlink_transaction(&nlh, msg, reply);
-    nlmsg_free(msg);
-    nlmsg_free(reply);
+    ret = nl_xact(&nlh, msg);
     netlink_close(&nlh);
     return ret;
 }

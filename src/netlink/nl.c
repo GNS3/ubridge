@@ -134,6 +134,22 @@ extern void nlmsg_free(struct nlmsg *nlmsg)
 	free(nlmsg);
 }
 
+extern int nl_xact(struct nl_handler *nlh, struct nlmsg *msg)
+{
+	struct nlmsg *reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+	int ret;
+
+	if (reply == NULL) {
+		nlmsg_free(msg);
+		return -ENOMEM;
+	}
+
+	ret = netlink_transaction(nlh, msg, reply);
+	nlmsg_free(msg);
+	nlmsg_free(reply);
+	return ret;
+}
+
 extern int netlink_rcv(struct nl_handler *handler, struct nlmsg *answer)
 {
 	int ret;

@@ -124,6 +124,16 @@ int netlink_transaction(struct nl_handler *handler,
 			struct nlmsg *request, struct nlmsg *anwser);
 
 /*
+ * nl_xact: send one request and collect (and discard) its reply — the
+ * common alloc-reply / transaction / free-both tail of the netlink op
+ * helpers.  The request message is consumed (freed) either way.
+ *
+ * Returns 0 on success, < 0 otherwise (including reply allocation failure);
+ * per-command results such as -EEXIST pass through unchanged.
+ */
+int nl_xact(struct nl_handler *nlh, struct nlmsg *msg);
+
+/*
  * nla_put_string: copy a null terminated string to a netlink message
  *  attribute
  *

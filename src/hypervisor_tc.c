@@ -173,9 +173,9 @@ static unsigned int netem_percent(unsigned int percent)
 {
     if (percent == 0)
         return 0;
-    if (percent >= 100)
-        return 0xFFFFFFFFu;
-    return (unsigned int)(((unsigned long long)percent << 32) / 100);
+    if (percent > 100)                 /* callers validate; keep defensive */
+        percent = 100;
+    return TC_IMPAIR_PCT_ENCODE(percent);
 }
 
 /*
@@ -221,7 +221,7 @@ static int parse_rate_bps(const char *val, unsigned long long *bits_out)
 static int tc_netem_replace(const char *ifname, const struct netem_params *p)
 {
     struct nl_handler nlh;
-    struct nlmsg *msg = NULL, *reply = NULL;
+    struct nlmsg *msg = NULL;
     struct tcmsg *tcm;
     struct rtattr *opts;
     struct tc_netem_qopt qopt;
@@ -239,8 +239,7 @@ static int tc_netem_replace(const char *ifname, const struct netem_params *p)
     /* only a distribution-table set needs the 16 KiB headroom (the table is
      * 8 KiB); everything else serializes to well under the default size */
     msg = nlmsg_alloc(p->dist >= 0 ? 16384 : NLMSG_GOOD_SIZE);
-    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    if (!msg || !reply) {
+    if (!msg) {
         ret = -ENOMEM;
         goto out;
     }
@@ -350,11 +349,11 @@ static int tc_netem_replace(const char *ifname, const struct netem_params *p)
     }
     nla_end_nested(msg, opts);
 
-    ret = netlink_transaction(&nlh, msg, reply);
+    ret = nl_xact(&nlh, msg);
+    msg = NULL;   /* nl_xact consumed it */
 
 out:
     nlmsg_free(msg);
-    nlmsg_free(reply);
     netlink_close(&nlh);
     return ret;
 }
@@ -372,17 +371,13 @@ out:
  */
 static int tc_clsact_create(struct nl_handler *nlh, int ifindex)
 {
-    struct nlmsg *msg, *reply;
+    struct nlmsg *msg;
     struct tcmsg *tcm;
     int ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    if (!msg || !reply) {
-        nlmsg_free(msg);
-        nlmsg_free(reply);
+    if (!msg)
         return -ENOMEM;
-    }
 
     tcm = (struct tcmsg *)nlmsg_data(msg);
     memset(tcm, 0, sizeof(*tcm));
@@ -397,12 +392,8 @@ static int tc_clsact_create(struct nl_handler *nlh, int ifindex)
 
     nla_put_string(msg, TCA_KIND, "clsact");
 
-    ret = netlink_transaction(nlh, msg, reply);
-    if (ret == -EEXIST)
-        ret = 0;
-    nlmsg_free(msg);
-    nlmsg_free(reply);
-    return ret;
+    ret = nl_xact(nlh, msg);
+    return ret == -EEXIST ? 0 : ret;
 }
 
 /*
@@ -414,17 +405,13 @@ static int tc_clsact_create(struct nl_handler *nlh, int ifindex)
  */
 static int tc_clsact_delete(struct nl_handler *nlh, int ifindex)
 {
-    struct nlmsg *msg, *reply;
+    struct nlmsg *msg;
     struct tcmsg *tcm;
     int ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    if (!msg || !reply) {
-        nlmsg_free(msg);
-        nlmsg_free(reply);
+    if (!msg)
         return -ENOMEM;
-    }
 
     tcm = (struct tcmsg *)nlmsg_data(msg);
     memset(tcm, 0, sizeof(*tcm));
@@ -436,9 +423,7 @@ static int tc_clsact_delete(struct nl_handler *nlh, int ifindex)
     msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
     msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct tcmsg));
 
-    ret = netlink_transaction(nlh, msg, reply);
-    nlmsg_free(msg);
-    nlmsg_free(reply);
+    ret = nl_xact(nlh, msg);
     return ret;
 }
 
@@ -448,17 +433,13 @@ static int tc_clsact_delete(struct nl_handler *nlh, int ifindex)
  */
 static int tc_filter_del_prio(struct nl_handler *nlh, int ifindex, unsigned int prio)
 {
-    struct nlmsg *msg, *reply;
+    struct nlmsg *msg;
     struct tcmsg *tcm;
     int ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    if (!msg || !reply) {
-        nlmsg_free(msg);
-        nlmsg_free(reply);
+    if (!msg)
         return -ENOMEM;
-    }
 
     tcm = (struct tcmsg *)nlmsg_data(msg);
     memset(tcm, 0, sizeof(*tcm));
@@ -471,9 +452,7 @@ static int tc_filter_del_prio(struct nl_handler *nlh, int ifindex, unsigned int 
     msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
     msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct tcmsg));
 
-    ret = netlink_transaction(nlh, msg, reply);
-    nlmsg_free(msg);
-    nlmsg_free(reply);
+    ret = nl_xact(nlh, msg);
     return ret;
 }
 
@@ -487,19 +466,15 @@ static int tc_bpf_filter_add(struct nl_handler *nlh, int ifindex,
                              unsigned int prio,
                              const struct sock_filter *ops, unsigned int ops_len)
 {
-    struct nlmsg *msg, *reply;
+    struct nlmsg *msg;
     struct rtattr *opts, *act, *slot, *actopts;
     struct tc_gact gact;
     struct tcmsg *tcm;
     int ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    if (!msg || !reply) {
-        nlmsg_free(msg);
-        nlmsg_free(reply);
+    if (!msg)
         return -ENOMEM;
-    }
 
     tcm = (struct tcmsg *)nlmsg_data(msg);
     memset(tcm, 0, sizeof(*tcm));
@@ -538,9 +513,7 @@ static int tc_bpf_filter_add(struct nl_handler *nlh, int ifindex,
 
     nla_end_nested(msg, opts);
 
-    ret = netlink_transaction(nlh, msg, reply);
-    nlmsg_free(msg);
-    nlmsg_free(reply);
+    ret = nl_xact(nlh, msg);
     return ret;
 }
 
@@ -579,18 +552,14 @@ static int bpf_drop_flush_tracked(struct nl_handler *nlh, unsigned int ifindex,
 /* RTM_NEWLINK a throwaway dummy (IFLA_INFO_KIND "dummy"). */
 static int nl_link_create_dummy(struct nl_handler *nlh, const char *name)
 {
-    struct nlmsg *msg, *reply;
+    struct nlmsg *msg;
     struct ifinfomsg *ifi;
     struct rtattr *linkinfo;
     int ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    if (!msg || !reply) {
-        nlmsg_free(msg);
-        nlmsg_free(reply);
+    if (!msg)
         return -ENOMEM;
-    }
 
     ifi = (struct ifinfomsg *)nlmsg_data(msg);
     memset(ifi, 0, sizeof(*ifi));
@@ -605,26 +574,20 @@ static int nl_link_create_dummy(struct nl_handler *nlh, const char *name)
     nla_put_string(msg, IFLA_INFO_KIND, "dummy");
     nla_end_nested(msg, linkinfo);
 
-    ret = netlink_transaction(nlh, msg, reply);
-    nlmsg_free(msg);
-    nlmsg_free(reply);
+    ret = nl_xact(nlh, msg);
     return ret;
 }
 
 /* RTM_DELLINK by ifindex. */
 static int nl_link_delete(struct nl_handler *nlh, int ifindex)
 {
-    struct nlmsg *msg, *reply;
+    struct nlmsg *msg;
     struct ifinfomsg *ifi;
     int ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    if (!msg || !reply) {
-        nlmsg_free(msg);
-        nlmsg_free(reply);
+    if (!msg)
         return -ENOMEM;
-    }
 
     ifi = (struct ifinfomsg *)nlmsg_data(msg);
     memset(ifi, 0, sizeof(*ifi));
@@ -635,9 +598,7 @@ static int nl_link_delete(struct nl_handler *nlh, int ifindex)
     msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
     msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
 
-    ret = netlink_transaction(nlh, msg, reply);
-    nlmsg_free(msg);
-    nlmsg_free(reply);
+    ret = nl_xact(nlh, msg);
     return ret;
 }
 
@@ -653,7 +614,7 @@ static void ebpf_if_release(struct nl_handler *nlh, unsigned int ifindex);
 static int tc_reset(const char *ifname)
 {
     struct nl_handler nlh;
-    struct nlmsg *msg = NULL, *reply = NULL;
+    struct nlmsg *msg = NULL;
     struct tcmsg *tcm;
     int ifindex, ret;
 
@@ -683,8 +644,7 @@ static int tc_reset(const char *ifname)
 
     /* 3. the root qdisc */
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    if (!msg || !reply) {
+    if (!msg) {
         ret = -ENOMEM;
         goto out;
     }
@@ -699,11 +659,11 @@ static int tc_reset(const char *ifname)
     msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
     msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct tcmsg));
 
-    ret = netlink_transaction(&nlh, msg, reply);
+    ret = nl_xact(&nlh, msg);
+    msg = NULL;   /* nl_xact consumed it */
 
 out:
     nlmsg_free(msg);
-    nlmsg_free(reply);
     netlink_close(&nlh);
     return ret;
 }
@@ -1015,18 +975,14 @@ static struct ebpf_if *ebpf_if_find(unsigned int ifindex)
  * program's TC_ACT_* return IS the verdict). 0 or -errno. */
 static int ebpf_attach(struct nl_handler *nlh, int ifindex, int prog_fd)
 {
-    struct nlmsg *msg, *reply;
+    struct nlmsg *msg;
     struct rtattr *opts;
     struct tcmsg *tcm;
     int ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
-    if (!msg || !reply) {
-        nlmsg_free(msg);
-        nlmsg_free(reply);
+    if (!msg)
         return -ENOMEM;
-    }
 
     tcm = (struct tcmsg *)nlmsg_data(msg);
     memset(tcm, 0, sizeof(*tcm));
@@ -1049,9 +1005,7 @@ static int ebpf_attach(struct nl_handler *nlh, int ifindex, int prog_fd)
     nla_put_u32(msg, TCA_BPF_FLAGS, 1 /* TCA_BPF_FLAG_ACT_DIRECT */);
     nla_end_nested(msg, opts);
 
-    ret = netlink_transaction(nlh, msg, reply);
-    nlmsg_free(msg);
-    nlmsg_free(reply);
+    ret = nl_xact(nlh, msg);
     return ret;
 }
 
@@ -1242,7 +1196,7 @@ static int cmd_ebpf_mode(hypervisor_conn_t *conn, int argc, char *argv[],
             e->cfg.win_period_ns = 0;
             e->cfg.win_jitter_ns = 0;
             e->cfg.win_pct = 0;
-        } else {
+        } else if (strcmp(mode, "flow_drop") == 0) {
             e->cfg.flow_mask = 0;
             e->cfg.flow_target = 0;
         }
