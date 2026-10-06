@@ -29,7 +29,9 @@
  * egress prio 1; all modes are configured through the single CFG map entry,
  * no program reload on parameter changes. Evaluation order is fixed:
  * nth -> quota -> window -> flow; the first rule that decides a drop wins
- * (TC_ACT_SHOT), otherwise TC_ACT_OK.
+ * (TC_ACT_SHOT); every non-drop path returns TC_ACT_UNSPEC so the prio
+ * chain continues (bpf_drop filters at prio 10..99 still run — TC_ACT_OK
+ * would end the chain in direct-action mode).
  */
 
 #ifndef TC_IMPAIR_H

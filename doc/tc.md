@@ -351,7 +351,8 @@ rather than versioning it in place.
   the generator located, one `BPF_PROG_LOAD` of type SCHED_CLS. Attaching
   is the usual `RTM_NEWTFILTER` at prio 1 with `TCA_BPF_FD` +
   `TCA_BPF_FLAGS = TCA_BPF_FLAG_ACT_DIRECT` (direct-action — the program's
-  `TC_ACT_SHOT/OK` return IS the verdict, no gact).
+  `TC_ACT_SHOT/UNSPEC` return is the verdict, no gact: SHOT drops, UNSPEC
+  lets the lower-prio `bpf_drop` filters still evaluate the packet).
 - The program is verifier-friendly by construction — and the constraint is
   stricter than it looks: **no loops at all**. Production ubridge carries
   `CAP_BPF` and never runs as root, and the verifier's non-root path does

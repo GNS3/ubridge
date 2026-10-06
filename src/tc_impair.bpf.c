@@ -91,6 +91,11 @@ static u64 (*ktime_get_ns)(void) = (void *)5;
 
 #define TC_ACT_OK    0
 #define TC_ACT_SHOT  2
+/* Not a verdict: return this on every non-drop path so the lower-prio
+ * filters (bpf_drop at prio 10..99) still evaluate the packet.  In
+ * direct-action mode TC_ACT_OK *ends* the prio chain, so a surviving
+ * packet would bypass every bpf_drop filter behind us. */
+#define TC_ACT_UNSPEC (-1)
 
 #define ETH_HLEN   14
 #define ETH_P_IPV4 0x0800
@@ -169,16 +174,17 @@ static inline_always u64 win_step(u64 now, u64 start, u64 cur)
  * over IPv4 with the header verified present. All loads are bytewise (no
  * packet-alignment assumptions).
  */
-static inline_always u32 flow_hash(struct min_skb *ctx, u32 mask)
+static inline_always int flow_hash(struct min_skb *ctx, u32 mask, u32 *hash_out)
 {
     u8 *d = (u8 *)(unsigned long)ctx->data;
     u8 *d_end = (u8 *)(unsigned long)ctx->data_end;
     u32 h = 0;
     int i;
 
-    /* Ethernet header must be fully present */
+    /* Ethernet header must be fully present: a runt is unclassifiable and
+     * must pass — returning a hash here would read as a match and drop it. */
     if (d + ETH_HLEN > d_end)
-        return 0;
+        return -1;
 
 #define FOLD(b) do { h += (b); h += h << 10; h ^= h >> 6; } while (0)
 
@@ -220,7 +226,8 @@ out:
     h += h << 3;
     h ^= h >> 11;
     h += h << 15;
-    return h;
+    *hash_out = h;
+    return 0;
 }
 
 SEC("tc_impair")
@@ -233,10 +240,10 @@ int tc_impair_prog(struct min_skb *ctx)
 
     cfg = map_lookup_elem(&cfg_map, &key);
     if (!cfg)
-        return TC_ACT_OK;
+        return TC_ACT_UNSPEC;
     cnt = map_lookup_elem(&cnt_map, &key);
     if (!cnt)
-        return TC_ACT_OK;
+        return TC_ACT_UNSPEC;
 
     /* 1. nth: drop every Nth packet — exact across CPUs via atomic add.
      * The modulo is done on the low 32 bits: BPF has no native 64-bit
@@ -353,12 +360,17 @@ int tc_impair_prog(struct min_skb *ctx)
         }
     }
 
-    /* 4. flow: hash the selected fields; remainder 0 modulo target drops */
-    if (cfg->flow_mask && cfg->flow_target
-        && flow_hash(ctx, cfg->flow_mask) % cfg->flow_target == 0)
-        return TC_ACT_SHOT;
+    /* 4. flow: hash the selected fields; remainder 0 modulo target drops.
+     * A frame too short to classify (no full Ethernet header) passes. */
+    if (cfg->flow_mask && cfg->flow_target) {
+        u32 hash;
 
-    return TC_ACT_OK;
+        if (flow_hash(ctx, cfg->flow_mask, &hash) == 0
+            && hash % cfg->flow_target == 0)
+            return TC_ACT_SHOT;
+    }
+
+    return TC_ACT_UNSPEC;
 }
 
 char _license[] SEC("license") = "GPL";

@@ -37,9 +37,9 @@
 
 #include <linux/bpf.h>
 
-#define TC_IMPAIR_INSNS 423
+#define TC_IMPAIR_INSNS 425
 #define TC_IMPAIR_CFG_LD_IDX 5
-#define TC_IMPAIR_CNT_LD_IDX 12
+#define TC_IMPAIR_CNT_LD_IDX 13
 
 extern const struct bpf_insn tc_impair_insns[TC_IMPAIR_INSNS];
 
