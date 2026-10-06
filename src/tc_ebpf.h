@@ -39,22 +39,17 @@
 int tc_ebpf_supported(void);
 
 /*
- * Create the CFG/CNT ARRAY maps (CNT seeded: counters zero, prng seeded
- * from the monotonic clock, never zero), patch the two map-fd loads in
- * the embedded instruction array and BPF_PROG_LOAD it as SCHED_CLS.
- * Fills the three fd out-params. 0 or -errno.
+ * Create the CFG/CNT ARRAY maps (CNT seeded: counters zero, draw key from
+ * the monotonic clock), patch the two map-fd loads in the embedded
+ * instruction array and BPF_PROG_LOAD it as SCHED_CLS. Fills the three fd
+ * out-params. 0 or -errno.
  */
 int tc_ebpf_load(int *prog_fd, int *cfg_fd, int *cnt_fd);
 
-/* BPF_MAP_UPDATE_ELEM of *value at key 0. 0 or -errno. */
+/* BPF_MAP_UPDATE_ELEM of *value at key 0. 0 or -errno.  The single map
+ * write a mode command performs: the cfg carries the reset_seq/reset_mask
+ * handshake, and the program applies the counter resets itself (userspace
+ * never writes CNT after the load-time seed). */
 int tc_ebpf_map_update(int map_fd, const void *value);
-
-/* Zero the given mode's counters in CNT (read-modify-write). 0 or -errno. */
-int tc_ebpf_cnt_reset(int cnt_fd, int reset_nth, int reset_quota);
-
-/* Seed CNT's current-cycle window lengths with the nominals (called on
- * every window_drop set). 0 or -errno. */
-int tc_ebpf_cnt_set_window(int cnt_fd, unsigned long long outage_ns,
-                           unsigned long long period_ns);
 
 #endif /* TC_EBPF_H */

@@ -1137,7 +1137,8 @@ static int ebpf_cfg_all_off(const struct tc_impair_cfg *c)
            && (c->flow_mask == 0 || c->flow_target == 0);
 }
 
-/* what a mode command wants reset/reseeded in CNT before the cfg update */
+/* what a mode command wants reset/reseeded — carried in the cfg write's
+ * reset_mask/reset_seq and applied by the program on the next packet */
 struct ebpf_resets {
     int nth;      /* zero nth_state */
     int quota;    /* zero packets/bytes */
@@ -1160,11 +1161,15 @@ static int ebpf_apply(hypervisor_conn_t *conn, struct nl_handler *nlh,
         return 0;
     }
 
-    if (res->nth || res->quota)
-        tc_ebpf_cnt_reset(e->cnt_fd, res->nth, res->quota);     /* best effort */
-    if (res->window)
-        tc_ebpf_cnt_set_window(e->cnt_fd, e->cfg.win_len_ns,
-                               e->cfg.win_period_ns);           /* best effort */
+    /* The counters are reset lazily by the program: bump the reset sequence
+     * together with this command's cfg write, which is one atomic map
+     * update.  (Userspace used to read-modify-write CNT here, replaying a
+     * stale snapshot over counters and draws the program was advancing
+     * concurrently.) */
+    e->cfg.reset_mask = (res->nth ? TC_IMPAIR_RESET_NTH : 0)
+                      | (res->quota ? TC_IMPAIR_RESET_QUOTA : 0)
+                      | (res->window ? TC_IMPAIR_RESET_WINDOW : 0);
+    e->cfg.reset_seq++;
     ret = tc_ebpf_map_update(e->cfg_fd, &e->cfg);
     if (ret < 0) {
         hypervisor_send_reply(conn, HSC_ERR_DELETE, 1,

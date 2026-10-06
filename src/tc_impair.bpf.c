@@ -106,46 +106,44 @@ static u64 (*ktime_get_ns)(void) = (void *)5;
 #define WIN_CATCHUP_STEPS 16
 
 /*
- * One xorshift64* step: advance the (never-zero) state and return a
- * uniform 32-bit value. Every random draw in the program goes through
- * here, so the stream order is deterministic for a given seed.
+ * One draw = one atomic ticket.  The value is a deterministic mix of the
+ * userspace seed and the ticket (splitmix64 finalizer), so every draw point
+ * observes a distinct value — a shared xorshift state read-modify-written
+ * without atomics let two CPUs draw the same number — and a fixed sequence
+ * of draw points replays exactly for a given seed.
  */
-static inline_always u32 prng_next(volatile u64 *prng)
+static inline_always u32 prng_next(struct tc_impair_cnt *cnt)
 {
-    u64 x = *prng;
+    u64 t = __sync_fetch_and_add(&cnt->draw_seq, 1) + 1;
+    u64 x = cnt->prng_seed + t * 0x9E3779B97F4A7C15ULL;
 
-    /* xorshift64* — state must never be zero (userspace seeds with |1) */
-    x ^= x >> 12;
-    x ^= x << 25;
-    x ^= x >> 27;
-    *prng = x;
-    return (u32)((x * 2685821657736338717ULL) >> 32);
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+    x ^= x >> 31;
+    return (u32)(x >> 32);
 }
 
 /*
- * Percentage draw shared by quota and window: compare a 32-bit PRNG value
- * against the netem-style encoding of percent (p * 2^32 / 100, 100 => ~0).
+ * Percentage draw shared by quota and window: compare a 32-bit draw against
+ * the netem-style encoding of percent (p * 2^32 / 100, 100 => ~0).
  * Returns 1 (drop) with probability pct/100.
  */
-static inline_always int pct_drop(volatile u64 *prng, u32 pct)
+static inline_always int pct_drop(struct tc_impair_cnt *cnt, u32 pct)
 {
-    u32 rnd;
-
     if (pct == 0)
         return 0;
-    rnd = prng_next(prng);
-    return rnd < (pct == 100 ? 0xFFFFFFFFu
-                             : (u32)(((unsigned long long)pct << 32) / 100));
+    return prng_next(cnt) < (pct == 100 ? 0xFFFFFFFFu
+                                        : (u32)(((unsigned long long)pct << 32) / 100));
 }
 
 /*
  * Uniform draw in [nominal-jitter, nominal+jitter] for the jittered window
  * schedule, on the whole-millisecond grid (the command surface is
- * ms-integer), clamped to >= 1 ms. multiply-shift — BPF has no native
- * 64-bit modulo, and the raw ns span could overflow the product; the ms
- * grid keeps rnd * span < 2^64 for every validated jitter (<= 1e9 ms).
+ * ms-integer), clamped to >= 1 ms.  Multiply-shift maps the 32-bit draw
+ * uniformly onto the span (no modulo bias); the ms grid keeps
+ * rnd * span < 2^64 for every validated jitter (<= 1e9 ms).
  */
-static inline_always u64 draw_range(volatile u64 *prng, u64 nominal_ns, u64 jitter_ns)
+static inline_always u64 draw_range(struct tc_impair_cnt *cnt, u64 nominal_ns, u64 jitter_ns)
 {
     u64 lo = nominal_ns > jitter_ns ? (nominal_ns - jitter_ns) / 1000000ULL : 1;
     u64 hi = (nominal_ns + jitter_ns) / 1000000ULL;
@@ -153,7 +151,7 @@ static inline_always u64 draw_range(volatile u64 *prng, u64 nominal_ns, u64 jitt
 
     if (hi <= lo)
         return lo * 1000000ULL;
-    rnd = prng_next(prng);
+    rnd = prng_next(cnt);
     /* span+1 so the draw includes the upper endpoint: the documented
      * interval is [nominal-jitter, nominal+jitter], both ends inclusive. */
     return (lo + (((unsigned long long)rnd * (hi - lo + 1)) >> 32)) * 1000000ULL;
@@ -247,6 +245,28 @@ int tc_impair_prog(struct min_skb *ctx)
     if (!cnt)
         return TC_ACT_UNSPEC;
 
+    /* Lazy reset: userspace bumps cfg->reset_seq together with every mode
+     * command's single cfg write and never writes CNT after the load-time
+     * seed (its old read-modify-write replayed a stale snapshot over
+     * counters and draws the program was advancing concurrently).  The
+     * zeroing is idempotent if two CPUs apply it; a packet racing the very
+     * first post-reset one can land its atomic add before the zeroing — a
+     * ±1 counter start, invisible to the modes' semantics. */
+    if (cnt->seen_seq != cfg->reset_seq) {
+        cnt->seen_seq = cfg->reset_seq;
+        if (cfg->reset_mask & TC_IMPAIR_RESET_NTH)
+            cnt->nth_state = 0;
+        if (cfg->reset_mask & TC_IMPAIR_RESET_QUOTA) {
+            cnt->packets = 0;
+            cnt->bytes = 0;
+        }
+        if (cfg->reset_mask & TC_IMPAIR_RESET_WINDOW) {
+            cnt->win_start_cur_ns = cfg->win_start_ns;
+            cnt->win_outage_cur_ns = cfg->win_len_ns;
+            cnt->win_period_cur_ns = cfg->win_period_ns;
+        }
+    }
+
     /* 1. nth: drop every Nth packet — exact across CPUs via atomic add, and
      * exact past 2^32 too: the BPF ISA has a native 64-bit modulo
      * (BPF_ALU64|BPF_MOD — clang emits a mod instruction, not a libcall),
@@ -264,7 +284,7 @@ int tc_impair_prog(struct min_skb *ctx)
         __sync_fetch_and_add(&cnt->packets, 1);
         if (__sync_fetch_and_add(&cnt->bytes, ctx->len) + ctx->len
                 >= cfg->quota_bytes
-            && pct_drop(&cnt->prng_state, cfg->quota_pct))
+            && pct_drop(cnt, cfg->quota_pct))
             return TC_ACT_SHOT;
     }
 
@@ -278,10 +298,12 @@ int tc_impair_prog(struct min_skb *ctx)
      * draw chain is what the verifier rejects the whole program for
      * (ebpf=0). Traffic pausing across cycles still lands in the right one:
      * the walk is resumable, each further packet advances it up to
-     * WIN_CATCHUP_STEPS more cycles. The userspace CFG update (window_drop
-     * set/off) is the only other writer of these fields. */
+     * WIN_CATCHUP_STEPS more cycles.  The advancing start lives in CNT
+     * (runtime state): a cfg rewrite by an unrelated mode command cannot
+     * rewind the phase; window_drop (re)seeds it via TC_IMPAIR_RESET_WINDOW
+     * and remains the way to re-anchor a pathological pause. */
     if (cfg->win_len_ns) {
-        u64 start = cfg->win_start_ns;
+        u64 start = cnt->win_start_cur_ns;
         u64 out_len = cnt->win_outage_cur_ns ? cnt->win_outage_cur_ns
                                              : cfg->win_len_ns;
 
@@ -339,11 +361,11 @@ int tc_impair_prog(struct min_skb *ctx)
                 advanced = 0;
             }
             if (advanced) {
-                cfg->win_start_ns = start;
+                cnt->win_start_cur_ns = start;
                 if (cfg->win_jitter_ns) {
-                    u64 o = draw_range(&cnt->prng_state, cfg->win_len_ns,
+                    u64 o = draw_range(cnt, cfg->win_len_ns,
                                        cfg->win_jitter_ns);
-                    u64 p = draw_range(&cnt->prng_state, cfg->win_period_ns,
+                    u64 p = draw_range(cnt, cfg->win_period_ns,
                                        cfg->win_jitter_ns);
 
                     out_len = o;
@@ -355,10 +377,10 @@ int tc_impair_prog(struct min_skb *ctx)
                 cnt->win_period_cur_ns = cur;
             }
             if (now >= start && now < start + out_len
-                && pct_drop(&cnt->prng_state, cfg->win_pct))
+                && pct_drop(cnt, cfg->win_pct))
                 return TC_ACT_SHOT;
         } else if (now >= start && now < start + cfg->win_len_ns
-                   && pct_drop(&cnt->prng_state, cfg->win_pct)) {
+                   && pct_drop(cnt, cfg->win_pct)) {
             return TC_ACT_SHOT;
         }
     }

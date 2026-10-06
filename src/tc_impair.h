@@ -22,8 +22,9 @@
  * Shared ABI between the eBPF impairment program (src/tc_impair.bpf.c,
  * compiled for the BPF target) and the uBridge loader (src/hypervisor_tc.c,
  * compiled natively). Field order and types are the frozen contract
- * (kernel-impairment spec B.1); both compilers lay out these structs
- * identically (same natural-alignment rules for these scalar types).
+ * (kernel-impairment spec B.1); both compilers lay these structs out
+ * identically because the members that need it (and the structs
+ * themselves) carry explicit 8-byte alignment.
  *
  * One SCHED_CLS program is loaded per interface and attached once at clsact
  * egress prio 1; all modes are configured through the single CFG map entry,
@@ -46,29 +47,48 @@
 
 struct tc_impair_cfg {
     unsigned int nth;              /* 0 = off, else drop every Nth packet */
-    /* The u64s that follow u32 fields are explicitly 8-byte aligned: on a
-     * 32-bit host (i386: alignof(unsigned long long) == 4) the natural
-     * layout would drift from the BPF target's and the map ABI would
-     * silently break.  Offsets are asserted next to the loader (tc_ebpf.c). */
+    /* The u64s that follow u32 fields are explicitly 8-byte aligned, and the
+     * struct itself pins 8: on a 32-bit host (i386: alignof(unsigned long
+     * long) == 4) the natural layout would drift from the BPF target's and
+     * the map ABI would silently break.  Offsets are asserted next to the
+     * loader (tc_ebpf.c). */
     unsigned long long quota_bytes __attribute__((aligned(8))); /* 0 = off */
     unsigned int quota_pct;        /* random drop % after quota reached */
-    unsigned long long win_start_ns __attribute__((aligned(8))); /* current window's start (monotonic) */
+    unsigned long long win_start_ns __attribute__((aligned(8))); /* phase anchor, (re)set by window_drop */
     unsigned long long win_len_ns; /* outage length; 0 = mode off */
     unsigned long long win_period_ns; /* 0 = single window; else cycle length */
     unsigned long long win_jitter_ns; /* 0 = deterministic; else uniform ± per cycle */
     unsigned int win_pct;          /* random drop % inside the window */
     unsigned int flow_mask;        /* TC_IMPAIR_FLOW_* bitmask */
     unsigned int flow_target;      /* required hash remainder, 0 = off */
-};
+    /* Lazy-reset handshake — see the CNT comment below.  Userspace bumps
+     * reset_seq and sets reset_mask atomically with every command's single
+     * cfg write; the program applies the requested reset on the next
+     * packet. */
+    unsigned int reset_seq;        /* ++ on every state-resetting command */
+    unsigned int reset_mask;       /* TC_IMPAIR_RESET_* */
+} __attribute__((aligned(8)));
+
+/* reset_mask bits */
+#define TC_IMPAIR_RESET_NTH    0x1
+#define TC_IMPAIR_RESET_QUOTA  0x2
+#define TC_IMPAIR_RESET_WINDOW 0x4
 
 /*
- * CNT: the first three fields are the frozen counters (spec B.1). The two
- * win_*_cur_ns fields hold the current cycle's drawn window lengths (equal
- * to the nominals while jitter is 0); userspace re-seeds them on every
- * window_drop set. prng_state carries the "prandom seeded via map"
- * requirement: userspace seeds it (| 1 — the generator must never see zero)
- * and the program advances it atomically, so percentage drops are
- * reproducible for a given seed.
+ * CNT: counters + runtime state, written by the PROGRAM after the load-time
+ * seed — userspace never touches it again (its old read-modify-write
+ * replayed a stale snapshot over counters the program was advancing).  The
+ * first three fields are the frozen counters (spec B.1).
+ *
+ * - win_outage_cur_ns / win_period_cur_ns hold the current cycle's drawn
+ *   lengths (equal to the nominals while jitter is 0).
+ * - win_start_cur_ns is the advancing cycle start: runtime state, so a cfg
+ *   rewrite by an unrelated mode command cannot rewind an active window's
+ *   phase; window_drop (re)sets it via TC_IMPAIR_RESET_WINDOW.
+ * - prng_seed is the userspace draw key; draw_seq hands out one atomic
+ *   ticket per draw (splitmix64 of seed and ticket) — two CPUs can never
+ *   share a draw, and a fixed sequence of draw points replays exactly.
+ * - seen_seq is the last cfg reset_seq the program applied.
  */
 struct tc_impair_cnt {
     unsigned long long packets;    /* quota machinery (packets past nth) */
@@ -76,7 +96,10 @@ struct tc_impair_cnt {
     unsigned long long nth_state;  /* packets seen since nth (re)armed */
     unsigned long long win_outage_cur_ns; /* current cycle's outage length */
     unsigned long long win_period_cur_ns; /* current cycle's period length */
-    unsigned long long prng_state; /* xorshift64* state, userspace-seeded */
-};
+    unsigned long long win_start_cur_ns;  /* current cycle's start (advanced by the program) */
+    unsigned long long prng_seed;  /* draw key, userspace-seeded */
+    unsigned long long draw_seq;   /* atomic draw-ticket counter */
+    unsigned int seen_seq;         /* last cfg reset_seq applied */
+} __attribute__((aligned(8)));
 
 #endif /* TC_IMPAIR_H */

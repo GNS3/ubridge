@@ -58,8 +58,12 @@ _Static_assert(sizeof(struct bpf_insn) == 8, "bpf_insn size");
  * against (tc_impair.h forces the alignment the BPF target has). */
 _Static_assert(offsetof(struct tc_impair_cfg, quota_bytes) == 8, "cfg quota offset");
 _Static_assert(offsetof(struct tc_impair_cfg, win_start_ns) == 24, "cfg window offset");
-_Static_assert(sizeof(struct tc_impair_cfg) == 72, "cfg size");
-_Static_assert(sizeof(struct tc_impair_cnt) == 48, "cnt size");
+_Static_assert(offsetof(struct tc_impair_cfg, reset_seq) == 68, "cfg reset offset");
+_Static_assert(sizeof(struct tc_impair_cfg) == 80, "cfg size");
+_Static_assert(offsetof(struct tc_impair_cnt, win_start_cur_ns) == 40, "cnt window offset");
+_Static_assert(offsetof(struct tc_impair_cnt, prng_seed) == 48, "cnt seed offset");
+_Static_assert(offsetof(struct tc_impair_cnt, seen_seq) == 64, "cnt seq offset");
+_Static_assert(sizeof(struct tc_impair_cnt) == 72, "cnt size");
 
 #ifndef __NR_bpf
 #define __NR_bpf 321            /* x86_64 */
@@ -83,9 +87,9 @@ static int bpf_map_create_array(unsigned int value_size)
 }
 
 /*
- * Create both maps, seed CNT (counters zero; prng seeded from the
- * monotonic clock and forced non-zero — xorshift64* must never see 0),
- * patch the map fds into a private copy of the instructions and load it.
+ * Create both maps, seed CNT (counters zero, draw key from the monotonic
+ * clock), patch the map fds into a private copy of the instructions and
+ * load it.
  */
 int tc_ebpf_load(int *prog_fd, int *cfg_fd, int *cnt_fd)
 {
@@ -110,9 +114,10 @@ int tc_ebpf_load(int *prog_fd, int *cfg_fd, int *cnt_fd)
 
     memset(&cnt, 0, sizeof(cnt));
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    cnt.prng_state = ((unsigned long long)ts.tv_sec << 20) ^ (unsigned long long)ts.tv_nsec
-                     ^ (unsigned long long)getpid();
-    cnt.prng_state |= 1;                    /* xorshift state must be non-zero */
+    /* the draw key: a per-load clock+pid mix (the splitmix-style mixer has
+     * no zero-state requirement); the ticket counter starts at 0 */
+    cnt.prng_seed = ((unsigned long long)ts.tv_sec << 20) ^ (unsigned long long)ts.tv_nsec
+                    ^ (unsigned long long)getpid();
 
     {
         const unsigned int key = 0;
@@ -189,50 +194,6 @@ int tc_ebpf_map_update(int map_fd, const void *value)
     if (bpf_call(BPF_MAP_UPDATE_ELEM, &attr) < 0)
         return -errno;
     return 0;
-}
-
-int tc_ebpf_cnt_reset(int cnt_fd, int reset_nth, int reset_quota)
-{
-    struct tc_impair_cnt cnt;
-    const unsigned int key = 0;
-    union bpf_attr attr;
-
-    memset(&attr, 0, sizeof(attr));
-    attr.map_fd = cnt_fd;
-    attr.key = (unsigned long)&key;
-    attr.value = (unsigned long)&cnt;
-    if (bpf_call(BPF_MAP_LOOKUP_ELEM, &attr) < 0)
-        return -errno;
-    if (reset_nth)
-        cnt.nth_state = 0;
-    if (reset_quota) {
-        cnt.packets = 0;
-        cnt.bytes = 0;
-    }
-    return tc_ebpf_map_update(cnt_fd, &cnt);
-}
-
-/*
- * (Re)seed the current-cycle window lengths in CNT with the nominals —
- * called on every window_drop set so a schedule (jittered or not) starts
- * from the configured values, never from stale draws of a previous run.
- */
-int tc_ebpf_cnt_set_window(int cnt_fd, unsigned long long outage_ns,
-                           unsigned long long period_ns)
-{
-    struct tc_impair_cnt cnt;
-    const unsigned int key = 0;
-    union bpf_attr attr;
-
-    memset(&attr, 0, sizeof(attr));
-    attr.map_fd = cnt_fd;
-    attr.key = (unsigned long)&key;
-    attr.value = (unsigned long)&cnt;
-    if (bpf_call(BPF_MAP_LOOKUP_ELEM, &attr) < 0)
-        return -errno;
-    cnt.win_outage_cur_ns = outage_ns;
-    cnt.win_period_cur_ns = period_ns;
-    return tc_ebpf_map_update(cnt_fd, &cnt);
 }
 
 /*

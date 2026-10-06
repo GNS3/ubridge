@@ -353,6 +353,14 @@ rather than versioning it in place.
   `TCA_BPF_FLAGS = TCA_BPF_FLAG_ACT_DIRECT` (direct-action — the program's
   `TC_ACT_SHOT/UNSPEC` return is the verdict, no gact: SHOT drops, UNSPEC
   lets the lower-prio `bpf_drop` filters still evaluate the packet).
+  State ownership: CFG is written only by userspace — one atomic map
+  update per command, carrying a `reset_seq`/`reset_mask` pair; CNT is
+  written only by the program, after the load-time seed.  Mode commands
+  reset their counters lazily (the program applies the mask on the next
+  packet), so no userspace write can replay a stale snapshot over a live
+  counter or draw ticket, and a cfg rewrite cannot rewind an active
+  window's phase — the advancing cycle start lives in CNT and
+  `window_drop` (re)seeds it via `TC_IMPAIR_RESET_WINDOW`.
 - The program is verifier-friendly by construction — and the constraint is
   stricter than it looks: **no loops at all**. Production ubridge carries
   `CAP_BPF` and never runs as root, and the verifier's non-root path does
