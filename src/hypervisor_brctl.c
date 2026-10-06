@@ -1051,7 +1051,20 @@ static int parse_vlan_args(int argc, char *argv[], int allow_flags,
 static int cmd_create(hypervisor_conn_t *conn, int argc, char *argv[])
 {
     char *bridge = argv[0];
-    int err = br_addbr(bridge);
+    int err;
+
+    /* The name goes into the RTM_NEWLINK message (and every later one);
+     * anything past the fixed message buffer used to overflow it (ASan:
+     * heap-buffer-overflow in nla_put), and the kernel accepts at most
+     * IFNAMSIZ-1 chars anyway. */
+    if (strlen(bridge) >= IFNAMSIZ) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1,
+                              "Could not create bridge %s: %s", bridge,
+                              strerror(ENAMETOOLONG));
+        return -1;
+    }
+
+    err = br_addbr(bridge);
 
     if (err < 0) {
         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not create bridge %s: %s", bridge, strerror(-err));
