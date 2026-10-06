@@ -1099,6 +1099,13 @@ static int ebpf_if_enable(struct nl_handler *nlh, unsigned int ifindex,
         return ret;
     }
 
+    /* Replace-whole-slot semantics: closing the prog fd on exit does not
+     * detach an attached filter, so a previous ubridge run (crash/restart)
+     * may have left one at prio 1 — attaching with NLM_F_EXCL would then
+     * fail EEXIST forever.  Clear the slot we own first, the same restart
+     * recovery cmd_bpf_drop does. */
+    tc_filter_del_prio(nlh, ifindex, EBPF_FILTER_PRIO);   /* best effort */
+
     ret = ebpf_attach(nlh, ifindex, e->prog_fd);
     if (ret < 0) {
         close(e->prog_fd);
@@ -1211,7 +1218,18 @@ static int cmd_ebpf_mode(hypervisor_conn_t *conn, int argc, char *argv[],
         }
         e = ebpf_if_find(ifindex);
         if (e == NULL) {
-            /* nothing loaded: the mode is trivially off (idempotent) */
+            /* Nothing in our registry: the mode is trivially off (idempotent)
+             * — but a previous ubridge run (crash/restart) may have left its
+             * prio-1 filter in the kernel, still impairing with the old
+             * config.  Clear the slot we own before telling the caller "off". */
+            ret = netlink_open(&nlh, NETLINK_ROUTE);
+            if (ret < 0) {
+                hypervisor_send_reply(conn, HSC_ERR_DELETE, 1,
+                                      "Could not set %s on %s: %s", mode, ifname, strerror(-ret));
+                return -1;
+            }
+            tc_filter_del_prio(&nlh, ifindex, EBPF_FILTER_PRIO);   /* best effort */
+            netlink_close(&nlh);
             hypervisor_send_reply(conn, HSC_INFO_OK, 1, "%s off on %s", mode, ifname);
             return 0;
         }
