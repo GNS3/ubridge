@@ -181,8 +181,19 @@ def main():
                 N = 1500
                 r.check("rate: set 10mbit",
                         fresh("limit %d rate 10mbit" % (N + 100)), "")
-                sent = inject_p(N, b"P" * 1400)
-                got = drain(6.0)
+                # Receive concurrently with the injection, like the gemodel
+                # case: a serial drain after the fact overflows a small rmem
+                # (its drops would read as rate loss) and timestamps the
+                # reads, not the kernel arrivals.
+                live, stop, th = start_reader()
+                inject_p(N, b"P" * 1400)
+                deadline = time.monotonic() + 8.0
+                while len(live) < N and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                time.sleep(0.3)          # tail
+                stop.set()
+                th.join()
+                got = list(live)
                 if len(got) != N:
                     r.check("rate: all frames received", False,
                             "received %d of %d" % (len(got), N))

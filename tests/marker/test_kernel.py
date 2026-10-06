@@ -190,8 +190,12 @@ def main():
                 r.check("add with pcap",
                         c.code('marker add_kernel pc %s "icmp" pcap %s' % (VETH_A, PCAP)) == "100")
                 _stim(m_a, m_b)
+                # let the reader emit (and pcap-append) both matches before
+                # the delete stops it — frames still queued in the socket
+                # would be discarded and the record count would flake
+                r.check("pcap marker signalled both frames",
+                        len([s for s in _drain(ms, 1.2) if s.startswith("MARK ")]) == 2)
                 c.code("marker delete_kernel %s pc" % VETH_A)
-                time.sleep(0.1)
                 r.check("pcap written (2 records)",
                         os.path.exists(PCAP) and os.path.getsize(PCAP) >= 24 + 2 * (16 + frame_len),
                         "size=%s" % os.path.getsize(PCAP) if os.path.exists(PCAP) else "missing")
