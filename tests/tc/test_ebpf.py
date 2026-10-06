@@ -433,6 +433,51 @@ def main():
                             got_macs == set(survivors),
                             "received from %s" % sorted(got_macs))
                     c.send("tc flow_drop %s off" % VB)
+
+                    # composition: the impair filter must not shield packets
+                    # from lower-prio bpf_drop filters — the program returns
+                    # TC_ACT_UNSPEC (continue), not TC_ACT_OK (which would end
+                    # the prio chain in direct-action mode)
+                    c.send("tc nth_drop %s 2" % VB)
+                    r.check("composition: bpf_drop added",
+                            c.send('tc bpf_drop add %s 10 "greater 0"' % VB).startswith("100-"), "")
+                    inject_seq(mac_a, mac_b, 6)
+                    got = drain()
+                    r.check("composition: bpf_drop sees the survivors (0/6)",
+                            got == [], "received %s" % got)
+                    c.send("tc bpf_drop flush %s" % VB)
+                    c.send("tc nth_drop %s 3" % VB)      # deterministic again
+                    inject_seq(mac_a, mac_b, 6)
+                    got = drain()
+                    r.check("composition: after flush the nth pattern is back",
+                            sorted(got) == [1, 2, 4, 5], "received %s" % sorted(got))
+                    c.send("tc nth_drop %s off" % VB)
+
+                    # restart recovery: a SIGKILL leaves the prio-1 filter
+                    # attached to the kernel; a fresh daemon must clear it on
+                    # `off` and re-arm it on enable (instead of lying "off"
+                    # and EEXISTing on the next enable)
+                    with Ubridge(port=PORT + 3, binary=REPO_UBRIDGE) as ub_r:
+                        cr = ub_r.connect()
+                        cr.send("tc nth_drop %s 3" % VB)
+                        ub_r.proc.kill()
+                    f = _run([TC, "filter", "show", "dev", VB, "egress"]).stdout
+                    r.check("restart: stale prio-1 filter survives the kill",
+                            "pref 1 bpf" in f, f.strip()[:80])
+                    with Ubridge(port=PORT + 4, binary=REPO_UBRIDGE) as ub_r2:
+                        cr = ub_r2.connect()
+                        r.check("restart: off clears the stale filter",
+                                cr.send("tc nth_drop %s off" % VB).startswith("100-"), "")
+                        f = _run([TC, "filter", "show", "dev", VB, "egress"]).stdout
+                        r.check("restart: filter gone after off",
+                                "pref 1 bpf" not in f, f.strip()[:80])
+                        r.check("restart: re-enable after stale state",
+                                cr.send("tc nth_drop %s 3" % VB).startswith("100-"), "")
+                        f = _run([TC, "filter", "show", "dev", VB, "egress"]).stdout
+                        r.check("restart: filter attached again",
+                                "pref 1 bpf" in f, f.strip()[:80])
+                        cr.send("tc reset %s" % VB)
+                        cr.close()
                 finally:
                     c.send("tc reset %s" % VB)
                     c.close()
