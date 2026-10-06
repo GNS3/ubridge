@@ -236,8 +236,9 @@ static int tc_netem_replace(const char *ifname, const struct netem_params *p)
     if (ret < 0)
         return ret;
 
-    /* big enough for an 8 KiB distribution table on top of the options */
-    msg = nlmsg_alloc(16384);
+    /* only a distribution-table set needs the 16 KiB headroom (the table is
+     * 8 KiB); everything else serializes to well under the default size */
+    msg = nlmsg_alloc(p->dist >= 0 ? 16384 : NLMSG_GOOD_SIZE);
     reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
     if (!msg || !reply) {
         ret = -ENOMEM;
@@ -711,6 +712,13 @@ out:
  * Command handlers
  * -------------------------------------------------------------------------- */
 
+/* Every keyword's value follows it; one wording for all of them. */
+static int missing_val(hypervisor_conn_t *conn, const char *kw)
+{
+    hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1, "option '%s' missing its value", kw);
+    return -1;
+}
+
 /* Parse a 0..100 percentage into *out. Returns 0 or -1. */
 static int parse_pct(const char *val, unsigned int *out)
 {
@@ -753,10 +761,8 @@ static int cmd_netem(hypervisor_conn_t *conn, int argc, char *argv[])
         if (!strcmp(kw, "delay") || !strcmp(kw, "jitter")) {
             char *end;
             double ms;
-            if (i + 1 >= argc) {
-                hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1, "option '%s' missing its value", kw);
-                return -1;
-            }
+            if (i + 1 >= argc)
+                return missing_val(conn, kw);
             ms = strtod(argv[i + 1], &end);
             if (end == argv[i + 1] || *end != '\0' || ms < 0) {
                 hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "invalid %s value '%s'", kw, argv[i + 1]);
@@ -770,10 +776,8 @@ static int cmd_netem(hypervisor_conn_t *conn, int argc, char *argv[])
                 hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "duplicate loss argument");
                 return -1;
             }
-            if (i + 1 >= argc) {
-                hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1, "option '%s' missing its value", kw);
-                return -1;
-            }
+            if (i + 1 >= argc)
+                return missing_val(conn, kw);
             if (!strcmp(argv[i + 1], "gemodel")) {
                 /* loss gemodel <p> [<r> [<1-h>]] — defaults r=0, 1-h=0 */
                 i += 2;
@@ -819,10 +823,8 @@ static int cmd_netem(hypervisor_conn_t *conn, int argc, char *argv[])
                 }
             }
         } else if (!strcmp(kw, "dup")) {
-            if (i + 1 >= argc) {
-                hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1, "option '%s' missing its value", kw);
-                return -1;
-            }
+            if (i + 1 >= argc)
+                return missing_val(conn, kw);
             if (parse_pct(argv[i + 1], &p.dup_pct) < 0) {
                 hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "invalid dup percent '%s' (0-100)", argv[i + 1]);
                 return -1;
@@ -838,10 +840,8 @@ static int cmd_netem(hypervisor_conn_t *conn, int argc, char *argv[])
                 i += 2;
             }
         } else if (!strcmp(kw, "corrupt")) {
-            if (i + 1 >= argc) {
-                hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1, "option '%s' missing its value", kw);
-                return -1;
-            }
+            if (i + 1 >= argc)
+                return missing_val(conn, kw);
             if (parse_pct(argv[i + 1], &p.corrupt_pct) < 0) {
                 hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "invalid corrupt percent '%s' (0-100)", argv[i + 1]);
                 return -1;
@@ -849,10 +849,8 @@ static int cmd_netem(hypervisor_conn_t *conn, int argc, char *argv[])
             p.has_corrupt = 1;
             i += 2;
         } else if (!strcmp(kw, "reorder")) {
-            if (i + 1 >= argc) {
-                hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1, "option '%s' missing its value", kw);
-                return -1;
-            }
+            if (i + 1 >= argc)
+                return missing_val(conn, kw);
             if (parse_pct(argv[i + 1], &p.reorder_pct) < 0) {
                 hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "invalid reorder percent '%s' (0-100)", argv[i + 1]);
                 return -1;
@@ -884,10 +882,8 @@ static int cmd_netem(hypervisor_conn_t *conn, int argc, char *argv[])
             }
         } else if (!strcmp(kw, "rate")) {
             unsigned long long bits;
-            if (i + 1 >= argc) {
-                hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1, "option '%s' missing its value", kw);
-                return -1;
-            }
+            if (i + 1 >= argc)
+                return missing_val(conn, kw);
             if (parse_rate_bps(argv[i + 1], &bits) < 0) {
                 hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "invalid rate value '%s'", argv[i + 1]);
                 return -1;
@@ -898,10 +894,8 @@ static int cmd_netem(hypervisor_conn_t *conn, int argc, char *argv[])
         } else if (!strcmp(kw, "limit")) {
             char *end;
             long v;
-            if (i + 1 >= argc) {
-                hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1, "option '%s' missing its value", kw);
-                return -1;
-            }
+            if (i + 1 >= argc)
+                return missing_val(conn, kw);
             v = strtol(argv[i + 1], &end, 10);
             if (end == argv[i + 1] || *end != '\0' || v < 1 || v > 1000000) {
                 hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "invalid limit value '%s' (1-1000000)", argv[i + 1]);
@@ -913,10 +907,8 @@ static int cmd_netem(hypervisor_conn_t *conn, int argc, char *argv[])
         } else if (!strcmp(kw, "seed")) {
             char *end;
             unsigned long long v;
-            if (i + 1 >= argc) {
-                hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1, "option '%s' missing its value", kw);
-                return -1;
-            }
+            if (i + 1 >= argc)
+                return missing_val(conn, kw);
             v = strtoull(argv[i + 1], &end, 10);
             if (end == argv[i + 1] || *end != '\0' || v > 0xFFFFFFFFULL) {
                 hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "invalid seed value '%s'", argv[i + 1]);
@@ -926,10 +918,8 @@ static int cmd_netem(hypervisor_conn_t *conn, int argc, char *argv[])
             p.seed = v;
             i += 2;
         } else if (!strcmp(kw, "distribution")) {
-            if (i + 1 >= argc) {
-                hypervisor_send_reply(conn, HSC_ERR_BAD_PARAM, 1, "option '%s' missing its value", kw);
-                return -1;
-            }
+            if (i + 1 >= argc)
+                return missing_val(conn, kw);
             if (!strcmp(argv[i + 1], "uniform")) {
                 p.dist = -1;           /* kernel default: no table */
             } else if (!strcmp(argv[i + 1], "normal")) {
