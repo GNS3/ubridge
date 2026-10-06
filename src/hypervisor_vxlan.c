@@ -46,6 +46,7 @@
 #include "netlink/nl.h"
 #include "hypervisor.h"
 #include "hypervisor_vxlan.h"
+#include "hypervisor_link.h"
 
 /* 24-bit VNI; 0 is reserved (means "unspecified" in the header) */
 #define VXLAN_VNI_MAX 0xFFFFFFu
@@ -550,6 +551,14 @@ static int cmd_create(hypervisor_conn_t *conn, int argc, char *argv[])
                               "Could not create vxlan %s: %s", name, strerror(-err));
         return -1;
     }
+
+    /* A vxlan device is a host-side data-plane anchor (doc/vxlan.md's own
+     * example enslaves it to a fabric bridge), so it gets the l2-only
+     * hardening every other creator applies — best-effort: a failure logs
+     * and never fails the creation. */
+    if ((err = link_harden_l2only(name)) < 0)
+        fprintf(stderr, "vxlan create: %s: L2-only hardening failed (%s)\n",
+                name, strerror(-err));
 
     hypervisor_send_reply(conn, HSC_INFO_OK, 1, "VXLAN %s created (VNI %lu)", name, vni);
     return 0;

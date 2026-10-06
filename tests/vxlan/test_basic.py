@@ -39,6 +39,17 @@ def main():
         r.check("kernel default dstport is 8472",
                 kernel_vxlan_attr("vxt_b", "dstport").get("dstport") == "8472")
 
+        # creators harden their device against IPv6 link-local chatter
+        # (addrgenmode none), the l2-only rule every creator applies —
+        # read back through iproute2
+        import shutil as _shutil
+        import subprocess as _sp
+        ip = _shutil.which("ip") or "/usr/sbin/ip"
+        d = _sp.run([ip, "-d", "link", "show", "vxt_b"],
+                    capture_output=True, text=True).stdout
+        r.check("create hardens: addrgenmode none",
+                "addrgenmode none" in d, d.strip()[:100])
+
         # --- error paths ---
         r.check("duplicate create -> 206/EEXIST",
                 c.code("vxlan create vxt_a 42") == "206",
