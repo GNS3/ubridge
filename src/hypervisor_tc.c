@@ -1576,6 +1576,20 @@ static int cmd_bpf_drop(hypervisor_conn_t *conn, int argc, char *argv[])
             return -1;
         }
 
+        /* The compiled bytecode rides in one TCA_BPF_OPS attribute inside a
+         * single fixed-size netlink message; a program that outgrows the
+         * message used to run the builder past its allocation (ASan:
+         * heap-buffer-overflow — a 13 KB write into the 8 KB buffer). */
+        if (fp.bf_len * sizeof(struct sock_filter) > NLMSG_GOOD_SIZE - 256) {
+            hypervisor_send_reply(conn, HSC_ERR_START, 1,
+                                  "Cannot compile filter '%s': program too long "
+                                  "(%u instructions, max %u)", argv[3], fp.bf_len,
+                                  (unsigned int)((NLMSG_GOOD_SIZE - 256)
+                                                 / sizeof(struct sock_filter)));
+            pcap_freecode(&fp);
+            return -1;
+        }
+
         ifindex = if_nametoindex(ifname);
         if (ifindex == 0) {
             pcap_freecode(&fp);
