@@ -5,8 +5,8 @@ name: Test uBridge
 #
 #   * userspace — marker / delay / packet_filter / iol / bridge. Pure UDP +
 #     libpcap + AF_UNIX, no caps (the tap-dependent suites self-skip).
-#   * kernel    — brctl / link / tap / tc / capture / nio_raw / docker / bridge.
-#     Need CAP_NET_ADMIN.
+#   * kernel    — brctl / link / vxlan / linklocal / tap / tc / iol-anchor /
+#     capture / nio_raw / docker / bridge. Need CAP_NET_ADMIN.
 #
 # The ubuntu-latest runner is a real Azure VM (not a container), so file
 # capabilities (setcap), dummy/tap/veth interfaces and network namespaces
@@ -84,7 +84,7 @@ jobs:
   # and also touch kernel state directly, so the whole process runs as root.
   # ---------------------------------------------------------------------
   kernel:
-    name: Kernel (brctl, link, vxlan, tap, tc, capture, nio_raw, docker, bridge)
+    name: Kernel (brctl, link, vxlan, linklocal, tap, tc, iol-anchor, capture, nio_raw, docker, bridge)
     runs-on: ubuntu-latest
 
     steps:
@@ -123,6 +123,12 @@ jobs:
 
       - name: tc suite
         run: cd tests/tc && sudo python3 run_all.py
+
+      - name: iol tap-anchor suite (privileged — self-skips when uncapped)
+        run: cd tests/iol && sudo python3 test_tap_anchor.py
+
+      - name: linklocal suite (privileged — sysfs cross-checks need the root netns)
+        run: cd tests/brctl && sudo python3 test_linklocal.py
 
       - name: capture suite
         run: cd tests/capture && sudo python3 run_all.py

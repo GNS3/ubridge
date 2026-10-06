@@ -130,7 +130,8 @@ def main():
 
             m = sysfs_mask("llrega")
             if m is not None:
-                r.check("T1 sysfs group_fwd_mask == 65533 (0xfffd)", m == "65533", m)
+                # the kernel prints the mask as %#x, not decimal
+                r.check("T1 sysfs group_fwd_mask == 0xfffd", m == "0xfffd", m)
 
             # --- T2: the mask is consulted on the INGRESS port only ---
             r.check("T2 clear mask on ingress port -> 100",
@@ -150,7 +151,7 @@ def main():
                     reaches(tx, rx, ll(0x02)))
             m = sysfs_mask("llrega")
             if m is not None:
-                r.check("T5 sysfs mask still 65533", m == "65533", m)
+                r.check("T5 sysfs mask still 0xfffd", m == "0xfffd", m)
 
             # --- T4: re-addif keeps the mask (gns3-server re-attaches links) ---
             second = c.code("brctl addif %s llrega" % BR)

@@ -236,8 +236,12 @@ def main():
             # ================= E.4: delete keeps the device =================
             rep = c.send("iol_bridge delete_nio_tap iolt 0 0")
             r.check("E.4 delete_nio_tap -> 100", rep.startswith("100"), rep)
-            r.check("E.4 persistent TAP survives delete",
-                    socket.if_nametoindex(TAP) is not None, TAP)
+            try:
+                socket.if_nametoindex(TAP)   # raises OSError when it is gone
+                tap_survives = True
+            except OSError:
+                tap_survives = False
+            r.check("E.4 persistent TAP survives delete", tap_survives, TAP)
             rep = c.send("iol_bridge get_stats iolt")
             r.check("E.4 port holds no NIO (absent from stats)",
                     "port 0/0:" not in rep, rep.replace("\n", " | "))
