@@ -21,6 +21,8 @@
 #include <unistd.h>
 #include <string.h>
 #include <assert.h>
+#include <errno.h>
+#include <time.h>
 #include <sys/un.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -81,6 +83,61 @@ static ssize_t iol_nio_send_cb(void *ctx, const void *pkt, size_t len)
       nio->bytes_out += sent;
    }
    return sent;
+}
+
+/*
+ * Bay/unit -> port_table index (bay + unit*16).  The index must be a real
+ * slot: the old unsigned-char arithmetic wrapped an out-of-range port onto
+ * a different port's slot — bay 0/unit 16 landed on port 0 — while the
+ * `> MAX_PORTS` guard could never fire, so a bad port silently acted on
+ * (or freed) another port's NIO.  Returns TRUE with the validated values,
+ * FALSE when the port is outside the table.
+ */
+static int iol_port_key(const char *bay_s, const char *unit_s,
+                        unsigned char *port_bay, unsigned char *port_unit,
+                        unsigned char *port_key)
+{
+   long bay = atol(bay_s);
+   long unit = atol(unit_s);
+   long key = bay + unit * 16;
+
+   if (bay < 0 || unit < 0 || key >= MAX_PORTS)
+      return FALSE;
+
+   *port_bay = (unsigned char)bay;
+   *port_unit = (unsigned char)unit;
+   *port_key = (unsigned char)key;
+   return TRUE;
+}
+
+/*
+ * pthread_mutex_lock is not a cancellation point: a listener parked on
+ * global_lock defeats the cancel+join in iol_port_release / cmd_delete_bridge
+ * — the joining command runs under exactly that lock, so the join never
+ * returns and the whole daemon wedges.  Wait in bounded slices and test for
+ * cancellation between them; an uncontended lock is still taken immediately.
+ */
+static void global_lock_cancelable(void)
+{
+   struct timespec ts;
+   int rc;
+
+   for (;;) {
+      clock_gettime(CLOCK_REALTIME, &ts);
+      ts.tv_nsec += 200000000;
+      if (ts.tv_nsec >= 1000000000) {
+         ts.tv_sec += 1;
+         ts.tv_nsec -= 1000000000;
+      }
+      rc = pthread_mutex_timedlock(&global_lock, &ts);
+      if (rc == 0)
+         return;
+      if (rc != ETIMEDOUT) {
+         pthread_mutex_lock(&global_lock);  /* unexpected: keep old behaviour */
+         return;
+      }
+      pthread_testcancel();
+   }
 }
 
 /* Stop and free everything a port's destination NIO owns: the NIO listener,
@@ -229,7 +286,7 @@ void *iol_nio_listener(void *data)
         /* filter the packet if there is a filter configured; snapshot the
          * delay config under the same lock the hypervisor mutates the list with */
         int have_delay = FALSE, lat_ms = 0, jit_ms = 0;
-        pthread_mutex_lock(&global_lock);
+        global_lock_cancelable();
         if (iol_nio->packet_filters != NULL) {
              packet_filter_t *filter = iol_nio->packet_filters;
              packet_filter_t *next;
@@ -327,7 +384,7 @@ void *iol_bridge_listener(void *data)
          * Re-validate destination_nio under the lock: it may have been set to
          * NULL by cmd_delete_nio_udp while we were blocked in read(). */
        int have_delay = FALSE, lat_ms = 0, jit_ms = 0;
-       pthread_mutex_lock(&global_lock);
+       global_lock_cancelable();
        nio = bridge->port_table[port].destination_nio;
        if (nio == NULL) {
             pthread_mutex_unlock(&global_lock);
@@ -810,23 +867,24 @@ static int cmd_reset_stats_bridge(hypervisor_conn_t *conn, int argc, char *argv[
    return (0);
 }
 
-static int create_iol_port_entry(hypervisor_conn_t *conn, iol_bridge_t *bridge, int iol_id, unsigned char port_bay, unsigned char port_unit, nio_t *nio)
+static int create_iol_port_entry(hypervisor_conn_t *conn, iol_bridge_t *bridge, int iol_id, int port_bay, int port_unit, nio_t *nio)
 {
    iol_nio_t *iol_nio;
+   long key = (long)port_bay + (long)port_unit * 16;
    unsigned char port_key;
    int s;
 
-   port_key = port_bay + port_unit * 16;
    if (bridge->application_id == iol_id) {
       hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "IOU ID %d cannot be the same as bridge '%s' ID", iol_id, bridge->name);
       goto error;
    }
 
-   if (port_key > MAX_PORTS) {
-      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Port number %d exceeding %d on bridge '%s'", port_key, MAX_PORTS, bridge->name);
+   if (key < 0 || key >= MAX_PORTS) {
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Port number %d/%d exceeding %d on bridge '%s'", port_bay, port_unit, MAX_PORTS, bridge->name);
       goto error;
    }
 
+   port_key = (unsigned char)key;
    iol_nio = &bridge->port_table[port_key];
    iol_nio->iol_id = iol_id;
    iol_nio->port.bay = port_bay;
@@ -915,11 +973,8 @@ static int cmd_delete_nio_udp(hypervisor_conn_t *conn, int argc, char *argv[])
       return (-1);
    }
 
-   port_bay = atoi(argv[1]);
-   port_unit = atoi(argv[2]);
-   port_key = port_bay + port_unit * 16;
-   if (port_key > MAX_PORTS) {
-      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "Port number %d exceeding %d on bridge '%s'", port_key, MAX_PORTS, bridge->name);
+   if (!iol_port_key(argv[1], argv[2], &port_bay, &port_unit, &port_key)) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "Port number %s/%s exceeding %d on bridge '%s'", argv[1], argv[2], MAX_PORTS, bridge->name);
       return (-1);
    }
 
@@ -1004,11 +1059,8 @@ static int cmd_delete_nio_tap(hypervisor_conn_t *conn, int argc, char *argv[])
       return (-1);
    }
 
-   port_bay = atoi(argv[1]);
-   port_unit = atoi(argv[2]);
-   port_key = port_bay + port_unit * 16;
-   if (port_key > MAX_PORTS) {
-      hypervisor_send_reply(conn, HSC_ERR_UNK_OBJ, 1, "Port number %d exceeding %d on bridge '%s'", port_key, MAX_PORTS, bridge->name);
+   if (!iol_port_key(argv[1], argv[2], &port_bay, &port_unit, &port_key)) {
+      hypervisor_send_reply(conn, HSC_ERR_UNK_OBJ, 1, "Port number %s/%s exceeding %d on bridge '%s'", argv[1], argv[2], MAX_PORTS, bridge->name);
       return (-1);
    }
 
@@ -1035,11 +1087,8 @@ static int cmd_start_capture_bridge(hypervisor_conn_t *conn, int argc, char *arg
       return (-1);
    }
 
-   port_bay = atoi(argv[1]);
-   port_unit = atoi(argv[2]);
-   port_key = port_bay + port_unit * 16;
-   if (port_key > MAX_PORTS) {
-      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "Port number %d exceeding %d on bridge '%s'", port_key, MAX_PORTS, bridge->name);
+   if (!iol_port_key(argv[1], argv[2], &port_bay, &port_unit, &port_key)) {
+      hypervisor_send_reply(conn, HSC_ERR_NOT_FOUND, 1, "Port number %s/%s exceeding %d on bridge '%s'", argv[1], argv[2], MAX_PORTS, bridge->name);
       return (-1);
    }
 
@@ -1080,11 +1129,8 @@ static int cmd_stop_capture_bridge(hypervisor_conn_t *conn, int argc, char *argv
       return (-1);
    }
 
-   port_bay = atoi(argv[1]);
-   port_unit = atoi(argv[2]);
-   port_key = port_bay + port_unit * 16;
-   if (port_key > MAX_PORTS) {
-      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Port number %d exceeding %d on bridge '%s'", port_key, MAX_PORTS, bridge->name);
+   if (!iol_port_key(argv[1], argv[2], &port_bay, &port_unit, &port_key)) {
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Port number %s/%s exceeding %d on bridge '%s'", argv[1], argv[2], MAX_PORTS, bridge->name);
       return (-1);
    }
 
@@ -1120,11 +1166,8 @@ static int cmd_add_packet_filter(hypervisor_conn_t *conn, int argc, char *argv[]
       return (-1);
    }
 
-   port_bay = atoi(argv[1]);
-   port_unit = atoi(argv[2]);
-   port_key = port_bay + port_unit * 16;
-   if (port_key > MAX_PORTS) {
-      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Port number %d exceeding %d on bridge '%s'", port_key, MAX_PORTS, bridge->name);
+   if (!iol_port_key(argv[1], argv[2], &port_bay, &port_unit, &port_key)) {
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Port number %s/%s exceeding %d on bridge '%s'", argv[1], argv[2], MAX_PORTS, bridge->name);
       return (-1);
    }
 
@@ -1157,11 +1200,8 @@ static int cmd_delete_packet_filter(hypervisor_conn_t *conn, int argc, char *arg
       return (-1);
    }
 
-   port_bay = atoi(argv[1]);
-   port_unit = atoi(argv[2]);
-   port_key = port_bay + port_unit * 16;
-   if (port_key > MAX_PORTS) {
-      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Port number %d exceeding %d on bridge '%s'", port_key, MAX_PORTS, bridge->name);
+   if (!iol_port_key(argv[1], argv[2], &port_bay, &port_unit, &port_key)) {
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Port number %s/%s exceeding %d on bridge '%s'", argv[1], argv[2], MAX_PORTS, bridge->name);
       return (-1);
    }
 
@@ -1193,11 +1233,8 @@ static int cmd_reset_packet_filters(hypervisor_conn_t *conn, int argc, char *arg
       return (-1);
    }
 
-   port_bay = atoi(argv[1]);
-   port_unit = atoi(argv[2]);
-   port_key = port_bay + port_unit * 16;
-   if (port_key > MAX_PORTS) {
-      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Port number %d exceeding %d on bridge '%s'", port_key, MAX_PORTS, bridge->name);
+   if (!iol_port_key(argv[1], argv[2], &port_bay, &port_unit, &port_key)) {
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Port number %s/%s exceeding %d on bridge '%s'", argv[1], argv[2], MAX_PORTS, bridge->name);
       return (-1);
    }
 
@@ -1244,11 +1281,8 @@ static int cmd_enable_packet_filter(hypervisor_conn_t *conn, int argc, char *arg
       return (-1);
    }
 
-   port_bay = atoi(argv[1]);
-   port_unit = atoi(argv[2]);
-   port_key = port_bay + port_unit * 16;
-   if (port_key > MAX_PORTS) {
-      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Port number %d exceeding %d on bridge '%s'", port_key, MAX_PORTS, bridge->name);
+   if (!iol_port_key(argv[1], argv[2], &port_bay, &port_unit, &port_key)) {
+      hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Port number %s/%s exceeding %d on bridge '%s'", argv[1], argv[2], MAX_PORTS, bridge->name);
       return (-1);
    }
 
