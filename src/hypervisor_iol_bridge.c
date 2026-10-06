@@ -258,9 +258,12 @@ void *iol_nio_listener(void *data)
                 perror("recv");
                 /* EIO: read on a TAP anchor whose interface is administratively
                  * DOWN — a steady state of the anchor design (port anchored but
-                 * no link attached, or the link suspended). ECONNREFUSED /
-                 * ENETDOWN: transient UDP conditions already tolerated. */
-                if (errno == ECONNREFUSED || errno == ENETDOWN || errno == EIO)
+                 * no link attached, or the link suspended); gated on the NIO
+                 * type like the main relay (EIO on a UDP NIO is a real error).
+                 * ECONNREFUSED / ENETDOWN: transient UDP conditions already
+                 * tolerated. */
+                if (errno == ECONNREFUSED || errno == ENETDOWN
+                    || (errno == EIO && nio->type == NIO_TYPE_TAP))
                    continue;
                 exit(EXIT_FAILURE);
             }
@@ -434,8 +437,10 @@ void *iol_bridge_listener(void *data)
           /* EINVAL can be caused by sending to a blackhole route, this happens if a NIC link status changes */
           /* EIO: a write to an administratively DOWN TAP anchor — a steady
            * state of the anchor design (port anchored but no link attached,
-           * or the link suspended). Drop the frame and carry on. */
-          if (errno == ECONNREFUSED || errno == ENETDOWN || errno == EINVAL || errno == EIO)
+           * or the link suspended); gated on the NIO type like the main
+           * relay. Drop the frame and carry on. */
+          if (errno == ECONNREFUSED || errno == ENETDOWN || errno == EINVAL
+              || (errno == EIO && nio->type == NIO_TYPE_TAP))
              continue;
 
           exit(EXIT_FAILURE);
