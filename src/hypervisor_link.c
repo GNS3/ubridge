@@ -222,24 +222,18 @@ static int link_delete(const char *iface)
 /* Set the device's IPv6 address generation mode (RTM_SETLINK + IFLA_AF_SPEC).
  * Returns 0 on success or a negative errno (EINVAL/EOPNOTSUPP on a kernel or
  * device without IFLA_INET6_ADDR_GEN_MODE). */
-static int l2only_set_gen_mode(int ifindex, unsigned char mode)
+static int l2only_set_gen_mode(struct nl_handler *nlh, int ifindex, unsigned char mode)
 {
-    struct nl_handler nlh;
     struct nlmsg *msg = NULL, *reply = NULL;
     struct ifinfomsg *ifi;
     struct rtattr *af_spec, *af6;
     int ret;
-
-    ret = netlink_open(&nlh, NETLINK_ROUTE);
-    if (ret < 0)
-        return ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
     reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
     if (!msg || !reply) {
         nlmsg_free(msg);
         nlmsg_free(reply);
-        netlink_close(&nlh);
         return -ENOMEM;
     }
 
@@ -263,10 +257,9 @@ static int l2only_set_gen_mode(int ifindex, unsigned char mode)
     nla_end_nested(msg, af6);
     nla_end_nested(msg, af_spec);
 
-    ret = netlink_transaction(&nlh, msg, reply);
+    ret = netlink_transaction(nlh, msg, reply);
     nlmsg_free(msg);
     nlmsg_free(reply);
-    netlink_close(&nlh);
     return ret;
 }
 
@@ -274,24 +267,18 @@ static int l2only_set_gen_mode(int ifindex, unsigned char mode)
  * IFLA_AF_SPEC → IFLA_INET6_ADDR_GEN_MODE). Returns the mode (>= 0) or a
  * negative errno; -ENODATA when the device reports no such attribute (a
  * device without an IPv6 stack at all). */
-static int l2only_get_gen_mode(int ifindex)
+static int l2only_get_gen_mode(struct nl_handler *nlh, int ifindex)
 {
-    struct nl_handler nlh;
     struct nlmsg *msg = NULL, *reply = NULL;
     struct ifinfomsg *ifi;
     struct rtattr *rta;
     int ret, attrlen;
-
-    ret = netlink_open(&nlh, NETLINK_ROUTE);
-    if (ret < 0)
-        return ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
     reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
     if (!msg || !reply) {
         nlmsg_free(msg);
         nlmsg_free(reply);
-        netlink_close(&nlh);
         return -ENOMEM;
     }
 
@@ -305,7 +292,7 @@ static int l2only_get_gen_mode(int ifindex)
     msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST;
     msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
 
-    ret = netlink_transaction(&nlh, msg, reply);
+    ret = netlink_transaction(nlh, msg, reply);
     if (ret < 0)
         goto out;
 
@@ -347,29 +334,22 @@ static int l2only_get_gen_mode(int ifindex)
 out:
     nlmsg_free(msg);
     nlmsg_free(reply);
-    netlink_close(&nlh);
     return ret;
 }
 
 /* Delete one IPv6 address (RTM_DELADDR). Returns 0 or a negative errno. */
-static int l2only_del_addr(int ifindex, const struct in6_addr *addr,
+static int l2only_del_addr(struct nl_handler *nlh, int ifindex, const struct in6_addr *addr,
                            unsigned char prefixlen, unsigned char scope)
 {
-    struct nl_handler nlh;
     struct nlmsg *msg = NULL, *reply = NULL;
     struct ifaddrmsg *ifa;
     int ret;
-
-    ret = netlink_open(&nlh, NETLINK_ROUTE);
-    if (ret < 0)
-        return ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
     reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
     if (!msg || !reply) {
         nlmsg_free(msg);
         nlmsg_free(reply);
-        netlink_close(&nlh);
         return -ENOMEM;
     }
 
@@ -387,10 +367,9 @@ static int l2only_del_addr(int ifindex, const struct in6_addr *addr,
     nla_put_buffer(msg, IFA_LOCAL, addr, sizeof(*addr));
     nla_put_buffer(msg, IFA_ADDRESS, addr, sizeof(*addr));
 
-    ret = netlink_transaction(&nlh, msg, reply);
+    ret = netlink_transaction(nlh, msg, reply);
     nlmsg_free(msg);
     nlmsg_free(reply);
-    netlink_close(&nlh);
     return ret;
 }
 
@@ -400,16 +379,11 @@ static int l2only_del_addr(int ifindex, const struct in6_addr *addr,
  * are only counted. Returns the number found, or a negative errno — an
  * incomplete dump is reported as an error rather than as "none found".
  */
-static int l2only_link_local(int ifindex, int delete)
+static int l2only_link_local(struct nl_handler *nlh, int ifindex, int delete)
 {
-    struct nl_handler nlh;
     struct nlmsg *msg = NULL, *reply = NULL;
     struct ifaddrmsg *ifa;
     int found = 0, ret;
-
-    ret = netlink_open(&nlh, NETLINK_ROUTE);
-    if (ret < 0)
-        return ret;
 
     msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
     reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
@@ -428,7 +402,7 @@ static int l2only_link_local(int ifindex, int delete)
     msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
     msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifaddrmsg));
 
-    if (netlink_send(&nlh, msg) < 0) {
+    if (netlink_send(nlh, msg) < 0) {
         ret = -errno;
         goto out;
     }
@@ -438,7 +412,7 @@ static int l2only_link_local(int ifindex, int delete)
         int len, r;
 
         reply->nlmsghdr.nlmsg_len = NLMSG_ALIGN(NLMSG_GOOD_SIZE);
-        r = netlink_rcv(&nlh, reply);
+        r = netlink_rcv(nlh, reply);
         if (r < 0) {            /* truncated dump: never report it as complete */
             ret = r;
             goto out;
@@ -490,7 +464,7 @@ static int l2only_link_local(int ifindex, int delete)
             if (!delete)
                 continue;
 
-            derr = l2only_del_addr(ifindex, &addr, ifa_r->ifa_prefixlen,
+            derr = l2only_del_addr(nlh, ifindex, &addr, ifa_r->ifa_prefixlen,
                                    ifa_r->ifa_scope);
             /* Already gone (it can lapse between the dump and the delete, e.g.
              * a DAD timeout removing it) is the outcome we wanted: the
@@ -508,7 +482,6 @@ done:
 out:
     nlmsg_free(msg);
     nlmsg_free(reply);
-    netlink_close(&nlh);
     return ret;
 }
 
@@ -523,41 +496,66 @@ out:
  */
 int link_set_l2only(const char *iface, int on)
 {
+    struct nl_handler nlh;
     int ifindex, want, mode, err;
 
     ifindex = if_nametoindex(iface);
     if (ifindex == 0)
         return -ENODEV;
 
+    /* one handler for the whole sequence: the helpers used to open and
+     * close their own socket each (a veth pair cost ~10 socket lifecycles
+     * and 4 full address dumps per `link veth`) */
+    err = netlink_open(&nlh, NETLINK_ROUTE);
+    if (err < 0)
+        return err;
+
     /* The kernel's built-in default is EUI-64, which is what `off` restores
      * (the link-local comes back on the next down/up cycle). */
     want = on ? IN6_ADDR_GEN_MODE_NONE : IN6_ADDR_GEN_MODE_EUI64;
 
-    err = l2only_set_gen_mode(ifindex, (unsigned char)want);
+    err = l2only_set_gen_mode(&nlh, ifindex, (unsigned char)want);
     if (err < 0)
-        return err;
+        goto out;
 
     if (on) {
-        int n = l2only_link_local(ifindex, 1);
-        if (n < 0)
-            return n;
+        err = l2only_link_local(&nlh, ifindex, 1);
+        if (err < 0)
+            goto out;
     }
 
-    mode = l2only_get_gen_mode(ifindex);
-    if (mode < 0)
-        return mode;
+    mode = l2only_get_gen_mode(&nlh, ifindex);
+    if (mode < 0) {
+        err = mode;
+        goto out;
+    }
     if (mode != want) {
         fprintf(stderr, "ubridge: %s: addrgenmode read-back is %d, expected %d\n",
                 iface, mode, want);
-        return -EIO;
+        err = -EIO;
+        goto out;
     }
 
-    if (on && l2only_link_local(ifindex, 0) > 0) {
-        fprintf(stderr, "ubridge: %s: an IPv6 link-local address is still present\n", iface);
-        return -EIO;
+    if (on) {
+        /* the read-back is what decides: a failed dump is an error, not
+         * "no link-local left" (it used to pass as verified) */
+        int n = l2only_link_local(&nlh, ifindex, 0);
+
+        if (n < 0) {
+            err = n;
+            goto out;
+        }
+        if (n > 0) {
+            fprintf(stderr, "ubridge: %s: an IPv6 link-local address is still present\n", iface);
+            err = -EIO;
+            goto out;
+        }
     }
 
-    return 0;
+    err = 0;
+out:
+    netlink_close(&nlh);
+    return err;
 }
 
 /*
