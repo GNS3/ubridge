@@ -98,7 +98,6 @@ def _jenkins(mask, dst=None, src=None, proto=None):
     return h
 
 
-INSNS_C = os.path.join(os.path.dirname(REPO_UBRIDGE), "src", "tc_ebpf_insns.c")
 INSNS_H = os.path.join(os.path.dirname(REPO_UBRIDGE), "src", "tc_ebpf_insns.h")
 BPF_C = os.path.join(os.path.dirname(REPO_UBRIDGE), "src", "tc_impair.bpf.c")
 INSNS_RE = re.compile(r"\.code = (0x[0-9a-fA-F]+), \.dst_reg = \d+, \.src_reg = \d+, "
@@ -113,7 +112,7 @@ def _is_jump(code):
 
 def _parse_insns():
     """[(code, off, imm)] in program order, from the committed array."""
-    with open(INSNS_C) as f:
+    with open(INSNS_H) as f:
         return [(int(c, 16), int(off), int(imm))
                 for c, off, imm in INSNS_RE.findall(f.read())]
 

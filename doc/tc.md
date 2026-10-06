@@ -335,16 +335,14 @@ rather than versioning it in place.
   so flush/reset remove exactly our filters.
 - **eBPF program** (`src/tc_impair.bpf.c`): freestanding C compiled with
   `clang -target bpf -O2` (no CO-RE, no BTF-typed pointers, plain packet
-  access). Its instructions are embedded as a plain array
-  (`src/tc_ebpf_insns.c`, regenerated from the compiled object by
-  `tools/gen_tc_impair.py` via `make bpf`; the object itself is a transient
-  build artifact) — the normal build needs neither clang nor libbpf. The
-  loader takes `TC_IMPAIR_INSNS` (and the two map-fd insn indices) from the
-  generated header, so the Makefile spells out that dependency: a stale
-  `src/tc_ebpf.o` hands the kernel an `insn_cnt` shorter than the array and
-  the load fails with `jump out of range from insn N to M` (*processed 0
-  insns*, `ebpf=0`) — seen while regenerating, when the array grew from 375
-  to 423 instructions. The
+  access). Its instructions are embedded as a plain array in the generated
+  header (`src/tc_ebpf_insns.h`, written by `tools/gen_tc_impair.py` from
+  the object `make bpf` compiles — the object itself is a transient build
+  artifact under `build/`) — the normal build needs neither clang nor
+  libbpf. The header carries `TC_IMPAIR_INSNS`, the two map-fd insn indices
+  and the array the loader includes, so `-MMD` keeps `src/tc_ebpf.o` in
+  step with it; CI regenerates the header with a pinned clang and fails on
+  any diff — the instruction bytes are part of the committed program. The
   loader (`src/tc_ebpf.c`, its own TU because `<linux/bpf.h>` and libpcap
   both define `struct bpf_insn`) is raw syscalls: two `BPF_MAP_CREATE`s
   (ARRAY, 1 entry: CFG + CNT), patching the two `BPF_PSEUDO_MAP_FD` loads

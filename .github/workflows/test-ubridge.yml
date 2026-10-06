@@ -37,6 +37,30 @@ jobs:
         run: make test
 
   # ---------------------------------------------------------------------
+  # The committed eBPF instruction array (src/tc_ebpf_insns.h) must be
+  # exactly what the pinned clang produces from src/tc_impair.bpf.c:
+  # `make bpf` regenerates it and the job fails on any diff.  The clang
+  # major is pinned deliberately — codegen differences across versions
+  # would silently change the embedded program; bump the pin together
+  # with a regeneration.
+  # ---------------------------------------------------------------------
+  bpf-array:
+    name: eBPF array reproducible (pinned clang)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain
+        run: sudo apt-get update && sudo apt-get install -y clang-18
+
+      - name: Regenerate and compare
+        run: |
+          make bpf BPF_CLANG=clang-18
+          git diff --exit-code -- src/tc_ebpf_insns.h
+
+  # ---------------------------------------------------------------------
   # Userspace suites — the riskiest user-space logic and zero privilege
   # friction. Run right after `make`, against the in-repo ./ubridge.
   # ---------------------------------------------------------------------

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Regenerate src/tc_ebpf_insns.c from src/tc_impair.bpf.o.
+"""Regenerate src/tc_ebpf_insns.h from the tc_impair BPF object.
 
 The object is a transient build artifact (git-ignored, compiled by the
-`bpf` target); the committed artifact is the instruction array this script
-writes — plain C the build compiles without any clang or libbpf dependency
-(same pattern as the embedded netem distribution tables in
-src/tc_netem_dist.c). Only needed when tc_impair.bpf.c changes:
+`bpf` target under $(BUILDDIR)); the committed artifact is the instruction
+array this script writes into the header — plain C the build compiles
+without any clang or libbpf dependency (same pattern as the embedded netem
+distribution tables in src/tc_netem_dist.c). Only needed when
+tc_impair.bpf.c changes:
 
-    make bpf        # compiles the object AND regenerates the array
+    make bpf        # compiles the object AND regenerates the header
 
 Uses binutils (objcopy/readelf) only. The two BPF_PSEUDO_MAP_FD loads are
 located via the .reltc_impair relocations and exported as
@@ -22,8 +23,9 @@ import tempfile
 import os
 
 SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-OBJ = os.path.join(SRC, "src", "tc_impair.bpf.o")
-OUT_C = os.path.join(SRC, "src", "tc_ebpf_insns.c")
+# the transient object `make bpf` compiles under $(BUILDDIR); overridable
+# as argv[1] so the Makefile owns the path
+OBJ = os.path.join(SRC, "build", "tc_impair.bpf.o")
 OUT_H = os.path.join(SRC, "src", "tc_ebpf_insns.h")
 SECTION = "tc_impair"
 
@@ -84,6 +86,9 @@ def decode(data, i):
 
 
 def main():
+    global OBJ
+    if len(sys.argv) > 1:
+        OBJ = sys.argv[1]
     data, relocs = insns_and_relocs()
     n = len(data) // 8
     idx = {}
@@ -150,25 +155,19 @@ def main():
 #define TC_IMPAIR_CFG_LD_IDX %d
 #define TC_IMPAIR_CNT_LD_IDX %d
 
-extern const struct bpf_insn tc_impair_insns[TC_IMPAIR_INSNS];
-
-#endif /* TC_EBPF_INSNS_H */
-""" % (banner, n, idx["cfg_map"], idx["cnt_map"])
-
-    outc = """%s
-#include "tc_ebpf_insns.h"
-
-const struct bpf_insn tc_impair_insns[TC_IMPAIR_INSNS] = {
+/* static: exactly one translation unit (src/tc_ebpf.c) includes this
+ * generated header; nothing else links against the array */
+static const struct bpf_insn tc_impair_insns[TC_IMPAIR_INSNS] = {
 %s
 };
-""" % (banner, body)
+
+#endif /* TC_EBPF_INSNS_H */
+""" % (banner, n, idx["cfg_map"], idx["cnt_map"], body)
 
     with open(OUT_H, "w") as f:
         f.write(outh)
-    with open(OUT_C, "w") as f:
-        f.write(outc)
-    print("wrote %s + %s: %d insns (cfg_map ld at %d, cnt_map ld at %d)"
-          % (OUT_C, OUT_H, n, idx["cfg_map"], idx["cnt_map"]))
+    print("wrote %s: %d insns (cfg_map ld at %d, cnt_map ld at %d)"
+          % (OUT_H, n, idx["cfg_map"], idx["cnt_map"]))
     return 0
 
 

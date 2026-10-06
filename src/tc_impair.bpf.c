@@ -23,7 +23,7 @@
  *
  * Freestanding: no CO-RE, no BTF-typed pointers, plain packet access.
  * Its instructions are embedded into the build as an instruction array
- * (src/tc_ebpf_insns.c, regenerated from the compiled object by
+ * (src/tc_ebpf_insns.h, regenerated from the compiled object by
  * tools/gen_tc_impair.py / `make bpf`) — no runtime clang/libbpf.
  *
  * Verifier-friendly by construction: NO LOOPS AT ALL (the window cycle
