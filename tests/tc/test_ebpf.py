@@ -453,6 +453,31 @@ def main():
                             sorted(got) == [1, 2, 4, 5], "received %s" % sorted(got))
                     c.send("tc nth_drop %s off" % VB)
 
+                    # state ownership: a mode command carries one atomic cfg
+                    # write and the program applies the counter resets itself
+                    # (userspace no longer read-modify-writes CNT).  An
+                    # unrelated window set/off between the quota arming and
+                    # the traffic must not disturb the byte tally.
+                    c.send("tc quota_drop %s %d 100" % (VB, 3 * flen))
+                    c.send("tc window_drop %s 0 50 0" % VB)   # unrelated set, pct 0
+                    c.send("tc window_drop %s off" % VB)
+                    inject_seq(mac_a, mac_b, 6)               # 1,2 pass; 3+ over quota
+                    got = drain()
+                    r.check("state: quota cutoff survives interleaved window commands",
+                            sorted(got) == [1, 2], "received %s" % sorted(got))
+                    c.send("tc quota_drop %s off" % VB)
+
+                    # and an unrelated command mid-outage must not end it
+                    c.send("tc window_drop %s 0 3000 100" % VB)
+                    inject_seq(mac_a, mac_b, 4)
+                    r.check("state: window outage drops (0/4)", drain() == [], "")
+                    c.send("tc quota_drop %s 1000000 0" % VB)  # unrelated
+                    inject_seq(mac_a, mac_b, 4)
+                    r.check("state: outage survives an unrelated mode command",
+                            drain() == [], "")
+                    c.send("tc window_drop %s off" % VB)
+                    c.send("tc quota_drop %s off" % VB)
+
                     # restart recovery: a SIGKILL leaves the prio-1 filter
                     # attached to the kernel; a fresh daemon must clear it on
                     # `off` and re-arm it on enable (instead of lying "off"
