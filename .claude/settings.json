@@ -1,12 +1,11 @@
 {
   "env": {
-    "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
-    "ANTHROPIC_AUTH_TOKEN": "sk-7981ea1fe46b4a949295332830e42d33",
-    "ANTHROPIC_MODEL": "deepseek-v4-flash[1m]",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-flash[1m]",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-flash[1m]",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-flash",
-    "CLAUDE_CODE_EFFORT_LEVEL": "max"
+    "ANTHROPIC_AUTH_TOKEN": "953089382d874a64908ad18b46039e21.O1EjAkeNEGzstH6P",
+    "ANTHROPIC_BASE_URL": "https://open.bigmodel.cn/api/anthropic",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "GLM-5.3-flash",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "GLM-5.3",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "GLM-5.3",
+    "API_TIMEOUT_MS": "3000000",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": 1
   }
 }

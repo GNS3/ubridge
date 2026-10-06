@@ -23,7 +23,7 @@
  * from the object `make bpf` compiles from src/tc_impair.bpf.c
  * (freestanding: no CO-RE, no BTF-typed pointers; the object itself is a
  * transient build artifact, not committed).
- * Regenerate with `make bpf` (needs clang + binutils); the normal build
+ * Regenerate with `make bpf` (needs clang + python3); the normal build
  * just compiles this file, so no clang/libbpf at build or run time.
  *
  * The two map-fd pseudo loads are at TC_IMPAIR_CFG_LD_IDX /

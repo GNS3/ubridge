@@ -102,9 +102,11 @@ all: $(NAME)
 # build just compiles the committed src/tc_ebpf_insns.h and needs neither clang
 # nor libbpf).  Compiles src/tc_impair.bpf.c to a transient object under
 # $(BUILDDIR) and materialises it as the header the loader includes — requires
-# clang + binutils (objcopy/readelf).  The compiler is overridable so CI can
-# pin it: the committed instruction bytes must be exactly what the pinned
-# clang produces (`make bpf BPF_CLANG=clang-18` + `git diff --exit-code`).
+# clang + python3 only (the generator parses the ELF itself; binutils is
+# deliberately not used: Debian/Ubuntu build libbfd without the BPF target).
+# The compiler is overridable so CI can pin it: the committed instruction
+# bytes must be exactly what the pinned clang produces
+# (`make bpf BPF_CLANG=clang-18` + `git diff --exit-code`).
 BPF_CLANG ?= clang
 
 bpf:

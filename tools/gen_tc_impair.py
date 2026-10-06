@@ -10,17 +10,18 @@ tc_impair.bpf.c changes:
 
     make bpf        # compiles the object AND regenerates the header
 
-Uses binutils (objcopy/readelf) only. The two BPF_PSEUDO_MAP_FD loads are
-located via the .reltc_impair relocations and exported as
+The object is parsed in pure Python (section bytes, relocation entries and
+symbol names straight off the ELF structures) — deliberately no binutils
+dependency: Debian/Ubuntu ship binutils whose libbfd is built without the
+BPF target, so objcopy there cannot even read the object ("Unable to
+recognise the format of the input file"). The two BPF_PSEUDO_MAP_FD loads
+are located via the .reltc_impair relocations and exported as
 TC_IMPAIR_CFG_LD_IDX / TC_IMPAIR_CNT_LD_IDX — the loader patches the
 run-time map fds into them before BPF_PROG_LOAD.
 """
-import re
-import struct
-import subprocess
-import sys
-import tempfile
 import os
+import struct
+import sys
 
 SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 # the transient object `make bpf` compiles under $(BUILDDIR); overridable
@@ -32,47 +33,85 @@ SECTION = "tc_impair"
 BPF_LD_IMM64 = 0x18
 BPF_PSEUDO_MAP_FD = 1
 
-
-def run(cmd):
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode != 0:
-        sys.exit("command failed: %s\n%s" % (" ".join(cmd), r.stderr))
-    return r.stdout
+EM_BPF = 247
+SHT_SYMTAB = 2
+SHT_REL = 4
+# llvm's BPF relocation types (include/llvm/BinaryFormat/ELFRelocs/BPF.def)
+R_BPF_64_64 = 1
+R_BPF_NAMES = {1: "R_BPF_64_64", 2: "R_BPF_64_ABS64", 3: "R_BPF_64_ABS32",
+               4: "R_BPF_64_NODYLD32", 10: "R_BPF_64_32"}
 
 
 def insns_and_relocs():
-    with tempfile.NamedTemporaryFile(delete=False) as tf:
-        binpath = tf.name
-    try:
-        run(["objcopy", "--dump-section", "%s=%s" % (SECTION, binpath), OBJ])
-        data = open(binpath, "rb").read()
-        if len(data) == 0 or len(data) % 8 != 0:
-            sys.exit("section %s has bogus size %d" % (SECTION, len(data)))
-        relocs = {}
-        sect = None
-        for line in run(["readelf", "-rW", OBJ]).splitlines():
-            m = re.match(r"^Relocation section '([^']+)'", line)
-            if m:
-                sect = m.group(1)
-                continue
-            if sect != ".rel" + SECTION:
-                continue
-            m = re.match(r"^([0-9a-f]+)\s+\S+\s+(\S+)\s+\S+\s+(\S+)\s*$", line)
-            if not m:
-                continue
-            off, rtype, sym = int(m.group(1), 16), m.group(2), m.group(3)
+    """(section bytes, {offset: symbol}) for the tc_impair section."""
+    data = open(OBJ, "rb").read()
+
+    # --- ELF header (64-bit little-endian) ---
+    if data[:4] != b"\x7fELF":
+        sys.exit("%s is not an ELF object" % OBJ)
+    if data[4] != 2 or data[5] != 1:
+        sys.exit("%s: expected ELFCLASS64, little-endian" % OBJ)
+    machine = struct.unpack_from("<H", data, 18)[0]
+    if machine != EM_BPF:
+        sys.exit("%s: e_machine %d is not EM_BPF (%d)" % (OBJ, machine, EM_BPF))
+    shoff = struct.unpack_from("<Q", data, 40)[0]
+    shentsize = struct.unpack_from("<H", data, 58)[0]
+    shnum = struct.unpack_from("<H", data, 60)[0]
+    shstrndx = struct.unpack_from("<H", data, 62)[0]
+
+    # --- section headers ---
+    shs = []
+    for i in range(shnum):
+        (sh_name, sh_type, _flg, _addr, sh_offset, sh_size,
+         sh_link, _info, _align, _entsize) = struct.unpack_from(
+            "<IIQQQQIIQQ", data, shoff + i * shentsize)
+        shs.append({"name_off": sh_name, "type": sh_type, "offset": sh_offset,
+                    "size": sh_size, "link": sh_link})
+
+    def cstr(blob, off):
+        return blob[off:blob.find(b"\x00", off)].decode("ascii", "replace")
+
+    shstr = shs[shstrndx]
+    shstrdata = data[shstr["offset"]:shstr["offset"] + shstr["size"]]
+    for s in shs:
+        s["name"] = cstr(shstrdata, s["name_off"])
+
+    sec = next((s for s in shs if s["name"] == SECTION), None)
+    if sec is None:
+        sys.exit("%s: no '%s' section" % (OBJ, SECTION))
+    sect = data[sec["offset"]:sec["offset"] + sec["size"]]
+    if len(sect) == 0 or len(sect) % 8 != 0:
+        sys.exit("section %s has bogus size %d" % (SECTION, len(sect)))
+
+    # --- symbol table (names for the relocation targets) ---
+    symtab = next((s for s in shs if s["type"] == SHT_SYMTAB), None)
+    symbols = []
+    if symtab is not None:
+        strtab = shs[symtab["link"]]
+        strdata = data[strtab["offset"]:strtab["offset"] + strtab["size"]]
+        for off in range(0, symtab["size"], 24):        # Elf64_Sym
+            st_name = struct.unpack_from("<I", data, symtab["offset"] + off)[0]
+            symbols.append(cstr(strdata, st_name))
+
+    # --- relocations against our section (Elf64_Rel: offset, info) ---
+    relsec = next((s for s in shs if s["name"] == ".rel" + SECTION), None)
+    relocs = {}
+    if relsec is not None:
+        for off in range(0, relsec["size"], 16):
+            r_offset, r_info = struct.unpack_from(
+                "<QQ", data, relsec["offset"] + off)
+            rtype = r_info & 0xFFFFFFFF
+            sym = symbols[r_info >> 32] if (r_info >> 32) < len(symbols) else "?"
             # Everything the object asks us to patch must be a map-fd load we
             # understand — e.g. an outlined helper yields an R_BPF_64_32
             # pseudo-call this array cannot carry (helpers stay inline_always)
-            if rtype != "R_BPF_64_64" or sym not in ("cfg_map", "cnt_map"):
+            if rtype != R_BPF_64_64 or sym not in ("cfg_map", "cnt_map"):
                 sys.exit("unsupported relocation %s against '%s' at 0x%x — the "
                          "program must stay self-contained (mark helpers "
                          "inline_always; only the two map-fd loads may relocate)"
-                         % (rtype, sym, off))
-            relocs.setdefault(off, sym)
-        return data, relocs
-    finally:
-        os.unlink(binpath)
+                         % (R_BPF_NAMES.get(rtype, str(rtype)), sym, r_offset))
+            relocs.setdefault(r_offset, sym)
+    return sect, relocs
 
 
 def decode(data, i):
@@ -135,7 +174,7 @@ def main():
  * from the object `make bpf` compiles from src/tc_impair.bpf.c
  * (freestanding: no CO-RE, no BTF-typed pointers; the object itself is a
  * transient build artifact, not committed).
- * Regenerate with `make bpf` (needs clang + binutils); the normal build
+ * Regenerate with `make bpf` (needs clang + python3); the normal build
  * just compiles this file, so no clang/libbpf at build or run time.
  *
  * The two map-fd pseudo loads are at TC_IMPAIR_CFG_LD_IDX /
