@@ -74,6 +74,13 @@ struct tc_impair_cfg {
 #define TC_IMPAIR_RESET_QUOTA  0x2
 #define TC_IMPAIR_RESET_WINDOW 0x4
 
+/* netem-style percent encoding, shared by the netem attribute writer and the
+ * program's drop decision (spec B.1): p * 2^32 / 100, with 100 => 0xFFFFFFFF
+ * (~0) since the scaled value would not fit a u32. */
+#define TC_IMPAIR_PCT_ENCODE(p)                                            \
+    ((p) == 100 ? 0xFFFFFFFFu                                              \
+                : (unsigned int)(((unsigned long long)(p) << 32) / 100))
+
 /*
  * CNT: counters + runtime state, written by the PROGRAM after the load-time
  * seed — userspace never touches it again (its old read-modify-write

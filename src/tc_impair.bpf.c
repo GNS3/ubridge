@@ -132,8 +132,7 @@ static inline_always int pct_drop(struct tc_impair_cnt *cnt, u32 pct)
 {
     if (pct == 0)
         return 0;
-    return prng_next(cnt) < (pct == 100 ? 0xFFFFFFFFu
-                                        : (u32)(((unsigned long long)pct << 32) / 100));
+    return prng_next(cnt) < TC_IMPAIR_PCT_ENCODE(pct);
 }
 
 /*
