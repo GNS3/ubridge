@@ -170,7 +170,8 @@ static inline_always u64 win_step(u64 now, u64 start, u64 cur)
 /*
  * Jenkins one-at-a-time fold over the flow-mask-selected header fields.
  * Non-IP frames contribute only their MAC fields; ports only for TCP/UDP
- * over IPv4 with the header verified present. All loads are bytewise (no
+ * over IPv4 with the header verified present and at fragment offset 0 (a
+ * later fragment has no L4 header at all).  All loads are bytewise (no
  * packet-alignment assumptions).
  */
 static inline_always int flow_hash(struct min_skb *ctx, u32 mask, u32 *hash_out)
@@ -208,7 +209,12 @@ static inline_always int flow_hash(struct min_skb *ctx, u32 mask, u32 *hash_out)
             FOLD(ip[9]);
         if ((ip[0] & 0xf) == 5 && ip + 28 <= d_end) {
             u8 proto = ip[9];
-            if (proto == 6 || proto == 17) {   /* TCP / UDP */
+
+            /* Non-initial fragments (fragment offset != 0) carry no L4
+             * header: folding payload bytes as ports would make the flow
+             * decision depend on packet content.  MACs + proto only. */
+            if ((proto == 6 || proto == 17)
+                && (ip[6] & 0x1f) == 0 && ip[7] == 0) {   /* TCP / UDP, offset 0 */
                 u8 *l4 = ip + 20;
                 if (mask & 0x4) {
                     FOLD(l4[0]);
