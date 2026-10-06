@@ -133,7 +133,12 @@ static ssize_t nio_linux_raw_recv(nio_linux_raw_t *nio_linux_raw, void *pkt, siz
     struct iovec iov;
     struct cmsghdr *cmsg;
     struct msghdr msg;
-    struct sockaddr from;
+    /* The kernel fills msg_name with a whole struct sockaddr_ll (20 bytes)
+     * regardless of msg_namelen — packet_recvmsg() copies
+     * sll_halen + offsetof(sll_addr) and zero-pads up to sizeof(sockaddr_ll).
+     * A generic 16-byte struct sockaddr overflows the stack by 4 bytes on
+     * every received frame (ASan: stack-buffer-overflow, WRITE of size 20). */
+    struct sockaddr_ll from;
     union {
       struct cmsghdr  cmsg;
       char    buf[CMSG_SPACE(sizeof(struct tpacket_auxdata))];
