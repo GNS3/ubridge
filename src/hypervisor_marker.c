@@ -216,6 +216,8 @@ typedef struct kernel_marker {
     int dir_match;          /* KMARK_DIR_* */
     volatile int enabled;   /* 0 = installed but silent (enable off) */
     volatile int stop;      /* cooperative stop flag for the reader thread */
+    volatile int dead;      /* reader exited on a hard error (interface gone) */
+    int ifindex;            /* the ifindex the socket is bound to */
     int sock;               /* AF_PACKET socket */
     pthread_t tid;
     struct kernel_marker *next;
@@ -248,7 +250,10 @@ static void *kernel_marker_thread(void *arg)
         if (n <= 0) {
             if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
                 continue;   /* recv timeout (stop tick) or signal: loop re-checks km->stop */
-            break;          /* real error (interface gone): the marker goes quiet */
+            /* real error (interface gone): the reader stops — and `enable`
+             * stops claiming this marker works */
+            km->dead = 1;
+            break;
         }
 
         /* dir is relative to the capture node: a frame leaving the host-side
@@ -533,6 +538,7 @@ static int cmd_add_kernel(hypervisor_conn_t *conn, int argc, char *argv[])
                               "Could not add kernel marker: cannot bind to %s: %s", ifname, strerror(err));
         goto fail;
     }
+    km->ifindex = ifindex;
     /* Non-promiscuous by design: only frames the host already sends/receives
      * on this end (the data-plane traffic itself) — unlike
      * `capture start_kernel`, which opts into PACKET_MR_PROMISC. */
@@ -622,6 +628,50 @@ static int cmd_enable_kernel(hypervisor_conn_t *conn, int argc, char *argv[])
         hypervisor_send_reply(conn, HSC_ERR_UNK_OBJ, 1, "no kernel marker '%s' on %s", argv[1], argv[0]);
         return -1;
     }
+
+    if (on) {
+        /* The socket is bound to the ifindex resolved at add time and the
+         * reader exits when its interface goes away: enabling must not
+         * report success for a marker that cannot see anything.  If the
+         * interface was recreated (new ifindex), rebind the socket; if the
+         * reader had stopped, re-arm it. */
+        struct sockaddr_ll sll;
+        unsigned int ifindex = if_nametoindex(km->ifname);
+
+        if (ifindex == 0) {
+            hypervisor_send_reply(conn, HSC_ERR_UNK_OBJ, 1,
+                                  "interface %s no longer exists; re-add the kernel marker", km->ifname);
+            return -1;
+        }
+
+        /* Always rebind: an interface deleted and recreated is a new netdev
+         * registration even when the ifindex is reused — the socket's
+         * binding follows the old registration, not the number.  Rebinding
+         * a live socket is cheap and idempotent. */
+        memset(&sll, 0, sizeof(sll));
+        sll.sll_family = AF_PACKET;
+        sll.sll_protocol = htons(ETH_P_ALL);
+        sll.sll_ifindex = (int)ifindex;
+        if (bind(km->sock, (struct sockaddr *)&sll, sizeof(sll)) < 0) {
+            hypervisor_send_reply(conn, HSC_ERR_BINDING, 1,
+                                  "cannot rebind kernel marker '%s' to %s: %s",
+                                  km->name, km->ifname, strerror(errno));
+            return -1;
+        }
+        km->ifindex = (int)ifindex;
+        if (km->dead) {
+            if (km->tid)
+                pthread_join(km->tid, NULL);   /* the reader already returned */
+            km->dead = 0;
+            km->stop = 0;
+            if (pthread_create(&km->tid, NULL, kernel_marker_thread, km) != 0) {
+                hypervisor_send_reply(conn, HSC_ERR_CREATE, 1,
+                                      "cannot restart the reader thread for kernel marker '%s'", km->name);
+                return -1;
+            }
+        }
+    }
+
     /* off = installed but silent (paused tap): the thread keeps reading but
      * emits no signal and writes no pcap; on resumes instantly. */
     km->enabled = on;

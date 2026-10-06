@@ -244,6 +244,28 @@ def main():
                         c.code('marker add_kernel x %s "ip" pcap /nonexistent-ubmk-dir/m.pcap' % VETH_A) == "211")
                 r.check("delete unknown -> 100 (idempotent)",
                         c.code("marker delete_kernel %s nope" % VETH_A) == "100")
+
+                # --- the interface is replaced under a live marker: enable
+                # must fail loudly while it is gone, and re-arm once the
+                # device is back (new netdev, new MACs)
+                r.check("renew: add", c.code('marker add_kernel renew %s "icmp"' % VETH_A) == "100")
+                c.code("marker enable_kernel %s renew off" % VETH_A)
+                _ip(["link", "del", VETH_A])
+                time.sleep(0.3)                    # the reader hits the dead socket
+                res = c.send("marker enable_kernel %s renew on" % VETH_A)
+                r.check("renew: enable with the iface gone -> 208 (no lie)",
+                        res.startswith("208-"), res)
+                r.check("renew: recreate the pair",
+                        c.code("link veth %s %s" % (VETH_A, VETH_B)) == "100")
+                c.code("link set %s up" % VETH_A)
+                c.code("link set %s up" % VETH_B)
+                m_a, m_b = _mac(VETH_A), _mac(VETH_B)
+                r.check("renew: enable again -> 100 (rebind + re-arm)",
+                        c.code("marker enable_kernel %s renew on" % VETH_A) == "100")
+                _stim(m_a, m_b)
+                r.check("renew: signals flow on the new device",
+                        len([s for s in _drain(ms, 1.2) if s.startswith("MARK ")]) == 2)
+                c.code("marker delete_kernel %s renew" % VETH_A)
             finally:
                 c.close()
     finally:
