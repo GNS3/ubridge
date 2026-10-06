@@ -45,3 +45,6 @@ __pycache__/
 
 # Dependency files emitted by -MMD (Makefile)
 *.d
+
+# Claude Code local settings
+.claude/
