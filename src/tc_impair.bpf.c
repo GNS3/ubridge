@@ -38,8 +38,8 @@
 /*
  * Minimal freestanding definitions (the BPF target has no libc; pulling in
  * the uapi <linux/bpf.h> drags arch-dependent headers). The __sk_buff
- * offsets used here (len @0, data @80, data_end @84) are the stable uapi
- * layout, asserted from the native side in hypervisor_tc.c.
+ * offsets used here (len @0, data @76, data_end @80) are the stable uapi
+ * layout, asserted from the native side in tc_ebpf.c.
  */
 typedef unsigned char u8;
 typedef unsigned short u16;
@@ -154,7 +154,9 @@ static inline_always u64 draw_range(volatile u64 *prng, u64 nominal_ns, u64 jitt
     if (hi <= lo)
         return lo * 1000000ULL;
     rnd = prng_next(prng);
-    return (lo + (((unsigned long long)rnd * (hi - lo)) >> 32)) * 1000000ULL;
+    /* span+1 so the draw includes the upper endpoint: the documented
+     * interval is [nominal-jitter, nominal+jitter], both ends inclusive. */
+    return (lo + (((unsigned long long)rnd * (hi - lo + 1)) >> 32)) * 1000000ULL;
 }
 
 /*
@@ -245,11 +247,12 @@ int tc_impair_prog(struct min_skb *ctx)
     if (!cnt)
         return TC_ACT_UNSPEC;
 
-    /* 1. nth: drop every Nth packet — exact across CPUs via atomic add.
-     * The modulo is done on the low 32 bits: BPF has no native 64-bit
-     * modulo (a u64 % would emit a __umoddi3 call the verifier rejects). */
+    /* 1. nth: drop every Nth packet — exact across CPUs via atomic add, and
+     * exact past 2^32 too: the BPF ISA has a native 64-bit modulo
+     * (BPF_ALU64|BPF_MOD — clang emits a mod instruction, not a libcall),
+     * so the counter is used at full width. */
     if (cfg->nth) {
-        u32 n = (u32)__sync_fetch_and_add(&cnt->nth_state, 1) + 1;
+        u64 n = __sync_fetch_and_add(&cnt->nth_state, 1) + 1;
         if (n % cfg->nth == 0)
             return TC_ACT_SHOT;
     }
