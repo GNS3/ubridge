@@ -106,7 +106,8 @@ all: $(NAME)
 # deliberately not used: Debian/Ubuntu build libbfd without the BPF target).
 # The compiler is overridable so CI can pin it: the committed instruction
 # bytes must be exactly what the pinned clang produces
-# (`make bpf BPF_CLANG=clang-18` + `git diff --exit-code`).
+# (`make bpf BPF_CLANG=clang-21` + `git diff --exit-code`; clang 21/22/23
+# currently produce identical output for this program, 18 and older do not).
 BPF_CLANG ?= clang
 
 bpf:

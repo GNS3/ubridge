@@ -39,10 +39,11 @@ jobs:
   # ---------------------------------------------------------------------
   # The committed eBPF instruction array (src/tc_ebpf_insns.h) must be
   # exactly what the pinned clang produces from src/tc_impair.bpf.c:
-  # `make bpf` regenerates it and the job fails on any diff.  The clang
-  # major is pinned deliberately — codegen differences across versions
-  # would silently change the embedded program; bump the pin together
-  # with a regeneration.
+  # `make bpf` regenerates it and the job fails on any diff.  The pin is
+  # the fixed llvm-toolchain-noble-21 branch (a moving snapshot repo would
+  # drift): clang 21/22/23 currently produce identical output for this
+  # program, 18 and older do not.  Bump the pin together with a
+  # regeneration.
   # ---------------------------------------------------------------------
   bpf-array:
     name: eBPF array reproducible (pinned clang)
@@ -52,12 +53,15 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v7
 
-      - name: Install the pinned toolchain
-        run: sudo apt-get update && sudo apt-get install -y clang-18
+      - name: Install the pinned toolchain (clang-21)
+        run: |-
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/ubuntu noble llvm-toolchain-noble-21 main" | sudo tee /etc/apt/sources.list.d/llvm21.list
+          sudo apt-get update && sudo apt-get install -y clang-21
 
       - name: Regenerate and compare
         run: |
-          make bpf BPF_CLANG=clang-18
+          make bpf BPF_CLANG=clang-21
           git diff --exit-code -- src/tc_ebpf_insns.h
 
   # ---------------------------------------------------------------------
