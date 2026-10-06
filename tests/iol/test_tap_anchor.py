@@ -38,6 +38,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 
 from helpers import (Ubridge, Results, HOST, ubridge_binary, prepare_env,
@@ -50,7 +51,31 @@ IOL_ID = 9321        # the fake IOL instance
 BRIDGE_SOCK = iol_sock(APP_ID)
 TAP = "gi0anchor0p0"          # 12 chars < IFNAMSIZ-1
 TAP2 = "gi0leak0p0"           # for the stopped-delete leak regression
-ERRLOG = "/tmp/ubridge-iol-tap.err"
+def _errlog_path():
+    """Pick an error-log path this process can write.
+
+    The fixed name is reused across runs for easy inspection, but a
+    leftover owned by another identity — a root-owned file from a sudo run
+    in the sticky /tmp — can be neither unlinked nor opened here (a
+    namespaced run's "root" is not the host's), so fall back to a fresh
+    uniquely-named file in that case.
+    """
+    fixed = "/tmp/ubridge-iol-tap.err"
+    try:
+        os.unlink(fixed)
+    except OSError:
+        pass
+    try:
+        fd = os.open(fixed, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+        os.close(fd)
+        return fixed
+    except OSError:
+        fd, alt = tempfile.mkstemp(prefix="ubridge-iol-tap-", suffix=".err")
+        os.close(fd)
+        return alt
+
+
+ERRLOG = _errlog_path()
 BCAST = b"\xff" * 6
 
 # Crafted probe frames use a non-IP ethertype on purpose. When br_netfilter is
@@ -76,14 +101,6 @@ class UbridgeErr(Ubridge):
     def __enter__(self):
         try:
             os.unlink(self.sock_path)
-        except FileNotFoundError:
-            pass
-        # fs.protected_regular=2 (the Tumbleweed/systemd default) makes even
-        # root's O_CREAT open of another user's file in the sticky /tmp fail
-        # with EACCES — a leftover from an unprivileged run would wedge this
-        # suite; remove it first so it is re-runnable across user/root.
-        try:
-            os.unlink(self.errlog)
         except FileNotFoundError:
             pass
         self._errf = open(self.errlog, "w")
