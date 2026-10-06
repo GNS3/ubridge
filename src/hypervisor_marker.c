@@ -47,6 +47,7 @@
 #include <net/if.h>
 #include <linux/if_ether.h>
 #include <linux/if_packet.h>
+#include <linux/filter.h>
 
 #include <pcap.h>   /* must precede pcap_capture.h: pcap_capture_t uses libpcap types */
 #include "ubridge.h"   /* defines pcap_capture_t itself */
@@ -236,7 +237,14 @@ static pthread_mutex_t g_km_lock = PTHREAD_MUTEX_INITIALIZER;
 static void *kernel_marker_thread(void *arg)
 {
     kernel_marker_t *km = (kernel_marker_t *)arg;
-    unsigned char buf[65535];
+    const size_t buf_len = 65535;
+    unsigned char *buf = malloc(buf_len);
+
+    if (buf == NULL) {
+        fprintf(stderr, "kernel marker '%s': out of memory for the receive buffer\n", km->name);
+        km->dead = 1;      /* enable() reports/retries instead of lying */
+        return NULL;
+    }
 
     while (!km->stop) {
         struct sockaddr_ll from;
@@ -245,7 +253,7 @@ static void *kernel_marker_thread(void *arg)
         const char *dir;
         ssize_t n;
 
-        n = recvfrom(km->sock, buf, sizeof(buf), 0,
+        n = recvfrom(km->sock, buf, buf_len, 0,
                      (struct sockaddr *)&from, &fromlen);
         if (n <= 0) {
             if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
@@ -277,6 +285,7 @@ static void *kernel_marker_thread(void *arg)
             }
         }
     }
+    free(buf);
     return NULL;
 }
 
@@ -527,6 +536,26 @@ static int cmd_add_kernel(hypervisor_conn_t *conn, int argc, char *argv[])
     tv.tv_sec = 1;
     tv.tv_usec = 0;
     setsockopt(km->sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    /* Prune in the kernel where the frame layout matches what the filter was
+     * compiled for: for DLT_EN10MB the AF_PACKET frame is byte-identical to
+     * the offsets pcap_compile assumed, so non-matching frames never cross
+     * to user space.  Other linktypes (C_HDLC/PPP offsets differ at the
+     * AF_PACKET boundary) keep the user-space pcap_offline_filter path,
+     * which also re-checks every delivered frame. */
+    if (link_type == DLT_EN10MB) {
+        struct sock_fprog fprog;
+
+        fprog.len = (unsigned short)km->fp.bf_len;
+        fprog.filter = (struct sock_filter *)km->fp.bf_insns;
+        if (setsockopt(km->sock, SOL_SOCKET, SO_ATTACH_FILTER, &fprog, sizeof(fprog)) < 0) {
+            err = errno;
+            hypervisor_send_reply(conn, HSC_ERR_BINDING, 1,
+                                  "Could not add kernel marker: cannot attach the filter to %s: %s",
+                                  ifname, strerror(err));
+            goto fail;
+        }
+    }
 
     memset(&sll, 0, sizeof(sll));
     sll.sll_family = AF_PACKET;
