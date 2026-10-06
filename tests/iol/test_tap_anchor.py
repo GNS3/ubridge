@@ -174,11 +174,19 @@ def main():
             r.check("unknown bridge -> 208", rep.startswith("208"), rep)
             rep = c.send("iol_bridge add_nio_tap iolt %d 0 0 %s" % (IOL_ID, "x" * 16))
             r.check("name >= IFNAMSIZ -> 204", rep.startswith("204"), rep)
-            before = subprocess.run(["ip", "-o", "link"], capture_output=True,
-                                    text=True).stdout.splitlines()
+            # compare the NAME SETS, not the raw lines: `ip -o link` carries
+            # volatile flags/state, and on a real host (a root run) an
+            # unrelated interface flipping LOWER_UP between the two snapshots
+            # used to fail this check.  A transient device adds a name.
+            def _link_names():
+                out = subprocess.run(["ip", "-o", "link"], capture_output=True,
+                                     text=True).stdout
+                return sorted(line.split(":", 2)[1].strip()
+                              for line in out.splitlines() if ":" in line)
+
+            before = _link_names()
             rep = c.send("iol_bridge add_nio_tap iolt %d 0 0 nosuchtap0" % IOL_ID)
-            after = subprocess.run(["ip", "-o", "link"], capture_output=True,
-                                   text=True).stdout.splitlines()
+            after = _link_names()
             r.check("absent TAP -> 208", rep.startswith("208"), rep)
             r.check("no transient device created", before == after,
                     "%d links before, %d after" % (len(before), len(after)))
