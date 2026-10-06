@@ -177,7 +177,7 @@ def main():
             c.close()
 
         # --- T3: best-effort — an injected write failure never fails addif ---
-        os.environ["UBRIDGE_INJECT_FWD_MASK_FAILURE"] = "1"
+        os.environ["UBRIDGE_TEST_INJECT_FWD_MASK_FAILURE"] = "1"
         try:
             with Ubridge(port=13009) as ub2:
                 c2 = ub2.connect()
@@ -196,7 +196,7 @@ def main():
                 c2.send("brctl delete llreg2")
                 c2.close()
         finally:
-            del os.environ["UBRIDGE_INJECT_FWD_MASK_FAILURE"]
+            del os.environ["UBRIDGE_TEST_INJECT_FWD_MASK_FAILURE"]
     finally:
         del_veths()
 

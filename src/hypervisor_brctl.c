@@ -333,9 +333,12 @@ static int br_enslave_if(const char *bridge, const char *port)
      * PAUSE (bit 1), which the kernel refuses and hard-drops anyway.
      * Best-effort: kernels before 4.15 have no such port attribute, and the
      * cable simply keeps today's behaviour there. */
-    /* UBRIDGE_INJECT_FWD_MASK_FAILURE: test hook (tests/brctl/test_linklocal.py,
-     * T3) — force the write to fail and prove the addif verdict is unchanged. */
-    if (getenv("UBRIDGE_INJECT_FWD_MASK_FAILURE"))
+    /* UBRIDGE_TEST_INJECT_FWD_MASK_FAILURE: test-only fault-injection seam
+     * (tests/brctl/test_linklocal.py, T3) — force the write to fail and prove
+     * the addif verdict is unchanged.  Deliberately named UBRIDGE_TEST_*: a
+     * deployment inheriting it would silently disable link-local
+     * transparency on every addif. */
+    if (getenv("UBRIDGE_TEST_INJECT_FWD_MASK_FAILURE"))
         ret = -EINVAL;
     else
         ret = br_set_port_attr_u16(bridge, port, IFLA_BRPORT_GROUP_FWD_MASK,
