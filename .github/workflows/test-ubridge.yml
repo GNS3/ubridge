@@ -56,7 +56,7 @@ jobs:
       - name: Install the pinned toolchain (clang-21)
         run: |-
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
-          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/ubuntu noble llvm-toolchain-noble-21 main" | sudo tee /etc/apt/sources.list.d/llvm21.list
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/ubuntu/ llvm-toolchain-noble-21 main" | sudo tee /etc/apt/sources.list.d/llvm21.list
           sudo apt-get update && sudo apt-get install -y clang-21
 
       - name: Regenerate and compare
