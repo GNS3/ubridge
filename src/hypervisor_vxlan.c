@@ -497,6 +497,16 @@ static int cmd_create(hypervisor_conn_t *conn, int argc, char *argv[])
         return -1;
     }
 
+    /* The name goes straight into the RTM_NEWLINK message; the kernel
+     * accepts at most IFNAMSIZ-1 chars, and anything past the fixed message
+     * buffer used to overflow it (ASan: heap-buffer-overflow in nla_put). */
+    if (strlen(name) >= IFNAMSIZ) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1,
+                              "Could not create vxlan %s: %s", name,
+                              strerror(ENAMETOOLONG));
+        return -1;
+    }
+
     memset(&p, 0, sizeof(p));
     p.vni = (unsigned int)vni;
     p.has_vni = 1;
