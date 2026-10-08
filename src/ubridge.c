@@ -93,10 +93,23 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
     /* receive from the receiving NIO */
     drop_packet = FALSE;
     bytes_received = nio_recv(rx_nio, &pkt, NIO_MAX_PKT_SIZE);
+    if (bytes_received == 0) {
+        /* a zero-length read carries no frame: a datagram peer (unix/udp NIO)
+         * sent an empty datagram, or a TAP reported no data. Counting or
+         * forwarding it would inject an empty frame on the far side — the
+         * iol listeners already skip it for the same reason. */
+        continue;
+    }
     if (bytes_received == -1) {
         perror("recv");
         if (errno == ECONNREFUSED || errno == ENETDOWN)
            continue;
+        /* EIO: read on a TAP whose interface is administratively DOWN — the
+           same tolerance the send side applies below. Defensive on kernels
+           where a DOWN tap blocks rather than errors, but the relay threads
+           end with exit() and would take the whole daemon with them. */
+        if (rx_nio->type == NIO_TYPE_TAP && errno == EIO)
+            continue;
         rc = -1;
         break;
     }

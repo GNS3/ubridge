@@ -47,7 +47,9 @@ DEBUG_OBJ = $(SRC:%.c=$(BUILDDIR)/%.o)
 
 CC      ?=  gcc
 
-CFLAGS  +=  -Wall
+# -MMD -MP: emit a .d file per object so header changes rebuild their
+# dependents (see the explicit rule for the generated eBPF header below).
+CFLAGS  +=  -Wall -MMD -MP
 
 BINDIR  =   /usr/local/bin
 
@@ -59,8 +61,11 @@ SRC += src/nio_linux_raw.c             \
        src/hypervisor_iol_bridge.c     \
        src/hypervisor_brctl.c          \
        src/hypervisor_link.c           \
+       src/hypervisor_vxlan.c          \
        src/hypervisor_tap.c            \
        src/hypervisor_tc.c             \
+       src/tc_netem_dist.c             \
+       src/tc_ebpf.c                   \
        src/hypervisor_capture.c        \
        src/hypervisor_marker.c         \
        src/netlink/nl.c
@@ -79,7 +84,7 @@ DEBUG_CFLAGS = -O1 -g -fsanitize=$(SANITIZERS) -fno-omit-frame-pointer
 DEBUG_LDFLAGS = -fsanitize=$(SANITIZERS)
 
 ##############################
-.PHONY: clean debug all install test
+.PHONY: clean debug all install test bpf
 
 $(BUILDDIR)/%.o: %.c
 	mkdir -p $(dir $@)
@@ -93,10 +98,28 @@ $(DEBUG_TARGET): $(DEBUG_OBJ)
 
 all: $(NAME)
 
+# Regenerate the committed eBPF instruction array (developer-only; the normal
+# build just compiles the committed src/tc_ebpf_insns.h and needs neither clang
+# nor libbpf).  Compiles src/tc_impair.bpf.c to a transient object under
+# $(BUILDDIR) and materialises it as the header the loader includes — requires
+# clang + python3 only (the generator parses the ELF itself; binutils is
+# deliberately not used: Debian/Ubuntu build libbfd without the BPF target).
+# The compiler is overridable so CI can pin it: the committed instruction
+# bytes must be exactly what the pinned clang produces
+# (`make bpf BPF_CLANG=clang-21` + `git diff --exit-code`; clang 21/22/23
+# currently produce identical output for this program, 18 and older do not).
+BPF_CLANG ?= clang
+
+bpf:
+	mkdir -p $(BUILDDIR)
+	$(BPF_CLANG) -target bpf -O2 -Wall -c src/tc_impair.bpf.c -o $(BUILDDIR)/tc_impair.bpf.o
+	python3 tools/gen_tc_impair.py $(BUILDDIR)/tc_impair.bpf.o
+
 debug: $(DEBUG_TARGET)
 
 clean:
 	-rm -f $(OBJ)
+	-rm -f $(OBJ:.o=.d) $(DEBUG_OBJ:.o=.d)
 	-rm -f $(NAME)
 	-rm -f *~
 	-rm -rf $(BUILDDIR)
@@ -104,7 +127,11 @@ clean:
 install: $(NAME)
 	chmod +x $(NAME)
 	cp -p $(NAME) $(BINDIR)
-	setcap cap_net_admin,cap_net_raw=ep $(BINDIR)/$(NAME)
+	# stateful eBPF classifiers (tc nth_drop & co) additionally need
+	# CAP_BPF on kernels >= 5.8; fall back when the filesystem/kernel
+	# does not know the capability yet
+	setcap cap_bpf,cap_net_admin,cap_net_raw=ep $(BINDIR)/$(NAME) || \
+	    setcap cap_net_admin,cap_net_raw=ep $(BINDIR)/$(NAME)
 
 $(UNIT_TEST_TARGET): $(UNIT_TEST_SRC) $(filter-out src/main.c,$(SRC))
 	mkdir -p $(dir $@)
@@ -113,3 +140,7 @@ $(UNIT_TEST_TARGET): $(UNIT_TEST_SRC) $(filter-out src/main.c,$(SRC))
 
 test: $(UNIT_TEST_TARGET)
 	./$(UNIT_TEST_TARGET)
+
+# header dependencies emitted by -MMD (tc_ebpf.o picks up the generated
+# tc_ebpf_insns.h through its own include of it)
+-include $(OBJ:.o=.d) $(DEBUG_OBJ:.o=.d)

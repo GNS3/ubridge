@@ -61,10 +61,17 @@ The modules that are currently defined are given below:
 - docker : Docker management 
 - brctl : Linux bridge management
 - link : generic interface management
+- vxlan : kernel VXLAN device lifecycle (kernel data plane)
 - tap : persistent TAP device lifecycle (kernel data plane)
-- tc : kernel netem link impairment — delay/jitter/loss/dup/corrupt (kernel data plane)
+- tc : kernel netem link impairment — delay/jitter/loss/dup/corrupt plus
+  rate/reorder/loss-gemodel/distribution/seed/limit — `bpf_drop`
+  classic-BPF match-drop filters, the eBPF stateful modes
+  (`nth_drop`/`quota_drop`/`window_drop`/`flow_drop`, needs CAP_BPF), and
+  `tc capabilities` (kernel data plane)
 - capture : kernel-side AF_PACKET capture (kernel data plane)
-- marker : packet-filter match signals, pushed to a UDP sink (kernel data plane)
+- marker : packet-filter match signals, pushed to a UDP sink; `add_kernel`
+  sniffs a kernel interface directly for data-plane traffic that bypasses
+  the relay (kernel data plane)
 
 User-space link impairment (delay / jitter / loss / corrupt / BPF) is **not a
 separate module**: it is a per-bridge filter chain configured through the
@@ -125,6 +132,7 @@ hypervisor cmd_list bridge
 101 add_nio_unix (min/max args: 3/3)
 101 delete_nio_udp (min/max args: 4/4)
 101 remove_nio_udp (min/max args: 4/4)
+101 delete_nio_tap (min/max args: 2/2)
 101 add_nio_udp (min/max args: 4/4)
 101 rename (min/max args: 2/2)
 101 reset_stats (min/max args: 1/1)
@@ -242,6 +250,18 @@ bridge add_nio_unix br0 "/tmp/local" "/tmp/remote"
 ``` {.bash}
 bridge add_nio_tap br0 tap0
 100-NIO TAP added to bridge 'br0'
+```
+
+- **bridge delete_nio_tap** *\<bridge_name\>* *\<tap_device\>*:
+    Release the TAP NIO opened by that name — the fd closes, the interface
+    itself survives (persistent TAPs are deleted via the `tap` module). The
+    NIO is matched by the kernel-resolved interface name, and the bridge must
+    not be running (stop it first, as with `delete_nio_udp`; `start` keeps
+    every NIO, so the swap is stop → delete → add → start).
+
+``` {.bash}
+bridge delete_nio_tap br0 tap0
+100-NIO TAP removed from bridge 'br0'
 ```
 
 - **bridge set_nio_tap_carrier** *\<bridge_name\>* *\<on|off\>*:
@@ -472,7 +492,10 @@ brctl delete br0
 ```
 
 - **brctl addif** *\<bridge_name\>* *\<port_interface\>*:
-    Enslave an interface to a bridge and automatically bring it UP.
+    Enslave an interface to a bridge, automatically bring it UP, and open
+    link-local forwarding on the port (`group_fwd_mask 0xfffd`: LACP, LLDP,
+    EAPOL and the other reserved addresses cross the bridge like a cable;
+    MAC PAUSE stays excepted — the kernel drops it unconditionally).
 
 ``` {.bash}
 brctl addif br0 tap0
@@ -598,6 +621,18 @@ brctl setgroupfwd br0 0
 These commands modify bridge port attributes via the kernel's
 IFLA_PROTINFO interface. The port interface must already be
 enslaved to the bridge.
+
+- **brctl setportgroupfwd** *\<bridge_name\>* *\<port\>* *\<0-65535\>*:
+    Set the per-port link-local forwarding mask. `addif` sets 65533 (0xfffd)
+    by default; this is the escape hatch back to stock kernel behaviour
+    (0) or any custom mask. The kernel rejects masks with bit 1 (MAC PAUSE)
+    set — 65534/65535 fail with 206. Last-writer-wins: a fresh `addif`
+    re-applies the default.
+
+``` {.bash}
+brctl setportgroupfwd br0 tap0 0
+100-group_fwd_mask 0x0 set on tap0
+```
 
 - **brctl setportprio** *\<bridge_name\>* *\<port\>* *\<0-63\>*:
     Set the STP port priority (kernel limit; the parser accepts 0-255

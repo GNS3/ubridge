@@ -44,6 +44,7 @@
 #include "hypervisor_iol_bridge.h"
 #include "hypervisor_brctl.h"
 #include "hypervisor_link.h"
+#include "hypervisor_vxlan.h"
 #include "hypervisor_tap.h"
 #include "hypervisor_tc.h"
 #include "hypervisor_capture.h"
@@ -581,6 +582,7 @@ int run_hypervisor(char *ip_addr, int tcp_port, char *socket_path)
    hypervisor_iol_bridge_init();
    hypervisor_brctl_init();
    hypervisor_link_init();
+   hypervisor_vxlan_init();
    hypervisor_tap_init();
    hypervisor_tc_init();
    hypervisor_capture_init();

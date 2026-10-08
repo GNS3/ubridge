@@ -55,6 +55,9 @@ def main():
                     all(str(v) in toks for v in (1, 2048, N)))
             print("  [perf] add=%.2fs  vlan_show=%0.2fs  (%d VLANs)" % (t_add, t_show, N))
 
+        if has_port:
+            # delete is refused (EBUSY) while a port is still enslaved
+            c.send("brctl delif %s ubtest" % BR)
         r.check("delete %s" % BR, c.code("brctl delete %s" % BR) == "100")
         c.close()
 

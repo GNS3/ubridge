@@ -33,17 +33,32 @@ Just the in-repo binary (AF_UNIX + high UDP, no caps):
 make
 ```
 
-No `sudo make install`, no CAP_NET_ADMIN.
+No `sudo make install`, no CAP_NET_ADMIN for the lifecycle/relay suites.
+`test_tap_anchor.py` creates taps, a veth pair and a bridge, so it needs
+CAP_NET_ADMIN — run that one under sudo or `unshare -Urn` (it self-skips
+otherwise, which keeps `run_all.py` green in an unprivileged CI job).
 
 ## Running
 
 ```bash
 cd tests/iol
-python3 test_lifecycle.py    # one suite
-python3 run_all.py           # everything
+python3 test_lifecycle.py                       # one suite
+sudo python3 test_tap_anchor.py                 # the one needing caps
+unshare -Urn python3 run_all.py                 # everything, no sudo
 ```
 
 `run_all.py` exits non-zero if any suite fails, so it can gate CI.
+
+### Crafted frames and `br_netfilter`
+
+Frames that have to cross a kernel bridge (only `test_tap_anchor.py` does)
+must not claim to be IP unless they really are: with `br_netfilter` loaded —
+`bridge-nf-call-iptables=1`, the usual state on a host running firewalld or
+docker — a bridge port runs the netfilter hooks and the bridge's own
+validation drops a frame whose ethertype says IPv4 but whose header is not a
+well-formed IP header. Measured on a tap→bridge→tap chain: `0x0800` + ASCII
+payload → dropped, `0x0800` + valid IPv4 header → forwarded, `0x88B5` (non-IP)
+→ forwarded. The suites therefore craft probe frames with `PROBE_ET` (0x88B5).
 
 ## Suites
 
@@ -51,6 +66,7 @@ python3 run_all.py           # everything
 |-------|----------------|
 | `test_lifecycle.py` | create/duplicate, start/stop missing & already-running & not-running, rename collision, list/get_stats/reset_stats, add_nio_udp validation (iol_id==app_id, port>MAX_PORTS, missing bridge), delete missing. |
 | `test_relay.py` | IOL->NIO payload intact; dst_port routes to the right NIO (and no hub flood); NIO->IOL prepends the exact header (dst=iol_id, src=app_id, ports=port_key). |
+| `test_tap_anchor.py` | TAP anchor ports (`add_nio_tap`/`delete_nio_tap`): both-direction relay, absent/too-long/unknown names, delete keeps the persistent device, UDP<->TAP swaps with no fd or thread leak, DOWN-anchor resilience (100 frames -> ubridge stays alive, all dropped with EIO), kernel-bridge interop (anchor + veth peer on one bridge), and the stopped-delete fd release. Needs `CAP_NET_ADMIN` (taps, veth, bridge) — self-skips without it. |
 
 ## Conventions
 

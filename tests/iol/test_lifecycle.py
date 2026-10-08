@@ -10,7 +10,7 @@ No CAP_NET_ADMIN (AF_UNIX + ephemeral UDP only); no IOL image. Codes:
 100 ok / 204 bad param / 206 create / 209 start / 210 stop / 213 rename /
 214 not found.
 """
-from helpers import (Ubridge, Results, ubridge_binary, ensure_netio_dir,
+from helpers import (Ubridge, Results, ubridge_binary, prepare_env,
                      free_udp_port)
 
 PORT = 13170
@@ -18,7 +18,7 @@ PORT = 13170
 
 def main():
     r = Results()
-    ensure_netio_dir()
+    prepare_env()
     with Ubridge(port=PORT, binary=ubridge_binary()) as ub:
         c = ub.connect()
         try:

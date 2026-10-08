@@ -43,6 +43,7 @@
 #include <assert.h>
 
 #include "hypervisor.h"
+#include "hypervisor_link.h"
 #include "hypervisor_tap.h"
 
 /* IFF_TUN_EXCL has been in <linux/if_tun.h> since 2.6.26; guard anyway. */
@@ -177,6 +178,16 @@ static int cmd_create(hypervisor_conn_t *conn, int argc, char *argv[])
     err = tap_create(name);
     if (err < 0) {
         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not create TAP %s: %s", name, strerror(-err));
+        return -1;
+    }
+
+    /* The TAP is created DOWN, but the emulator opens it and brings it UP:
+     * harden it now, so it never acquires an IPv6 link-local identity (which
+     * the kernel would then advertise and answer ND for on the emulated
+     * segment). */
+    err = link_harden_l2only(name);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set L2-only on TAP %s: %s", name, strerror(-err));
         return -1;
     }
 

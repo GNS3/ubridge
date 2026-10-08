@@ -5,6 +5,7 @@ import sys
 SUITES = [
     "test_lifecycle",
     "test_relay",
+    "test_tap_anchor",   # needs CAP_NET_ADMIN; self-skips without it
 ]
 
 

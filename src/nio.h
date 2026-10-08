@@ -31,6 +31,14 @@
 #define NIO_MAX_PKT_SIZE    65535
 #define NIO_DEV_MAXLEN      64
 
+/* IFNAMSIZ without pulling <net/if.h> into every NIO user: it collides with
+ * <linux/if.h> (IFF_* redeclarations) in files that include the linux header
+ * first (nio_linux_raw.c via <linux/if_packet.h>). Both headers define it as
+ * 16; whichever arrives first wins, the fallback covers the rest. */
+#ifndef IFNAMSIZ
+#define IFNAMSIZ 16
+#endif
+
 enum {
     NIO_TYPE_UDP = 1,
     NIO_TYPE_ETHERNET,
@@ -48,6 +56,10 @@ typedef struct {
 
 typedef struct {
     int fd;
+    /* kernel-resolved interface name (empty until the device is opened) — the
+       key delete_nio_tap matches on, so a name the kernel truncated to
+       IFNAMSIZ-1 can never fail to match its own NIO */
+    char name[IFNAMSIZ];
 } nio_tap_t;
 
 typedef struct {

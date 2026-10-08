@@ -10,6 +10,7 @@ the IOL instance ourselves.
 import importlib.util
 import os
 import socket
+import subprocess
 
 _delay_helpers = os.path.join(os.path.dirname(__file__), "..", "delay", "helpers.py")
 _spec = importlib.util.spec_from_file_location("iol_delay_helpers", _delay_helpers)
@@ -40,6 +41,16 @@ def ensure_netio_dir():
         os.makedirs(NETIO_DIR, 0o777)
     except FileExistsError:
         pass
+
+
+def prepare_env():
+    """Environment the suites expect, done here so each one is runnable on its
+    own. A fresh netns (`unshare -Urn`) starts with lo down, and binding a UDP
+    NIO to 127.0.0.1 then fails with EADDRNOTAVAIL — which the handlers report
+    as a generic 206, i.e. as a mystifying test failure. No-op where lo is
+    already up."""
+    subprocess.run(["ip", "link", "set", "lo", "up"], capture_output=True)
+    ensure_netio_dir()
 
 
 def iol_sock(iol_id):

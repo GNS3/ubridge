@@ -3,8 +3,10 @@ name: Test uBridge
 # Runs the black-box regression suites under tests/ on every PR targeting
 # master. Splits into two jobs by privilege:
 #
-#   * userspace — marker / delay / packet_filter / iol. Pure UDP + libpcap, no caps.
-#   * kernel    — brctl / link / tap / tc / capture / nio_raw / docker. Need CAP_NET_ADMIN.
+#   * userspace — marker / delay / packet_filter / iol / bridge. Pure UDP +
+#     libpcap + AF_UNIX, no caps (the tap-dependent suites self-skip).
+#   * kernel    — brctl / link / vxlan / linklocal / tap / tc / iol-anchor /
+#     capture / nio_raw / docker / bridge. Need CAP_NET_ADMIN.
 #
 # The ubuntu-latest runner is a real Azure VM (not a container), so file
 # capabilities (setcap), dummy/tap/veth interfaces and network namespaces
@@ -35,11 +37,39 @@ jobs:
         run: make test
 
   # ---------------------------------------------------------------------
+  # The committed eBPF instruction array (src/tc_ebpf_insns.h) must be
+  # exactly what the pinned clang produces from src/tc_impair.bpf.c:
+  # `make bpf` regenerates it and the job fails on any diff.  The pin is
+  # the fixed llvm-toolchain-noble-21 branch (a moving snapshot repo would
+  # drift): clang 21/22/23 currently produce identical output for this
+  # program, 18 and older do not.  Bump the pin together with a
+  # regeneration.
+  # ---------------------------------------------------------------------
+  bpf-array:
+    name: eBPF array reproducible (pinned clang)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain (clang-21)
+        run: |-
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" | sudo tee /etc/apt/sources.list.d/llvm21.list
+          sudo apt-get update && sudo apt-get install -y clang-21
+
+      - name: Regenerate and compare
+        run: |
+          make bpf BPF_CLANG=clang-21
+          git diff --exit-code -- src/tc_ebpf_insns.h
+
+  # ---------------------------------------------------------------------
   # Userspace suites — the riskiest user-space logic and zero privilege
   # friction. Run right after `make`, against the in-repo ./ubridge.
   # ---------------------------------------------------------------------
   userspace:
-    name: Userspace (marker, delay, packet_filter, iol)
+    name: Userspace (marker, delay, packet_filter, iol, bridge)
     runs-on: ubuntu-latest
 
     steps:
@@ -64,6 +94,9 @@ jobs:
       - name: iol suite
         run: cd tests/iol && python3 run_all.py
 
+      - name: bridge suite (zero-length; tap suites self-skip unprivileged)
+        run: cd tests/bridge && python3 run_all.py
+
   # ---------------------------------------------------------------------
   # Kernel suites — CAP_NET_ADMIN via file capabilities.
   #
@@ -79,7 +112,7 @@ jobs:
   # and also touch kernel state directly, so the whole process runs as root.
   # ---------------------------------------------------------------------
   kernel:
-    name: Kernel (brctl, link, tap, tc, capture, nio_raw, docker)
+    name: Kernel (brctl, link, vxlan, linklocal, tap, tc, iol-anchor, capture, nio_raw, docker, bridge)
     runs-on: ubuntu-latest
 
     steps:
@@ -107,14 +140,29 @@ jobs:
       - name: link suite (unprivileged user + capped binary)
         run: cd tests/link && python3 run_all.py
 
+      - name: vxlan suite (unprivileged user + capped binary)
+        run: cd tests/vxlan && python3 run_all.py
+
       - name: tap suite
         run: cd tests/tap && sudo python3 run_all.py
+
+      - name: "bridge suite (tap anchors: swap, relay, DOWN anchor)"
+        run: cd tests/bridge && sudo python3 run_all.py
 
       - name: tc suite
         run: cd tests/tc && sudo python3 run_all.py
 
+      - name: iol tap-anchor suite (privileged — self-skips when uncapped)
+        run: cd tests/iol && sudo python3 test_tap_anchor.py
+
+      - name: linklocal suite (privileged — sysfs cross-checks need the root netns)
+        run: cd tests/brctl && sudo python3 test_linklocal.py
+
       - name: capture suite
         run: cd tests/capture && sudo python3 run_all.py
+
+      - name: marker kernel suite
+        run: cd tests/marker && sudo python3 test_kernel.py
 
       - name: nio_raw suite
         run: cd tests/nio_raw && sudo python3 run_all.py

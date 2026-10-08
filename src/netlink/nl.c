@@ -58,7 +58,11 @@ static int nla_put(struct nlmsg *nlmsg, int attr,
         rta = NLMSG_TAIL(&nlmsg->nlmsghdr);
         rta->rta_type = attr;
         rta->rta_len = rtalen;
-        memcpy(RTA_DATA(rta), data, len);
+        /* nla_put_attr() reserves an attribute header with len == 0 and
+         * data == NULL; memcpy() with a NULL source is undefined even for
+         * zero bytes (UBSan: "null pointer passed as argument 2"). */
+        if (len > 0)
+           memcpy(RTA_DATA(rta), data, len);
         nlmsg->nlmsghdr.nlmsg_len =
 		NLMSG_ALIGN(nlmsg->nlmsghdr.nlmsg_len) + RTA_ALIGN(rtalen);
 	return 0;
@@ -128,6 +132,22 @@ extern struct nlmsg *nlmsg_alloc(size_t size)
 extern void nlmsg_free(struct nlmsg *nlmsg)
 {
 	free(nlmsg);
+}
+
+extern int nl_xact(struct nl_handler *nlh, struct nlmsg *msg)
+{
+	struct nlmsg *reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+	int ret;
+
+	if (reply == NULL) {
+		nlmsg_free(msg);
+		return -ENOMEM;
+	}
+
+	ret = netlink_transaction(nlh, msg, reply);
+	nlmsg_free(msg);
+	nlmsg_free(reply);
+	return ret;
 }
 
 extern int netlink_rcv(struct nl_handler *handler, struct nlmsg *answer)

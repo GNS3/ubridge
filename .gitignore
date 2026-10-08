@@ -42,3 +42,9 @@ __pycache__/
 
 # lsp
 .clangd
+
+# Dependency files emitted by -MMD (Makefile)
+*.d
+
+# Claude Code local settings
+.claude/

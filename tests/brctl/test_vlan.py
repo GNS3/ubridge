@@ -11,14 +11,27 @@ The `ubtest` port is auto-created under root (ensure_ubtest in common.py); run
     sudo ip link add ubtest type dummy
 manually only if a suite is run without privileges.
 """
+import os
+import shutil as _sh
 import subprocess as _sp
 from common import Ubridge, Results, no_residual, ensure_ubtest
 
+# bridge(8) sits in /sbin on most distros — a directory plain-user shells
+# (and the `unshare -Urn` dev loop) don't carry in PATH. Resolve it once
+# across the standard locations; when genuinely absent the kernel-view
+# checks below are skipped with a NOTE instead of silently degrading to ""
+# (which fails every presence check and passes every absence check vacuously).
+_BRIDGE = _sh.which("bridge")
+if _BRIDGE is None:
+    _BRIDGE = next((p for p in ("/sbin/bridge", "/usr/sbin/bridge",
+                                "/usr/local/sbin/bridge")
+                    if os.path.isfile(p) and os.access(p, os.X_OK)), None)
+
 
 def port_vlans(port):
-    """Return `bridge vlan show dev <port>` text ("" if bridge tool/port absent)."""
+    """Return `bridge vlan show dev <port>` text ("" if the port is absent)."""
     try:
-        return _sp.run(["bridge", "vlan", "show", "dev", port],
+        return _sp.run([_BRIDGE, "vlan", "show", "dev", port],
                        capture_output=True, text=True).stdout
     except FileNotFoundError:
         return ""
@@ -51,6 +64,9 @@ def main():
         has_port = ensure_ubtest()
         if not has_port:
             print("  [NOTE] no ubtest dummy and not root — port tests skipped")
+        has_kernel_view = _BRIDGE is not None
+        if not has_kernel_view:
+            print("  [NOTE] bridge(8) not found — kernel-view checks skipped")
 
         # --- filtering bridge + port ---
         r.check("create regtestv0", c.code("brctl create regtestv0") == "100")
@@ -64,9 +80,10 @@ def main():
             # access-port: vid 100, pvid (ingress untag) + untagged (egress untag)
             r.check("vlan_add 100 pvid untagged -> 100",
                     c.code("brctl vlan_add regtestv0 ubtest 100 pvid untagged") == "100")
-            vl = port_vlans("ubtest")
-            r.check("kernel: 100 is PVID + Egress Untagged",
-                    "PVID" in _vid_line(vl, 100) and "Egress" in _vid_line(vl, 100), vl)
+            if has_kernel_view:
+                vl = port_vlans("ubtest")
+                r.check("kernel: 100 is PVID + Egress Untagged",
+                        "PVID" in _vid_line(vl, 100) and "Egress" in _vid_line(vl, 100), vl)
 
             # idempotent: re-adding the same VID/flags is a no-op success
             r.check("vlan_add 100 again (idempotent) -> 100",
@@ -75,12 +92,14 @@ def main():
             # tagged single VID (no flags)
             r.check("vlan_add 200 -> 100",
                     c.code("brctl vlan_add regtestv0 ubtest 200") == "100")
-            r.check("kernel: 200 present", "200" in port_vlans("ubtest").split())
+            if has_kernel_view:
+                r.check("kernel: 200 present", "200" in port_vlans("ubtest").split())
 
             # tagged range 300-302
             r.check("vlan_add 300 vid 302 -> 100",
                     c.code("brctl vlan_add regtestv0 ubtest 300 vid 302") == "100")
-            r.check("kernel: 300..302 present", _has_range(port_vlans("ubtest"), 300, 302))
+            if has_kernel_view:
+                r.check("kernel: 300..302 present", _has_range(port_vlans("ubtest"), 300, 302))
 
             # vlan_show: read the port's full membership back via netlink
             show = c.send("brctl vlan_show regtestv0 ubtest")
@@ -94,12 +113,14 @@ def main():
             # delete a single VID
             r.check("vlan_del 200 -> 100",
                     c.code("brctl vlan_del regtestv0 ubtest 200") == "100")
-            r.check("kernel: 200 gone", "200" not in port_vlans("ubtest").split())
+            if has_kernel_view:
+                r.check("kernel: 200 gone", "200" not in port_vlans("ubtest").split())
 
             # delete a range
             r.check("vlan_del 300 vid 302 -> 100",
                     c.code("brctl vlan_del regtestv0 ubtest 300 vid 302") == "100")
-            r.check("kernel: 300..302 gone", not _has_range(port_vlans("ubtest"), 300, 302))
+            if has_kernel_view:
+                r.check("kernel: 300..302 gone", not _has_range(port_vlans("ubtest"), 300, 302))
 
             # vlan_show reflects the deletions
             show = c.send("brctl vlan_show regtestv0 ubtest")
@@ -124,6 +145,9 @@ def main():
             r.check("vlan_add wrong bridge -> 206",
                     c.code("brctl vlan_add regtestv1 ubtest 400") == "206")
             r.check("delete regtestv1", c.code("brctl delete regtestv1") == "100")
+
+            # delete is refused (EBUSY) while a port is still enslaved
+            r.check("delif ubtest", c.code("brctl delif regtestv0 ubtest") == "100")
 
         r.check("delete regtestv0", c.code("brctl delete regtestv0") == "100")
         c.close()

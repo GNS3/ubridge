@@ -13,7 +13,10 @@ with `set_owner`.
 
 `tap` does **not** add TAPs to bridges (that's `brctl addif`) and does **not**
 open a TAP as an NIO relay (that's the `bridge` module's `add_nio_tap`, which
-opens a non-persistent TAP tied to a bridge). `tap` is purely lifecycle.
+opens a non-persistent TAP tied to a bridge — create-if-missing, by design;
+`bridge delete_nio_tap` releases that fd, and the persistent devices `tap`
+manages are never created or deleted by the `bridge` module). `tap` is purely
+lifecycle.
 
 ## Transport
 
@@ -55,6 +58,14 @@ tap create tap-gns3-e0
 
 Duplicate name → `206/EBUSY` (the `IFF_TUN_EXCL` flag rejects re-attaching to
 an existing device). Name too long → `204`.
+
+The TAP is hardened before the success reply — `link l2only on`, so the
+emulator can bring it UP without the kernel giving it an IPv6 link-local
+identity of its own (`link l2only`, and the one kernel behaviour it does not
+suppress, in `doc/link.md`). A kernel or device that cannot do it logs and
+continues: this never fails the creation. An error that is not
+`EINVAL`/`EOPNOTSUPP` does fail it (`206`) — the device is then left in place
+for the caller to delete, as with any other failed create.
 
 ### `tap set_owner <name> <uid>`
 

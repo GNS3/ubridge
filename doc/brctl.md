@@ -52,14 +52,49 @@ getcap $(which ubridge) # verify
 
 | Command | Args | Description |
 |---------|------|-------------|
-| `create <bridge>` | 1 | Create a Linux bridge (`RTM_NEWLINK`, kind=bridge, `NLM_F_CREATE|EXCL`). Duplicate → `EEXIST`. |
-| `delete <bridge>` | 1 | Delete a Linux bridge (`RTM_DELLINK`). Missing → `ENODEV`. |
-| `addif <bridge> <port>` | 2 | Enslave a port to the bridge (`RTM_SETLINK` + `IFLA_MASTER`) **and bring the port UP**. Port must pre-exist. |
+| `create <bridge>` | 1 | Create a Linux bridge (`RTM_NEWLINK`, kind=bridge, `NLM_F_CREATE|EXCL`). Duplicate → `EEXIST`. Hardened before the reply — first with `link l2only on`, because the fabric the anchors are enslaved to must not flood its own link-local to every port (the `brctl addip` L3 paths are IPv4-only, so they are unaffected); then with multicast snooping turned **off**, see below. Both roll the bridge back if they fail. |
+| `delete <bridge>` | 1 | Delete a Linux bridge (`RTM_DELLINK`). Missing → `ENODEV`. **Refused with `EBUSY` while any port is still enslaved** — release the ports first; the last party out deletes the bridge (see the note below). |
+| `addif <bridge> <port>` | 2 | Enslave a port to the bridge (`RTM_SETLINK` + `IFLA_MASTER`) **and bring the port UP**. Also opens link-local forwarding on the port: `IFLA_BRPORT_GROUP_FWD_MASK = 0xfffd`, best-effort (see Limitations). Port must pre-exist. |
 | `delif <bridge> <port>` | 2 | Release a port from a bridge. Verifies the port is actually on the given bridge; else `-EINVAL`. |
 | `addip <bridge> <ip/prefix>` | 2 | Assign an IPv4 address (`RTM_NEWADDR`) and bring the bridge UP. CIDR must include a `/` and prefix ≤ 32. |
 | `delip <bridge> <ip/prefix>` | 2 | Remove an IPv4 address from a bridge (`RTM_DELADDR`). Bad CIDR → `204`; missing bridge/IP → `207`. |
-| `setup <bridge> <ip/prefix>` | 2 | `create` + `addip` in one step. Validates the CIDR **before** creating; rolls back the bridge if `addip` fails. |
+| `setup <bridge> <ip/prefix>` | 2 | `create` + `addip` in one step. Validates the CIDR **before** creating; rolls back the bridge if `addip` fails. Applies **neither** hardening `create` applies — it is the only path to a bare `br_addbr`, so the bridge it makes keeps multicast snooping on and IPv6 address generation enabled. It is an L3 bridge with an address, not a bare L2 fabric; ask for `create` + `link l2only` explicitly if that is what you want. |
 | `show <bridge>` | 1 | Query the bridge's IPv4 address/prefix and operational flags (`UP`/`RUNNING`). |
+
+> **`delete` while ports are attached.** The kernel does *not* refuse this for
+> us: `RTM_DELLINK` on a bridge that still has ports succeeds —
+> `br_dev_delete()` detaches each one (`del_nbp()`) and then unregisters the
+> bridge — which silently strands a peer whose port was still enslaved. So
+> `br_delbr` counts the ports itself (an `RTM_GETLINK` dump, matching
+> `IFLA_MASTER` against the bridge ifindex) and answers `EBUSY` while any
+> remain. A bridge shared by two endpoints therefore outlives whichever one
+> releases its port first, and that side re-attaches on restart to the bridge
+> it still finds instead of building a new empty one beside an orphaned peer.
+> Deliberately netlink, never `/sys/class/net/<bridge>/brif`: sysfs shows the
+> *initial* network namespace, so the sysfs view is wrong for a ubridge
+> running in another one (and for the test suites, which run under
+> `unshare -Urn`).
+>
+> The check is best-effort — rtnetlink has no "delete if empty", so a port
+> attached between the dump and the `RTM_DELLINK` is still detached (the
+> historical behaviour, not a regression).
+
+> **Multicast snooping is off on a bridge that `create` made.** The kernel
+> enables it by default, and it is the one thing that makes a bridge emit:
+> while it is on, the bridge joins the all-snoopers groups and reports them on
+> every bring-up — measured at 0.5–1.7 s in and *repeating*, not a one-shot
+> burst, as `224.0.0.22` (IGMP) and `ff02::16` (MLD), source-less
+> (`0.0.0.0` / `::`) from the bridge's own MAC. Turning it off is what lets a
+> link bridge be silent at all, and it is also the honest model: a cable
+> floods multicast rather than pruning it to whoever last joined.
+> `mcastsnoop <bridge> on` restores both the snooping and the reports. See
+> [`link.md`](link.md) for the hardened-anchor picture this belongs to.
+>
+> This is a **per-bridge attribute that `create` sets**, not a global switch
+> and not a change to the kernel's own default: the kernel still hands every
+> new bridge snooping on, so a bridge made any other way — `setup`, or
+> `ip link add type bridge` — keeps it, and every bridge can be flipped back
+> independently.
 
 ### Bridge-level parameters (10)
 
@@ -75,7 +110,7 @@ All set attributes via `RTM_NEWLINK` + `IFLA_LINKINFO{kind=bridge, INFO_DATA{att
 | `setageing <bridge> <s>` | `IFLA_BR_AGEING_TIME` | 0–1000000 (seconds; 0 = never age) |
 | `vlanfiltering <bridge> on\|off` | `IFLA_BR_VLAN_FILTERING` | `on`/`off` |
 | `setvlanproto <bridge> <v>` | `IFLA_BR_VLAN_PROTOCOL` (u16) | `0x8100` (802.1Q) or `0x88a8` (802.1ad) |
-| `mcastsnoop <bridge> on\|off` | `IFLA_BR_MCAST_SNOOPING` | `on`/`off` |
+| `mcastsnoop <bridge> on\|off` | `IFLA_BR_MCAST_SNOOPING` | `on`/`off` (a `create` bridge starts **off**; any other bridge starts **on** — see the note above) |
 | `setgroupfwd <bridge> <n>` | `IFLA_BR_GROUP_FWD_MASK` | 0–65535 |
 
 > Time-valued attributes (`setfd`/`sethello`/`setmaxage`/`setageing`) are
@@ -86,7 +121,7 @@ All set attributes via `RTM_NEWLINK` + `IFLA_LINKINFO{kind=bridge, INFO_DATA{att
 > `hairpin`/`isolated`) share one parser and accept `on`/`off`, `1`/`0`,
 > `yes`/`no`, `true`/`false`.
 
-### Port-level parameters (5)
+### Port-level parameters (6)
 
 All set attributes via `RTM_SETLINK` + `IFLA_PROTINFO{attr}` with
 `ifi_family = AF_BRIDGE` and `NLA_F_NESTED` on `IFLA_PROTINFO`. The port must
@@ -94,6 +129,7 @@ already be enslaved to the bridge; otherwise `-EINVAL`.
 
 | Command | Netlink attr | Valid range |
 |---------|-------------|-------------|
+| `setportgroupfwd <bridge> <port> <n>` | `IFLA_BRPORT_GROUP_FWD_MASK` | 0–65535 (bit 1 / MAC PAUSE rejected by the kernel → 206; `addif` sets 65533 by default) |
 | `setportprio <bridge> <port> <n>` | `IFLA_BRPORT_PRIORITY` | 0–63 (kernel; parse accepts 0–255, 64+ → 206) |
 | `setpathcost <bridge> <port> <n>` | `IFLA_BRPORT_COST` | 1–65535 |
 | `setportstate <bridge> <port> <n>` | `IFLA_BRPORT_STATE` | 0–3 (0=disabled, 1=listening, 2=learning, 3=forwarding) |
@@ -145,6 +181,22 @@ of `vlan_add` (ranges), with the native VLAN added `pvid untagged`.
   kernel's `eth_type_vlan()` recognizes only 0x8100 and 0x88a8, so the bridge
   cannot use the legacy ones as `vlan_protocol` regardless. Standard QinQ is
   0x88a8.
+- **`delete` cannot be forced.** Because `delete` refuses while any port is
+  enslaved, a bridge stays until its last port is released — there is no
+  force variant. A port whose device outlives its owner (a persistent TAP, a
+  physical anchor) therefore keeps the bridge alive until something releases
+  it, where the pre-`EBUSY` behaviour would have torn the bridge down and
+  detached it. Recover by `delif`-ing the stale port (`brctl show` /
+  `ip -o link show master <bridge>` reveals it), or by deleting the port
+  device itself, which drops it from the bridge.
+- **MAC PAUSE / PFC cannot cross a bridge.** `addif` opens per-port
+  link-local forwarding (`group_fwd_mask 0xfffd`) so a bridge behaves like a
+  cable for STP, LACP, EAPOL and LLDP — but `01:80:c2:00:00:01` (802.3x MAC
+  PAUSE) is dropped unconditionally by the kernel's `br_handle_frame()`
+  before any mask is consulted, and the per-port setter rejects bit 1 with
+  `EINVAL`. PFC (802.1Qbb) rides the same address and is equally unreachable;
+  its per-priority semantics are not emulatable in software anyway. Both are
+  documented as unsupported on kernel links rather than half-working.
 - **No MAC (FDB) table read/flush.** There is no `fdb_show` / `fdb_flush`. The
   kernel bridge learns and ages MAC entries itself; ubridge has never exposed
   mac-table access and gns3-server does not consume it, so it was deliberately
@@ -225,7 +277,7 @@ python3 test_basic.py
 python3 run_all.py
 ```
 
-Nine suites (168 tests in total):
+Ten suites (206 tests in total):
 
 | Suite | Tests | Scope |
 |-------|-------|-------|
@@ -233,13 +285,21 @@ Nine suites (168 tests in total):
 | `test_boundary` | 64 | Boundary values for all ranged parameters, kernel-side verification |
 | `test_concurrency` | 6 | Multi-client create races, show under churn |
 | `test_robustness` | 20 | Malformed input, overlong names, IPv6, crash-freedom |
-| `test_state` | 12 | addif/addip idempotency, UP/DOWN transitions, ports on delete |
+| `test_state` | 18 | addif/addip idempotency, UP/DOWN transitions, `delete` refused while ports are attached, the two-sided survive/reunite case |
 | `test_stress` | 3 | 500 create/delete cycles, fd stability |
 | `test_no_privs` | 4 | No-cap binary rejects mutations, survives gracefully |
-| `test_vlan` | 28 | Per-port VLAN add/del/show/range, kernel-side verification, error paths |
+| `test_linklocal` | 31 | addif's per-port `group_fwd_mask 0xfffd`: transparency matrix (LACP/LLDP/EAPOL/STP forwarded, PAUSE not), ingress-port semantics, best-effort under injected failure, re-addif idempotency + last-writer-wins, bit-1 boundary |
+| `test_vlan` | 29 | Per-port VLAN add/del/show/range, kernel-side verification, error paths |
 | `test_vlan_perf` | 10 | `vlan_show` over the full VID range (4094), timed |
 
-All 168 tests pass on the reference kernel (7.1.2-1-default).
+All 206 tests pass on the reference kernel (7.2.6-1-default).
+
+> The three `test_vlan` "kernel: …" read-back checks need iproute2's `bridge`
+> command (`bridge vlan show dev <port>`); without it they fail on any binary,
+> so install `bridge-utils`/iproute2 before reading the suite total. The three
+> `test_linklocal` sysfs cross-checks likewise self-skip (28 checks) when sysfs
+> shows another netns — e.g. a bare `unshare -Urn` run, where the behavioural
+> asserts still carry the suite.
 
 ### Kernel verification reference
 

@@ -19,6 +19,7 @@
  */
 
 #include <unistd.h>
+#include <stdio.h>
 #include <string.h>
 #include <strings.h>
 #include <assert.h>
@@ -36,6 +37,7 @@
 #include "ubridge.h"
 #include "hypervisor.h"
 #include "hypervisor_brctl.h"
+#include "hypervisor_link.h"
 
 
 /*
@@ -84,7 +86,120 @@ static int br_addbr(const char *bridge)
 }
 
 /*
+ * Count the ports currently enslaved to the bridge with the given ifindex,
+ * via an RTM_GETLINK dump (an enslaved port carries IFLA_MASTER = its bridge).
+ * Netlink rather than /sys/class/net/<bridge>/brif on purpose: sysfs shows the
+ * *initial* network namespace, so a sysfs view is wrong for any ubridge running
+ * in another one — including the test suites, which run under `unshare -Urn`.
+ * Returns the port count (>= 0) or a negative errno on failure (NOT -1).
+ */
+static int br_count_ports(int br_ifindex)
+{
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL, *reply = NULL;
+    struct ifinfomsg *ifi;
+    int ret, count = 0;
+
+    ret = netlink_open(&nlh, NETLINK_ROUTE);
+    if (ret < 0)
+        return ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    reply = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg || !reply) {
+        nlmsg_free(msg);
+        nlmsg_free(reply);
+        netlink_close(&nlh);
+        return -ENOMEM;
+    }
+
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_UNSPEC;
+
+    msg->nlmsghdr.nlmsg_type = RTM_GETLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+
+    ret = netlink_send(&nlh, msg);
+    if (ret < 0)
+        goto out;
+
+    while (1) {
+        reply->nlmsghdr.nlmsg_len = NLMSG_ALIGN(NLMSG_GOOD_SIZE);
+        int r = netlink_rcv(&nlh, reply);
+        if (r < 0) {
+            /* netlink_rcv returns the negative errno directly; errno is not
+             * reliably set on this path (cf. br_vlan_dump). */
+            ret = r;
+            goto out;
+        }
+        if (r == 0)
+            break;
+
+        struct nlmsghdr *nh;
+        int len = r;
+        for (nh = (struct nlmsghdr *)reply; NLMSG_OK(nh, len); nh = NLMSG_NEXT(nh, len)) {
+            if (nh->nlmsg_type == NLMSG_DONE) {
+                ret = count;
+                goto out;
+            }
+            if (nh->nlmsg_type == NLMSG_ERROR) {
+                /* err == 0 is a success ack — some kernels end a dump with
+                 * one instead of NLMSG_DONE (same policy as
+                 * l2only_link_local); a real error is a failure. */
+                struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(nh);
+                if (err->error == 0) {
+                    ret = count;
+                    goto out;
+                }
+                ret = err->error;
+                goto out;
+            }
+            if (nh->nlmsg_type != RTM_NEWLINK)
+                continue;
+
+            struct ifinfomsg *ifi_r = (struct ifinfomsg *)NLMSG_DATA(nh);
+            int attrlen = nh->nlmsg_len - NLMSG_LENGTH(sizeof(struct ifinfomsg));
+            struct rtattr *rta = IFLA_RTA(ifi_r);
+            while (RTA_OK(rta, attrlen)) {
+                if (rta->rta_type == IFLA_MASTER) {
+                    int master;
+                    memcpy(&master, RTA_DATA(rta), sizeof(master));
+                    if (master == br_ifindex)
+                        count++;
+                    break;
+                }
+                rta = RTA_NEXT(rta, attrlen);
+            }
+        }
+    }
+
+    ret = count;
+out:
+    nlmsg_free(msg);
+    nlmsg_free(reply);
+    netlink_close(&nlh);
+    return ret;
+}
+
+/*
  * Delete a Linux bridge device (RTM_DELLINK via if_nametoindex).
+ *
+ * Refuses with -EBUSY while any port is still enslaved.  The kernel does not
+ * refuse for us: br_dev_delete() detaches every port (del_nbp()) and then
+ * unregisters the bridge, so an RTM_DELLINK on a bridge that still carries a
+ * peer's port succeeds and silently strands that port on a bridge that no
+ * longer exists.  Releasing our own port first and suppressing the EBUSY makes
+ * the last party out the deleter, so a single-sided node restart leaves the
+ * bridge — and the peer's port — intact, and the restarting side re-attaches
+ * to the bridge it finds.  Without this, one side's stop/start orphans the
+ * other side's port and the link stays dead until the peer itself is touched.
+ *
+ * The check is best-effort: rtnetlink has no "delete if empty", so a port
+ * attached between the dump and the RTM_DELLINK is still detached (i.e. the
+ * pre-existing behaviour, not a regression).
+ *
  * Returns 0 on success or a negative errno on failure (NOT -1).
  */
 static int br_delbr(const char *bridge)
@@ -97,6 +212,12 @@ static int br_delbr(const char *bridge)
     ifindex = if_nametoindex(bridge);
     if (ifindex == 0)
         return -ENODEV;
+
+    ret = br_count_ports(ifindex);
+    if (ret < 0)
+        return ret;
+    if (ret > 0)
+        return -EBUSY;
 
     ret = netlink_open(&nlh, NETLINK_ROUTE);
     if (ret < 0)
@@ -127,10 +248,18 @@ static int br_delbr(const char *bridge)
     return ret;
 }
 
+/* bit 0 STP (harmless: already forwarded while STP is off), bit 2 LACP,
+ * bit 3 802.1X EAPOL, bit 14 LLDP; bit 1 MAC PAUSE must stay clear or the
+ * kernel rejects the whole value with EINVAL. */
+#define LINK_LOCAL_FWD_MASK 0xfffdu
+
+static int br_set_port_attr_u16(const char *bridge, const char *port, int attr, unsigned short val);
+
 /*
- * Enslave a port interface to a bridge (RTM_SETLINK + IFLA_MASTER) and
- * bring the port up (RTM_SETLINK + IFF_UP), matching the legacy ioctl
- * implementation which set SIOCSIFFLAGS|IFF_UP after adding the port.
+ * Enslave a port interface to a bridge (RTM_SETLINK + IFLA_MASTER), bring
+ * the port up (RTM_SETLINK + IFF_UP) and open up link-local forwarding on
+ * the port (IFLA_BRPORT_GROUP_FWD_MASK, best-effort), matching the legacy
+ * ioctl implementation which set SIOCSIFFLAGS|IFF_UP after adding the port.
  * Returns 0 on success or a negative errno on failure (NOT -1).
  */
 static int br_enslave_if(const char *bridge, const char *port)
@@ -194,6 +323,31 @@ static int br_enslave_if(const char *bridge, const char *port)
     nlmsg_free(msg);
     nlmsg_free(reply);
     netlink_close(&nlh);
+    if (ret < 0)
+        return ret;
+
+    /* Step 3 – link-local transparency.  A Linux bridge stands in for a cable
+     * here: LACP/LLDP/EAPOL/STP must cross it.  The kernel restricts the
+     * *bridge-level* mask to bits 3..15 (BR_GROUPFWD_RESTRICTED), so LACP is
+     * only reachable per port.  0xfffd = every reserved address except MAC
+     * PAUSE (bit 1), which the kernel refuses and hard-drops anyway.
+     * Best-effort: kernels before 4.15 have no such port attribute, and the
+     * cable simply keeps today's behaviour there. */
+    /* UBRIDGE_TEST_INJECT_FWD_MASK_FAILURE: test-only fault-injection seam
+     * (tests/brctl/test_linklocal.py, T3) — force the write to fail and prove
+     * the addif verdict is unchanged.  Deliberately named UBRIDGE_TEST_*: a
+     * deployment inheriting it would silently disable link-local
+     * transparency on every addif. */
+    if (getenv("UBRIDGE_TEST_INJECT_FWD_MASK_FAILURE"))
+        ret = -EINVAL;
+    else
+        ret = br_set_port_attr_u16(bridge, port, IFLA_BRPORT_GROUP_FWD_MASK,
+                                   LINK_LOCAL_FWD_MASK);
+    if (ret < 0) {
+        fprintf(stderr, "brctl: %s: group_fwd_mask not set (%s)\n",
+                port, strerror(-ret));
+        ret = 0;  /* best-effort (R4): a failed mask write never fails addif */
+    }
     return ret;
 }
 
@@ -905,10 +1059,49 @@ static int parse_vlan_args(int argc, char *argv[], int allow_flags,
 static int cmd_create(hypervisor_conn_t *conn, int argc, char *argv[])
 {
     char *bridge = argv[0];
-    int err = br_addbr(bridge);
+    int err;
+
+    /* The name goes into the RTM_NEWLINK message (and every later one);
+     * anything past the fixed message buffer used to overflow it (ASan:
+     * heap-buffer-overflow in nla_put), and the kernel accepts at most
+     * IFNAMSIZ-1 chars anyway. */
+    if (strlen(bridge) >= IFNAMSIZ) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1,
+                              "Could not create bridge %s: %s", bridge,
+                              strerror(ENAMETOOLONG));
+        return -1;
+    }
+
+    err = br_addbr(bridge);
 
     if (err < 0) {
         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not create bridge %s: %s", bridge, strerror(-err));
+        return -1;
+    }
+
+    /* The fabric the anchors are enslaved to: the bridge's own link-local
+     * would flood to every port. (brctl addip is IPv4-only, so nothing the
+     * L3 paths configure is affected.) */
+    err = link_harden_l2only(bridge);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set L2-only on bridge %s: %s", bridge, strerror(-err));
+        br_delbr(bridge);
+        return -1;
+    }
+
+    /* Multicast snooping is on by default and is the one thing that makes a
+     * bridge emit: while it is on the bridge joins the all-snoopers groups and
+     * reports them on every bring-up — measured at 0.5-1.7 s in, and repeating
+     * rather than one-shot, as 224.0.0.22 (IGMP) and ff02::16 (MLD) with a
+     * sourceless 0.0.0.0/:: from the bridge's own MAC. That is precisely the
+     * chatter link l2only exists to remove, so the bridge role cannot reach
+     * silence while snooping is on. Off also matches what a link bridge
+     * models: a cable floods multicast, it does not prune to whoever last
+     * happened to join. `brctl mcastsnoop <bridge> on` puts it back. */
+    err = br_set_bridge_attr(bridge, IFLA_BR_MCAST_SNOOPING, 0);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not disable multicast snooping on bridge %s: %s", bridge, strerror(-err));
+        br_delbr(bridge);
         return -1;
     }
 
@@ -923,7 +1116,18 @@ static int cmd_delete(hypervisor_conn_t *conn, int argc, char *argv[])
     int err = br_delbr(bridge);
 
     if (err < 0) {
-        hypervisor_send_reply(conn, HSC_ERR_DELETE, 1, "Could not delete bridge %s: %s", bridge, strerror(-err));
+        /* Name the errno on the in-use path: strerror(EBUSY) renders as
+         * "Device or resource busy", which reads as a transient fault rather
+         * than as "a peer still owns this bridge". For a human reading a log,
+         * or a client that does match on text — gns3server suppresses by
+         * exception type, so nothing in-tree depends on this. Deliberately
+         * not a contract: the wording may change. */
+        if (err == -EBUSY)
+            hypervisor_send_reply(conn, HSC_ERR_DELETE, 1,
+                "Could not delete bridge %s: %s (EBUSY, ports still attached)",
+                bridge, strerror(-err));
+        else
+            hypervisor_send_reply(conn, HSC_ERR_DELETE, 1, "Could not delete bridge %s: %s", bridge, strerror(-err));
         return -1;
     }
 
@@ -1076,7 +1280,11 @@ static int cmd_setup(hypervisor_conn_t *conn, int argc, char *argv[])
     err = br_set_address(bridge, ip, mask);
     if (err < 0) {
         /* setup is create+addip in one shot; roll back the bridge on
-         * failure so we don't leave a half-configured bridge behind. */
+         * failure so we don't leave a half-configured bridge behind.
+         * The bridge was created by this very command, so it has no ports
+         * unless a concurrent addif raced us — in which case br_delbr
+         * refuses (EBUSY) and the rollback is skipped rather than detaching
+         * a port someone else just attached. */
         br_delbr(bridge);
         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not add IP %s to bridge %s: %s", cidr, bridge, strerror(-err));
         return -1;
@@ -1268,6 +1476,27 @@ static int cmd_setgroupfwd(hypervisor_conn_t *conn, int argc, char *argv[])
         return -1;
     }
     hypervisor_send_reply(conn, HSC_INFO_OK, 1, "group_fwd_mask 0x%lx set on %s", mask, bridge);
+    return 0;
+}
+
+/* brctl setportgroupfwd <bridge> <port> <mask> — per-port link-local
+ * forwarding mask (0-65535).  The kernel rejects bit 1 (MAC PAUSE) with
+ * EINVAL, which surfaces here unchanged.  Last-writer-wins: brctl addif
+ * re-applies the LINK_LOCAL_FWD_MASK default on every (re-)attach. */
+static int cmd_setportgroupfwd(hypervisor_conn_t *conn, int argc, char *argv[])
+{
+    char *port = argv[1];
+    long mask;
+    if (parse_long(argv[2], 0, 65535, &mask) < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_INV_PARAM, 1, "Invalid group_fwd_mask %s (expected 0-65535)", argv[2]);
+        return -1;
+    }
+    int err = br_set_port_attr_u16(argv[0], port, IFLA_BRPORT_GROUP_FWD_MASK, (unsigned short)mask);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set group_fwd_mask on %s: %s", port, strerror(-err));
+        return -1;
+    }
+    hypervisor_send_reply(conn, HSC_INFO_OK, 1, "group_fwd_mask 0x%lx set on %s", mask, port);
     return 0;
 }
 
@@ -1910,6 +2139,7 @@ static hypervisor_cmd_t brctl_cmd_array[] = {
    { "mcastsnoop", 2, 2, cmd_mcastsnoop, NULL },
    { "setgroupfwd", 2, 2, cmd_setgroupfwd, NULL },
    /* port-level parameters */
+   { "setportgroupfwd", 3, 3, cmd_setportgroupfwd, NULL },
    { "setportprio", 3, 3, cmd_setportprio, NULL },
    { "setpathcost", 3, 3, cmd_setpathcost, NULL },
    { "setportstate", 3, 3, cmd_setportstate, NULL },

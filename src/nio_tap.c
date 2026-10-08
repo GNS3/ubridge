@@ -31,6 +31,7 @@
 
 #include "ubridge.h"
 #include "nio_tap.h"
+#include "hypervisor_link.h"
 
 
 /* Open a TAP device */
@@ -60,7 +61,11 @@ static int nio_tap_open(char *tap_devname, int carrier)
          close(fd);
          return(-1);
       }
+      strcpy(tap_devname, ifr.ifr_name);
    } else {
+      char want[IFNAMSIZ];
+      int existed;
+
       if ((fd = open("/dev/net/tun", O_RDWR)) < 0)
          return(-1);
 
@@ -73,12 +78,32 @@ static int nio_tap_open(char *tap_devname, int carrier)
       if (*tap_devname)
          strncpy(ifr.ifr_name, tap_devname, IFNAMSIZ);
 
+      /* TUNSETIFF is one call for "create" and "attach": remember which this
+       * will be, so that only a device this open creates is hardened — an
+       * attach must never strip addresses off someone else's TAP (cloud
+       * type=tap ports name user-owned devices). The probe queries the name
+       * the kernel truncates a too-long request to; an empty request (the
+       * kernel picks tapN) can never be pre-existing. */
+      strncpy(want, tap_devname, IFNAMSIZ - 1);
+      want[IFNAMSIZ - 1] = '\0';
+      existed = *want && if_nametoindex(want) != 0;
+
       if ((err = ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0) {
          close(fd);
          return err;
       }
 
       strcpy(tap_devname, ifr.ifr_name);
+
+      /* The l2-only spec's rule for creators, applied to the one its §B
+       * table missed: a transient TAP born here is a host-side data-plane
+       * device (bridge add_nio_tap's create-if-missing path), so it is
+       * hardened like tap create hardens its persistent one. Best-effort —
+       * a failure logs and never fails the open; EINVAL/EOPNOTSUPP on old
+       * kernels are swallowed inside the helper. */
+      if (!existed && (err = link_harden_l2only(tap_devname)) < 0)
+         fprintf(stderr, "nio_tap_open: %s: L2-only hardening failed (%s)\n",
+                 tap_devname, strerror(-err));
    }
 
    if (!carrier && ioctl(fd, TUNSETCARRIER, &carrier) < 0) {
@@ -131,6 +156,11 @@ nio_t *create_nio_tap_with_carrier(char *tap_name, int carrier)
       free_nio(nio);
       return NULL;
    }
+
+   /* nio_tap_open writes the kernel-resolved name back into the buffer —
+      what the kernel actually created (a too-long request is silently
+      truncated to IFNAMSIZ-1), or the name a /dev path resolved to. */
+   strcpy(nio_tap->name, tap_name);
 
    nio->type = NIO_TYPE_TAP;
    nio->send = (void *)nio_tap_send;

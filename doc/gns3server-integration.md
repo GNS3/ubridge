@@ -157,12 +157,65 @@ daemon; data-plane impairment/capture must therefore also live in the kernel.
 
 `set_owner` is **required** so an unprivileged QEMU can open the persistent TAP.
 
+Since the L2-anchor work, `tap create` hardens the TAP itself (`link l2only
+on`: no IPv6 link-local, so the kernel neither advertises nor answers ND on
+the emulated segment) before its success reply. Same for the other creators —
+`docker create_veth` (host end), `link veth` (both ends), `brctl create` — so
+**no call site changed**: nothing for gns3server to issue, and a caller cannot
+forget it. See [`link.md`](link.md) for what hardening does and does not
+remove. With a uBridge that predates it the anchors keep the old behaviour and
+`link l2only` answers `202-Unknown command`.
+
+`brctl create` additionally turns multicast snooping **off** on the bridge it
+makes — the bridge's own IGMP/MLD group reports were its last remaining
+emission. Also nothing for gns3server to issue, and also nothing a caller can
+forget: it is off on a `create` bridge, still on for one made by `brctl setup`
+(snooping is a per-bridge attribute, and the kernel's own default — on — is
+untouched), and `brctl mcastsnoop <bridge> on` restores it. The one behaviour
+to know: multicast in an emulated segment is now always flooded, never pruned
+to whichever node last joined a group, which is what a cable does. See
+[`brctl.md`](brctl.md).
+
 ### brctl — kernel bridge (link plumbing)
 | When | Commands |
 |------|----------|
 | Link create | `brctl create <br>`; `brctl addif <br> <tapA>`; `brctl addif <br> <tapB>` (auto-UP) |
 | Runtime re-link | `brctl delif <br> <tap>` then `brctl addif <newbr> <tap>` |
 | Link delete | `brctl delif` on both ends, then `brctl delete <br>` |
+
+`brctl delete` answers `207`/`EBUSY` while any port is still enslaved, so the
+`delif` on both ends is what makes the delete succeed rather than mere hygiene:
+the **last party out deletes the bridge**. This is what makes a single-sided
+node stop/start survivable — the stopping side's port goes away with its veth,
+its `delete` is refused, so the bridge stays up carrying the peer's port and
+that side re-attaches to the bridge it still finds on restart.
+
+Treating that refusal as fatal would break the case it exists for, so the
+failure has to be tolerated. gns3server does it by **exception type**
+(`contextlib.suppress(UbridgeError)` around the `delif`/`delete` calls in
+`kernel_datapath.py`), *not* by matching the message, and so also swallows
+genuine failures ranging from a missing bridge to `EPERM`. That is deliberate:
+on a concurrent teardown the losing side's delete must be ignored either way,
+and the backstop is both ends retrying plus an e2e assertion that no bridge is
+left behind.
+
+The reply names the errno regardless:
+
+```
+207-Could not delete bridge <br>: Device or resource busy (EBUSY, ports still attached)
+```
+
+because `strerror(EBUSY)` alone reads as a transient fault rather than as "a
+peer still owns this bridge". **The wording is not a contract** — nothing
+depends on it — it is a signal for a human reading a log, or for a client that
+does match on text; it may change without notice.
+
+Per-port state — VLAN membership, PVID, port parameters — lives on the *port*
+device, not on the bridge. A bridge surviving a single-sided restart therefore
+keeps the peer's port configuration, while the restarting side's freshly
+created port comes back at defaults. Anything that configures a port must
+re-apply on **every** attach (never gated on "the bridge was newly created"),
+and must only ever touch its own end, never the peer's.
 
 (Full STP/VLAN/port-param set in [`brctl.md`](brctl.md); its [§ Limitations](brctl.md#limitations) note the default-PVID-1 cleanup step, QinQ scope (outer-tag only; standard EtherTypes 0x8100/0x88a8 only), and the absence of FDB read/flush.)
 
@@ -181,6 +234,127 @@ capture stop_kernel                          # idempotent
 ```
 Singleton (one active kernel capture per ubridge). Standard pcap output,
 identical writer to `bridge start_capture`.
+
+### iol_bridge — IOU/IOL port anchors
+
+An IOU instance has no host netdev: its wire is the Unix-datagram fabric in
+`/tmp/netio<uid>/` and every port ends on a destination NIO. The older NIO is a
+UDP tunnel (`add_nio_udp` — the relay datapath, unchanged); the newer one is a
+persistent TAP **anchor**, on which ubridge plays the same role QEMU plays on
+its own TAP, so the port can join a kernel bridge and pick up `tc`, markers and
+`capture start_kernel` like any other anchor.
+
+| When | Command |
+|------|---------|
+| Node start, per Ethernet bay/unit | `tap create gi{node[:8]}e{bay}p{unit}` → `iol_bridge add_nio_tap <bridge> <iol_id> <bay> <unit> <anchor>` |
+| Node stop | `iol_bridge delete <bridge>` (releases every anchor fd) → `tap delete <anchor>` |
+
+| Code | Meaning |
+|------|---------|
+| `100` | added / deleted (deleting a port that holds no NIO is also `100`) |
+| `203` | wrong argument count |
+| `204` | anchor name longer than 15 chars (`IFNAMSIZ-1`) |
+| `206` | `iol_id` equals the bridge's own id, or the TAP fd cannot be opened |
+| `208` | the bridge does not exist, **or the anchor device does not exist** |
+| `202` | old ubridge, command unknown — keep IOU on the UDP datapath |
+
+The `*_tap` commands answer `208` for a missing bridge where the older
+`*_udp` ones answer `214`; old commands are frozen, so handle both.
+
+**The anchor must already exist.** `add_nio_tap` never creates a device:
+`TUNSETIFF` on an absent name would silently create a transient TAP that dies
+with the fd, so it answers `208` instead. Create it with `tap create` first.
+
+**One fd per TAP — this fixes the teardown order.** While a port is attached
+ubridge holds the anchor's fd: a second attach answers `EBUSY`, and `tap
+delete` with another fd open answers `EBADFD` → `207`. Tear the process side
+down first (`iol_bridge delete`, or `delete_nio_tap` for a single port), then
+`tap delete` — the same order QEMU anchors already use. `delete_nio_tap`
+releases only the fd; the persistent device stays for the server to delete.
+
+**UDP ↔ TAP swapping is free.** Both add commands work on the same port, in any
+order, repeatedly; the previous NIO's socket/fd and listener are released
+first. That is the datapath-switch path.
+
+**A DOWN anchor is a steady state, not an error.** A write to an admin-DOWN
+TAP fails with `EIO` and is dropped (one `perror` line per frame); a read
+returns `EIO`, and a zero-length read is skipped rather than forwarded, so no
+header-only packets are fabricated for the instance. Suspend = `link set
+<anchor> down` is therefore safe — the tolerance ships with `add_nio_tap`,
+there is no build where an anchor exists without it.
+
+Note also that deleting an `iol_bridge` that is **not running** used to leak
+its port NIOs, which left the anchor's fd attached and made the following
+`tap delete` fail with `207` permanently. `iol_bridge delete` now releases
+every port unconditionally.
+
+Capability probe, in the shape §"Capability gating" of the TAP-anchor spec
+asks for: scratch bridge + scratch TAP, `add_nio_tap`, `delete_nio_tap`,
+`iol_bridge delete`, `tap delete`; a `202` on the add means an old build. No
+`start` is needed — a port accepts a NIO on a stopped bridge, and the anchor
+only has to exist.
+
+### bridge — generic NIO relay with a swappable TAP leg
+
+The Docker/IOL deployment shape: a per-node **port bridge** created at node
+start and held for the node's whole life, with a unix-socket NIO (the
+container leg, `add_nio_unix`) in the first slot and the topology leg in the
+second — `add_nio_udp` or `add_nio_tap`, swapped as links are attached,
+suspended, deleted or the project reopens. This mirrors the iol_bridge
+anchor pattern on the module that carries the Docker relay.
+
+`bridge delete_nio_tap <bridge> <tap_name>` releases the TAP NIO's fd; the
+interface itself survives (persistent anchors are the server's to `tap
+delete`, transient cloud TAPs correctly die with the fd).
+
+| Code | Meaning |
+|------|---------|
+| `100` | NIO released |
+| `204` | name longer than `IFNAMSIZ-1` (15) |
+| `214` | bridge doesn't exist, bridge is **running**, or no TAP NIO by that name on it |
+| `202` | old ubridge — command unknown |
+
+**Match key is the kernel-resolved name.** The NIO stores the name
+`TUNSETIFF` reports back — what the kernel actually created — so a name the
+kernel truncated to 15 chars matches by its truncation, never mismatches.
+
+**The running refusal is memory safety, not ordering.** The relay threads
+hold the source/destination NIO pointers for their whole life; freeing under
+them is a use-after-free (and while running both slots are full anyway, so
+an add would fail too). The swap sequence is `bridge stop` → `delete_nio_*` →
+`add_nio_*` → `bridge start`. `stop` keeps every NIO, so the unix-socket NIO
+never re-binds across the swap window — a frame sent by the container while
+the bridge is stopped queues on the socket and relays after `start`
+(regression-tested in `tests/bridge/test_swap.py`).
+
+**`add_nio_tap` stays create-if-missing — ensure-then-add is the server's
+job.** The legacy `bridge add_nio_tap` deliberately opens a transient TAP
+when the name is absent (cloud's bridge-interface path depends on exactly
+that), so it cannot gain an existence check. For an anchor, the server
+creates it first (`tap create` — hardened, starts DOWN) and only then adds
+it; a name swept away between the two leaves ubridge holding a transient
+device that vanishes at teardown, so serialize per node and sweep by
+node-scoped name prefixes. A TAP this open *creates* is hardened L2-only
+(the transient device is a host-side data-plane device like any other
+anchor, and the ini-config path lands in the same code); an attach never
+touches a device that already exists. For a persistent anchor this is
+redundant — `tap create` already hardened it — and for the cloud-owned
+transient it is the hardening's only source.
+
+**Zero-length reads are skipped (behavioral fix).** `nio_recv` used to
+collapse a legitimate 0 (an empty datagram from the container, a no-data TAP
+read) into -1; one empty datagram took down that relay direction and wedged
+the process mid-`exit()` (the control channel answers `201-Unknown module`
+afterwards), and a zero-byte UDP datagram to an iol port's tunnel would kill
+the whole daemon. Old binaries are broken this way; nothing the server can
+do avoids it — just don't send empty datagrams, and prefer builds with this
+fix.
+
+Capability probe for the new command needs no scratch objects: issue
+`bridge delete_nio_tap <any-unused-name> <any-name>` — an old build answers
+`202` (unknown command), a new one `214` (bridge doesn't exist). No
+capabilities, no side effects; cache by binary identity like
+`probe_tap_support`.
 
 ---
 
@@ -353,7 +527,15 @@ into one pcap (classic pcap would lose per-packet link identity).
   continues until the filter is deleted). `marker pause` is the lighter mute: it
   stops signals but keeps the sink, so `marker resume` is instant — prefer it for
   transient UI toggles.
-- ubridge exit → all pcaps closed.
+- **Anchor order.** Whoever holds a TAP's fd must let go before the device is
+  deleted: `iol_bridge delete` (or `delete_nio_tap`, or `bridge delete_nio_tap`
+  for a generic-bridge anchor — after `bridge stop`, which the running refusal
+  enforces) first, then `tap delete`.
+  A second `TUNSETIFF` attach answers `EBUSY` and `tap delete` with another fd
+  open answers `EBADFD` → `207`. Same rule as for QEMU, where killing the
+  process comes first.
+- ubridge exit → all pcaps closed, and every TAP fd it held is closed with the
+  process (the persistent devices stay).
 
 ---
 
@@ -369,6 +551,16 @@ tc netem set <if> [delay <ms>] [jitter <ms>] [loss <%>] [dup <%>] [corrupt <%>]
 tc reset <if>
 # capture
 capture start_kernel <if> <pcap> [dlt]                               capture stop_kernel
+# iol_bridge (IOU/IOL ports; the anchor must already exist via `tap create`)
+iol_bridge create <name> <app_id>          iol_bridge delete <name>          iol_bridge start|stop <name>
+iol_bridge add_nio_udp <br> <iol_id> <bay> <unit> <lport> <rhost> <rport>
+iol_bridge delete_nio_udp <br> <bay> <unit>
+iol_bridge add_nio_tap <br> <iol_id> <bay> <unit> <tap>              # anchor, opened by name
+iol_bridge delete_nio_tap <br> <bay> <unit>                          # fd only; device survives
+# bridge (generic relay; Docker/IOL port bridges — the anchor must exist via `tap create`)
+bridge delete_nio_tap <br> <tap>                                     # fd only; device survives; 214 while running
+# link (l2only is applied by the creators — gns3server never issues it)
+link l2only <iface> [on|off]                                         link veth <name> <peer>
 # marker
 marker sink <host> <port>          marker node <id>                  marker off                     marker status
 marker pause                      marker resume

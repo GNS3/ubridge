@@ -48,6 +48,7 @@ python3 run_all.py
 | `test_robustness.py` | Malformed input (non-numeric numbers, bad CIDRs, IPv6, overlong names, missing ports). Must reject gracefully, never crash. |
 | `test_state.py` | State transitions: enslave twice, re-add IP (replace), delete a bridge with a port attached, DOWN vs UP bridge operations. |
 | `test_stress.py` | Hundreds of create/delete cycles, fd-count stability, and `list` correctness with many bridges (dump coalescing at scale). |
+| `test_linklocal.py` | addif's automatic per-port `group_fwd_mask 0xfffd`: transparency matrix (LACP/LLDP/EAPOL/STP forwarded, PAUSE not), ingress-port semantics, best-effort under an injected write failure, re-addif idempotency + last-writer-wins, bit-1 boundary. Self-contained veth fixtures (no `ubtest` needed); skips without CAP_NET_ADMIN. |
 | `test_no_privs.py` | Runs the no-cap `./ubridge`: mutations must be rejected, the process must survive. Uses the in-repo build (no caps) rather than the installed one. |
 
 ## Conventions
