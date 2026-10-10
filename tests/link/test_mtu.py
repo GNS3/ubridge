@@ -1,11 +1,13 @@
 """Jumbo-safe default MTU — the creators' default and where it stops.
 
 A GNS3 guest that raises its interface MTU past 1500 must not have its frames
-silently dropped by the host side: veth xmit checks an oversized frame against
-the *receiving* end's MTU (drivers/net/veth.c) and bridge forwarding against
-the egress port's (net/bridge/br_forward.c -> is_skb_forwardable). So every
-device a creator brings up gets UBRIDGE_DEFAULT_MTU (65521 — a TAP's max_mtu,
-65535 - ETH_HLEN; veth and bridge accept up to 65535) at creation time.
+silently dropped by the host side: the only MTU gate on the kernel datapath is
+the bridge egress check (net/bridge/br_forward.c -> is_skb_forwardable, against
+the *egress port's* MTU) — the veth and TUN/TAP transports never drop by MTU on
+the normal path (the rcv->mtu check in veth_xdp_xmit is the XDP path). So every
+plumbing device a creator brings up gets UBRIDGE_DEFAULT_MTU (65521 — a TAP's
+max_mtu, 65535 - ETH_HLEN; veth and bridge accept up to 65535) at creation
+time, and the endpoint keeps its own MTU.
 
 What is verified here:
 

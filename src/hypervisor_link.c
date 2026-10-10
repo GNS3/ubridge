@@ -705,9 +705,11 @@ static int cmd_veth(hypervisor_conn_t *conn, int argc, char *argv[])
         return -1;
     }
 
-    /* Jumbo-safe MTU on both ends — veth xmit checks oversized frames against
-     * the *receiving* end, so one end alone would pass jumbo in one direction
-     * and drop it in the other. */
+    /* Jumbo-safe MTU on both ends — the veth transport itself never drops by
+     * MTU on the normal path (veth_xmit has no check; the rcv->mtu gate in
+     * veth_xdp_xmit is the XDP path), but either end may serve as a bridge
+     * port, and the bridge egress check (is_skb_forwardable) gates frames
+     * against the egress port's MTU. */
     err = link_apply_default_mtu(name);
     if (err < 0) {
         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1,

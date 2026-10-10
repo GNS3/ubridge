@@ -222,15 +222,20 @@ No `ip` command, no root — ubridge does it all via netlink.
   MTU twin `link_apply_default_mtu()`) are defined here and exported via
   `hypervisor_link.h`, because the hardening belongs to this module while
   the creators that must apply it live in `tap`, `docker` and `brctl`.
-- **Jumbo-safe default MTU** — every creator sets
+- **Jumbo-safe default MTU** — the only MTU gate on the kernel datapath is
+  the bridge egress check (`is_skb_forwardable()`, against the *egress
+  port's* MTU): the veth and TUN/TAP transports never drop by MTU on the
+  normal path (`veth_xmit` has no check — the `rcv->mtu` gate lives in
+  `veth_xdp_xmit`, the XDP path). So every creator sets
   `UBRIDGE_DEFAULT_MTU` (65521 — a TAP's `max_mtu`, 65535 − `ETH_HLEN`;
   veth and bridge accept up to 65535) on the plumbing it brings up:
-  `link veth` on **both ends** (both host-side), `docker create_veth` on the
-  **host anchor only**, TAPs the creators make. The guest end of a docker
-  pair is the container's eth0 — the endpoint owns its MTU (raise eth0
-  inside the container for jumbo, exactly like a VM guest raises its
-  interface; the host end at 65521 already lets that work both ways, since
-  `veth_xmit` checks an oversized frame against the *receiving* end).
+  `link veth` on **both ends** (either end may serve as a bridge port),
+  `docker create_veth` on the **host anchor only**, TAPs the creators
+  make. The guest end of a docker pair is the container's eth0 — the
+  endpoint owns its MTU (raise eth0 inside the container for jumbo,
+  exactly like a VM guest raises its interface; the host end at 65521 is
+  the egress port toward the container, so that already works both ways —
+  the veth transport in between never drops by MTU).
   Wrappers swallow `EINVAL`/`EOPNOTSUPP`
   like `link_harden_l2only()` — the device keeps the kernel default and the
   creation still succeeds. Deliberately **not** covered: the bridge device
