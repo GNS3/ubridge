@@ -69,7 +69,11 @@ for the caller to delete, as with any other failed create.
 
 The TAP also gets `UBRIDGE_DEFAULT_MTU` (65521) before the reply, with the
 same error semantics — a guest that raises its interface MTU past 1500 must
-not have its frames silently dropped at bridge egress. `tap set_owner` and
+not have its frames silently dropped at bridge egress. The TAP's MTU and the
+guest NIC's are two decoupled values (QEMU does not read the TAP's MTU; the
+virtio/e1000 MTU is set inside the guest), so this only raises the host-side
+plumbing ceiling — the endpoint's own MTU is the guest user's choice, same
+model as a docker container raising its eth0. `tap set_owner` and
 the attach paths never touch the MTU: a device someone else configured keeps
 what it has.
 
