@@ -35,6 +35,15 @@
 #define VERSION       "1.3.0"
 #define CONFIG_FILE   "ubridge.ini"
 
+/* Default MTU applied to every device ubridge creates (veth ends, TAPs).
+ * The largest MTU a TAP accepts (65535 - ETH_HLEN, tun's max_mtu); veth and
+ * bridge max out at 65535, so one value covers all kinds. Guests that never
+ * raise their MTU above 1500 are unaffected — a larger host-side MTU only
+ * stops the kernel silently dropping jumbo frames at veth xmit / bridge
+ * egress. Devices ubridge merely attaches to (existing TAPs, physical NICs)
+ * keep their admin-configured MTU. */
+#define UBRIDGE_DEFAULT_MTU           65521
+
 #ifndef FALSE
 #define FALSE 0
 #endif

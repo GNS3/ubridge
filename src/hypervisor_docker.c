@@ -207,6 +207,18 @@ static int cmd_create_veth_pair(hypervisor_conn_t *conn, int argc, char *argv[])
         goto out;
     }
 
+    /* Jumbo-safe MTU on the host end only: it is the plumbing that must never
+     * bottleneck below what the endpoint picks. The guest end is the
+     * container's eth0 — its MTU is the endpoint's own choice (raise eth0
+     * inside the container for jumbo, exactly like a VM guest raises its
+     * interface; the host end at 65521 already lets that work both ways). */
+    err = link_apply_default_mtu(if1);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1,
+                              "could not set MTU on %s: %s", if1, strerror(-err));
+        goto out;
+    }
+
     if (turn_off_cx(if2)) {
         hypervisor_send_reply(conn, HSC_INFO_MSG, 0, "Warning: could not turn off checksum");
     }

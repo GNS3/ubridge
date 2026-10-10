@@ -191,6 +191,14 @@ static int cmd_create(hypervisor_conn_t *conn, int argc, char *argv[])
         return -1;
     }
 
+    /* Jumbo-safe MTU: a guest raising its interface MTU past 1500 must not
+     * have its frames silently dropped at bridge egress. */
+    err = link_apply_default_mtu(name);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1, "Could not set MTU on TAP %s: %s", name, strerror(-err));
+        return -1;
+    }
+
     hypervisor_send_reply(conn, HSC_INFO_OK, 1, "Persistent TAP %s created", name);
     return 0;
 }
