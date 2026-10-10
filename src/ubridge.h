@@ -32,7 +32,7 @@
 #include "ubridge_options.h"
 
 #define NAME          "ubridge"
-#define VERSION       "1.2.3"
+#define VERSION       "1.3.0"
 #define CONFIG_FILE   "ubridge.ini"
 
 /* Default MTU applied to every device ubridge creates (veth ends, TAPs).
