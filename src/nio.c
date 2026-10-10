@@ -58,17 +58,18 @@ int free_nio(void *data)
 
 void add_nio_desc(nio_t *nio, const char *fmt, ...)
 {
-	int len;
-	va_list argptr;
+   char desc[128];
+   va_list argptr;
 
-	va_start(argptr, fmt);
-	len = vsnprintf(NULL, 0, fmt, argptr);
+   /* One pass into a bounded buffer: the descriptions are short interface
+      names, and the classic measure-first vsnprintf(NULL, 0, ...) call trips
+      GCC 15's -Wall -Wformat-truncation (besides leaving the first va_start
+      without a matching va_end). */
+   va_start(argptr, fmt);
+   vsnprintf(desc, sizeof(desc), fmt, argptr);
+   va_end(argptr);
 
-    if ((nio->desc = malloc((len + 1) * sizeof(char)))) {
-       va_start(argptr, fmt);
-       vsnprintf(nio->desc, len + 1, fmt, argptr);
-       va_end(argptr);
-    }
+   nio->desc = strdup(desc);
 }
 
 ssize_t nio_send(nio_t *nio, void *pkt, size_t len)
