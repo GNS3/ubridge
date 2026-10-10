@@ -30,6 +30,14 @@ Run under sudo, or `unshare -Urn python3 test_mtu.py`. Beyond the CAP_NET_ADMIN
 the whole suite needs, two steps use raw `ip` (setting the pre-existing TAP to
 9000 and creating a 1500 dummy port) — the same privilege `sudo`/`unshare`
 already provide.
+
+This suite also runs in CI's kernel job as an **unprivileged user with the
+setcap'd binary**: the capped binary creates the devices and read-only `ip`
+inspects them, but the test process itself holds neither CAP_NET_ADMIN (raw
+`ip` mutations) nor CAP_NET_RAW (AF_PACKET sockets) — there the four
+privilege-dependent groups (the admin-MTU attach gate, the 1500-dummy
+auto-adjust, the docker opt-in injection, and the end-to-end frames)
+self-skip, like the iol tap-anchor suite does when uncapped.
 """
 import os
 import socket
@@ -39,7 +47,26 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from helpers import Ubridge, Results, iface_mtu, no_residual_link  # noqa: E402
+from helpers import Ubridge, Results as _Results, iface_mtu, no_residual_link  # noqa: E402
+
+
+class Results(_Results):
+    """Results that can also record a skip (reported, never counted as a pass)."""
+
+    def __init__(self):
+        _Results.__init__(self)
+        self.skips = []
+
+    def skip(self, name, reason):
+        self.skips.append((name, reason))
+
+    def summary(self):
+        for name, reason in self.skips:
+            print("  [SKIP] %s  -- %s" % (name, reason))
+        ok = _Results.summary(self)
+        if self.skips:
+            print("(%d check(s) skipped)" % len(self.skips))
+        return ok
 
 PORT = 13011
 JUMBO = 65521
@@ -60,6 +87,27 @@ BINARY = os.environ.get("UBRIDGE_BINARY") or None
 
 def _ip(*args):
     return subprocess.run(["ip"] + list(args), capture_output=True, text=True)
+
+
+# --- privilege probes (CI's unprivileged step: both False; see the docstring) ---
+
+def have_net_admin():
+    """True if raw `ip` may mutate links here (probed with a throwaway dummy)."""
+    probe = "jmt-cap0"
+    ok = _ip("link", "add", probe, "type", "dummy").returncode == 0
+    if ok:
+        _ip("link", "del", probe)
+    return ok
+
+
+def have_net_raw():
+    """True if this process may open AF_PACKET sockets."""
+    try:
+        s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETH_P_ALL))
+    except OSError:
+        return False
+    s.close()
+    return True
 
 
 def cleanup(c):
@@ -114,7 +162,7 @@ def recv_etype(s, etype, timeout=3.0):
 
 # --- the checks ---
 
-def creators(c, r):
+def creators(c, r, can_admin, can_raw):
     r.check("link veth -> 100", c.code("link veth %s %s" % (A, B)) == "100")
     r.check("link veth: both ends at 65521",
             iface_mtu(A) == JUMBO and iface_mtu(B) == JUMBO,
@@ -132,27 +180,32 @@ def creators(c, r):
 
     # The opt-in, exactly as a container admin would do it: raise eth0 (= DG)
     # and jumbo crosses the veth in both directions.
-    c.send("link set %s up" % DG)
-    _ip("link", "set", DG, "mtu", "9000")
-    r.check("opt-in: guest end raised to 9000", iface_mtu(DG) == 9000,
-            str(iface_mtu(DG)))
-    sd, sh = raw_sock(DG), raw_sock(DH)
-    try:
-        fgd = jumbo_frame(E2E_SIZE, "DG-to-DH")
-        sd.send(fgd)
-        got = recv_etype(sh, ETYPE)
-        r.check("opt-in: 9000-byte frame guest -> host intact",
-                got == fgd,
-                "got %s bytes" % len(got) if got is not None else "timeout")
-        fhd = jumbo_frame(E2E_SIZE, "DH-to-DG")
-        sh.send(fhd)
-        got = recv_etype(sd, ETYPE)
-        r.check("opt-in: 9000-byte frame host -> guest intact",
-                got == fhd,
-                "got %s bytes" % len(got) if got is not None else "timeout")
-    finally:
-        sd.close()
-        sh.close()
+    if can_admin and can_raw:
+        c.send("link set %s up" % DG)
+        _ip("link", "set", DG, "mtu", "9000")
+        r.check("opt-in: guest end raised to 9000", iface_mtu(DG) == 9000,
+                str(iface_mtu(DG)))
+        sd, sh = raw_sock(DG), raw_sock(DH)
+        try:
+            fgd = jumbo_frame(E2E_SIZE, "DG-to-DH")
+            sd.send(fgd)
+            got = recv_etype(sh, ETYPE)
+            r.check("opt-in: 9000-byte frame guest -> host intact",
+                    got == fgd,
+                    "got %s bytes" % len(got) if got is not None else "timeout")
+            fhd = jumbo_frame(E2E_SIZE, "DH-to-DG")
+            sh.send(fhd)
+            got = recv_etype(sd, ETYPE)
+            r.check("opt-in: 9000-byte frame host -> guest intact",
+                    got == fhd,
+                    "got %s bytes" % len(got) if got is not None else "timeout")
+        finally:
+            sd.close()
+            sh.close()
+    else:
+        r.skip("opt-in: guest end raised to 9000 (+ both 9000-byte frames)",
+               "raising eth0 needs CAP_NET_ADMIN and the frames need "
+               "CAP_NET_RAW (unprivileged CI step)")
 
     r.check("tap create -> 100", c.code("tap create %s" % TAP) == "100")
     r.check("tap: at 65521", iface_mtu(TAP) == JUMBO, str(iface_mtu(TAP)))
@@ -165,16 +218,20 @@ def creators(c, r):
 
     # The gate: a pre-existing device must not be re-MTU'd on attach.
     r.check("fixture: tap create -> 100", c.code("tap create %s" % BTU) == "100")
-    _ip("link", "set", BTU, "mtu", "9000")
-    r.check("fixture: admin MTU 9000 in place", iface_mtu(BTU) == 9000,
-            str(iface_mtu(BTU)))
-    r.check("bridge add_nio_tap on the pre-existing TAP -> 100",
-            c.code("bridge add_nio_tap %s %s" % (BTBR, BTU)) == "100")
-    r.check("attach left the admin MTU alone (§B gate)",
-            iface_mtu(BTU) == 9000, str(iface_mtu(BTU)))
+    if can_admin:
+        _ip("link", "set", BTU, "mtu", "9000")
+        r.check("fixture: admin MTU 9000 in place", iface_mtu(BTU) == 9000,
+                str(iface_mtu(BTU)))
+        r.check("bridge add_nio_tap on the pre-existing TAP -> 100",
+                c.code("bridge add_nio_tap %s %s" % (BTBR, BTU)) == "100")
+        r.check("attach left the admin MTU alone (§B gate)",
+                iface_mtu(BTU) == 9000, str(iface_mtu(BTU)))
+    else:
+        r.skip("fixture: admin MTU 9000 in place (+ attach gate)",
+               "setting an admin MTU needs CAP_NET_ADMIN (unprivileged CI step)")
 
 
-def bridge_auto_adjust(c, r):
+def bridge_auto_adjust(c, r, can_admin):
     """The bridge is never MTU'd by ubridge; the kernel derives min(port MTU)."""
     r.check("brctl create -> 100", c.code("brctl create %s" % BR) == "100")
     r.check("fixture: veth ports -> 100",
@@ -187,20 +244,28 @@ def bridge_auto_adjust(c, r):
             str(iface_mtu(BR)))
 
     # A 1500 external port must pull the bridge down with it (br_mtu_min).
-    _ip("link", "add", DUMMY, "type", "dummy")
-    r.check("fixture: dummy at 1500", iface_mtu(DUMMY) == 1500,
-            str(iface_mtu(DUMMY)))
-    r.check("brctl addif dummy -> 100",
-            c.code("brctl addif %s %s" % (BR, DUMMY)) == "100")
-    r.check("bridge drops to the port minimum: 1500", iface_mtu(BR) == 1500,
-            str(iface_mtu(BR)))
-    r.check("brctl delif dummy -> 100",
-            c.code("brctl delif %s %s" % (BR, DUMMY)) == "100")
-    r.check("bridge back at 65521", iface_mtu(BR) == JUMBO, str(iface_mtu(BR)))
+    if can_admin:
+        _ip("link", "add", DUMMY, "type", "dummy")
+        r.check("fixture: dummy at 1500", iface_mtu(DUMMY) == 1500,
+                str(iface_mtu(DUMMY)))
+        r.check("brctl addif dummy -> 100",
+                c.code("brctl addif %s %s" % (BR, DUMMY)) == "100")
+        r.check("bridge drops to the port minimum: 1500", iface_mtu(BR) == 1500,
+                str(iface_mtu(BR)))
+        r.check("brctl delif dummy -> 100",
+                c.code("brctl delif %s %s" % (BR, DUMMY)) == "100")
+        r.check("bridge back at 65521", iface_mtu(BR) == JUMBO, str(iface_mtu(BR)))
+    else:
+        r.skip("bridge drops to the port minimum (1500-dummy part, + recovery)",
+               "creating the dummy port needs CAP_NET_ADMIN (unprivileged CI step)")
 
 
-def e2e_jumbo(c, r):
+def e2e_jumbo(c, r, can_raw):
     """A 9000-byte frame crosses the bridge intact, both directions."""
+    if not can_raw:
+        r.skip("9000-byte frames X1 <-> X2 across the bridge",
+               "AF_PACKET needs CAP_NET_RAW (unprivileged CI step)")
+        return
     for dev in (BR, P1, X1, P2, X2):
         c.send("link set %s up" % dev)
     time.sleep(0.2)
@@ -244,12 +309,19 @@ def main():
                 return 1
             c.send("link delete %s" % A)
 
+            # CI's unprivileged step: the capped binary creates devices, but
+            # this process may not mutate links or open raw sockets.
+            can_admin = have_net_admin()
+            can_raw = have_net_raw()
+            if not (can_admin and can_raw):
+                print("(unprivileged run: AF_PACKET / raw-ip checks will skip)")
+
             print("--- creators ---")
-            creators(c, r)
+            creators(c, r, can_admin, can_raw)
             print("--- bridge auto-adjust ---")
-            bridge_auto_adjust(c, r)
+            bridge_auto_adjust(c, r, can_admin)
             print("--- end-to-end jumbo ---")
-            e2e_jumbo(c, r)
+            e2e_jumbo(c, r, can_raw)
         finally:
             cleanup(c)
             c.close()
