@@ -218,10 +218,28 @@ No `ip` command, no root — ubridge does it all via netlink.
 - **Shared helpers** — `parse_cidr()` and `br_set_address()` are defined in
   `hypervisor_brctl.c` and exported via `hypervisor_brctl.h`, so both
   `brctl` (bridge IPs) and `link` (generic IPs) share one implementation.
-  The other direction: `link_set_l2only()` / `link_harden_l2only()` are
-  defined here and exported via `hypervisor_link.h`, because the hardening
-  belongs to this module while the creators that must apply it live in
-  `tap`, `docker` and `brctl`.
+  The other direction: `link_set_l2only()` / `link_harden_l2only()` (and the
+  MTU twin `link_apply_default_mtu()`) are defined here and exported via
+  `hypervisor_link.h`, because the hardening belongs to this module while
+  the creators that must apply it live in `tap`, `docker` and `brctl`.
+- **Jumbo-safe default MTU** — every creator sets
+  `UBRIDGE_DEFAULT_MTU` (65521 — a TAP's `max_mtu`, 65535 − `ETH_HLEN`;
+  veth and bridge accept up to 65535) on the plumbing it brings up:
+  `link veth` on **both ends** (both host-side), `docker create_veth` on the
+  **host anchor only**, TAPs the creators make. The guest end of a docker
+  pair is the container's eth0 — the endpoint owns its MTU (raise eth0
+  inside the container for jumbo, exactly like a VM guest raises its
+  interface; the host end at 65521 already lets that work both ways, since
+  `veth_xmit` checks an oversized frame against the *receiving* end).
+  Wrappers swallow `EINVAL`/`EOPNOTSUPP`
+  like `link_harden_l2only()` — the device keeps the kernel default and the
+  creation still succeeds. Deliberately **not** covered: the bridge device
+  itself (the kernel's `br_mtu_auto_adjust()` tracks the minimum port MTU,
+  which is the honest value for what the fabric can carry; forwarding checks
+  only the egress port anyway), vxlan (with a `dev=` lowerdev the kernel
+  already derives `lowerdev.mtu − 50` and refuses anything above it), and
+  anything a creator merely *attaches* to — an admin-configured MTU is never
+  overridden.
 - **Error handling** — all helpers return a **negative errno** (not `-1`);
   command handlers report `strerror(-err)`.
 - **VETH_INFO_PEER nesting** — the trickiest part. The peer info is a

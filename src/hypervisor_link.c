@@ -141,6 +141,46 @@ static int link_set_state(const char *iface, int up)
 }
 
 /* --------------------------------------------------------------------------
+ * Set the device MTU (RTM_SETLINK + IFLA_MTU)
+ * --------------------------------------------------------------------------
+ */
+
+static int link_set_mtu(const char *iface, int mtu)
+{
+    struct nl_handler nlh;
+    struct nlmsg *msg = NULL;
+    struct ifinfomsg *ifi;
+    int ret, ifindex;
+
+    ifindex = if_nametoindex(iface);
+    if (ifindex == 0) return -ENODEV;
+
+    ret = netlink_open(&nlh, NETLINK_ROUTE);
+    if (ret < 0) return ret;
+
+    msg = nlmsg_alloc(NLMSG_GOOD_SIZE);
+    if (!msg) {
+        netlink_close(&nlh);
+        return -ENOMEM;
+    }
+
+    ifi = (struct ifinfomsg *)nlmsg_data(msg);
+    memset(ifi, 0, sizeof(*ifi));
+    ifi->ifi_family = AF_UNSPEC;
+    ifi->ifi_index = ifindex;
+
+    msg->nlmsghdr.nlmsg_type = RTM_SETLINK;
+    msg->nlmsghdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    msg->nlmsghdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+
+    nla_put_u32(msg, IFLA_MTU, mtu);
+
+    ret = nl_xact(&nlh, msg);
+    netlink_close(&nlh);
+    return ret;
+}
+
+/* --------------------------------------------------------------------------
  * Delete an interface (RTM_DELLINK).
  * Deleting one end of a veth pair removes the other automatically.
  * --------------------------------------------------------------------------
@@ -550,6 +590,28 @@ int link_harden_l2only(const char *iface)
     return err;
 }
 
+/*
+ * Creator-side MTU twin of link_harden_l2only(): apply UBRIDGE_DEFAULT_MTU to
+ * a device that was just created, so jumbo guest frames are not silently
+ * dropped at veth xmit / bridge egress. A kernel (or device kind) that cannot
+ * take the value — EINVAL/EOPNOTSUPP — is logged and ignored, exactly like
+ * the hardening wrapper's "old kernel" path; every other error is real and
+ * returned for the caller to report.
+ */
+int link_apply_default_mtu(const char *iface)
+{
+    int err = link_set_mtu(iface, UBRIDGE_DEFAULT_MTU);
+
+    if (err == -EINVAL || err == -EOPNOTSUPP) {
+        fprintf(stderr, "ubridge: %s: no MTU %d (%s), "
+                        "left as the kernel defaults it\n",
+                iface, UBRIDGE_DEFAULT_MTU, strerror(-err));
+        return 0;
+    }
+
+    return err;
+}
+
 /* --------------------------------------------------------------------------
  * Command handlers
  * --------------------------------------------------------------------------
@@ -640,6 +702,22 @@ static int cmd_veth(hypervisor_conn_t *conn, int argc, char *argv[])
         hypervisor_send_reply(conn, HSC_ERR_CREATE, 1,
                               "Could not set L2-only on %s: %s",
                               peer, strerror(-err));
+        return -1;
+    }
+
+    /* Jumbo-safe MTU on both ends — veth xmit checks oversized frames against
+     * the *receiving* end, so one end alone would pass jumbo in one direction
+     * and drop it in the other. */
+    err = link_apply_default_mtu(name);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1,
+                              "Could not set MTU on %s: %s", name, strerror(-err));
+        return -1;
+    }
+    err = link_apply_default_mtu(peer);
+    if (err < 0) {
+        hypervisor_send_reply(conn, HSC_ERR_CREATE, 1,
+                              "Could not set MTU on %s: %s", peer, strerror(-err));
         return -1;
     }
 

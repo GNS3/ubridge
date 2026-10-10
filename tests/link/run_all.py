@@ -5,6 +5,7 @@ import sys
 SUITES = [
     "test_basic",
     "test_l2only",
+    "test_mtu",
 ]
 
 

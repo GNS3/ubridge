@@ -65,7 +65,7 @@ payload → dropped, `0x0800` + valid IPv4 header → forwarded, `0x88B5` (non-I
 | Suite | What it covers |
 |-------|----------------|
 | `test_lifecycle.py` | create/duplicate, start/stop missing & already-running & not-running, rename collision, list/get_stats/reset_stats, add_nio_udp validation (iol_id==app_id, port>MAX_PORTS, missing bridge), delete missing. |
-| `test_relay.py` | IOL->NIO payload intact; dst_port routes to the right NIO (and no hub flood); NIO->IOL prepends the exact header (dst=iol_id, src=app_id, ports=port_key). |
+| `test_relay.py` | IOL->NIO payload intact; dst_port routes to the right NIO (and no hub flood); NIO->IOL prepends the exact header (dst=iol_id, src=app_id, ports=port_key); 5000-byte jumbo frames cross intact both ways (MAX_MTU is no longer 0x1000). |
 | `test_tap_anchor.py` | TAP anchor ports (`add_nio_tap`/`delete_nio_tap`): both-direction relay, absent/too-long/unknown names, delete keeps the persistent device, UDP<->TAP swaps with no fd or thread leak, DOWN-anchor resilience (100 frames -> ubridge stays alive, all dropped with EIO), kernel-bridge interop (anchor + veth peer on one bridge), and the stopped-delete fd release. Needs `CAP_NET_ADMIN` (taps, veth, bridge) — self-skips without it. |
 
 ## Conventions
