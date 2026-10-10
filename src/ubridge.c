@@ -371,7 +371,7 @@ int iniparser_error_handler(const char *format, ...)
 {
   int ret;
   va_list argptr;
-  char *syntax_error = strstr(format, "iniparser: syntax error");
+  const char *syntax_error = strstr(format, "iniparser: syntax error");
 
   if(syntax_error != NULL) {
      va_start(argptr, format);
