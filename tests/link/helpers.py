@@ -5,6 +5,7 @@ two test trees can live side by side without a shared package.
 """
 import importlib.util
 import os
+import re
 import subprocess
 
 _brctl_common = os.path.join(
@@ -35,6 +36,14 @@ def link_flags(name):
     out = _run("ip", "-o", "link", "show", name,
                capture_output=True, text=True).stdout
     return out.split("<")[1].split(">")[0] if "<" in out else ""
+
+
+def iface_mtu(name):
+    """The device's MTU as `ip -o link` reports it (None if absent)."""
+    out = _run("ip", "-o", "link", "show", name,
+               capture_output=True, text=True).stdout
+    m = re.search(r"\bmtu (\d+)", out)
+    return int(m.group(1)) if m else None
 
 
 def has_ipv4(name, cidr):

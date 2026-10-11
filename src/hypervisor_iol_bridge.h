@@ -52,7 +52,9 @@
 #define IOL_PORT_BAY_LEN                4
 
 #define MAX_PORTS                       256
-#define MAX_MTU                         0x1000
+/* Frame cap across the IOL bridge: matches NIO_MAX_PKT_SIZE so jumbo IOL
+ * frames pass through untruncated instead of being clipped at 4 KB. */
+#define MAX_MTU                         NIO_MAX_PKT_SIZE
 
 typedef struct port
 {

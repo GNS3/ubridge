@@ -52,7 +52,7 @@ getcap $(which ubridge) # verify
 
 | Command | Args | Description |
 |---------|------|-------------|
-| `create <bridge>` | 1 | Create a Linux bridge (`RTM_NEWLINK`, kind=bridge, `NLM_F_CREATE|EXCL`). Duplicate → `EEXIST`. Hardened before the reply — first with `link l2only on`, because the fabric the anchors are enslaved to must not flood its own link-local to every port (the `brctl addip` L3 paths are IPv4-only, so they are unaffected); then with multicast snooping turned **off**, see below. Both roll the bridge back if they fail. |
+| `create <bridge>` | 1 | Create a Linux bridge (`RTM_NEWLINK`, kind=bridge, `NLM_F_CREATE|EXCL`). Duplicate → `EEXIST`. Hardened before the reply — first with `link l2only on`, because the fabric the anchors are enslaved to must not flood its own link-local to every port (the `brctl addip` L3 paths are IPv4-only, so they are unaffected); then with multicast snooping turned **off**, see below. Both roll the bridge back if they fail. The bridge gets **no MTU of its own**: the kernel's `br_mtu_auto_adjust()` tracks the minimum port MTU on every addif/delif, which is the honest value for what the fabric can carry — the creators put their ports at 65521, so an all-anchor bridge reports 65521 and drops to 1500 the moment a 1500 external port joins (pinning semantics: see Limitations). |
 | `delete <bridge>` | 1 | Delete a Linux bridge (`RTM_DELLINK`). Missing → `ENODEV`. **Refused with `EBUSY` while any port is still enslaved** — release the ports first; the last party out deletes the bridge (see the note below). |
 | `addif <bridge> <port>` | 2 | Enslave a port to the bridge (`RTM_SETLINK` + `IFLA_MASTER`) **and bring the port UP**. Also opens link-local forwarding on the port: `IFLA_BRPORT_GROUP_FWD_MASK = 0xfffd`, best-effort (see Limitations). Port must pre-exist. |
 | `delif <bridge> <port>` | 2 | Release a port from a bridge. Verifies the port is actually on the given bridge; else `-EINVAL`. |
@@ -164,6 +164,22 @@ of `vlan_add` (ranges), with the native VLAN added `pvid untagged`.
 
 ## Limitations
 
+- **Bridge MTU is derived from the ports, and a manual pin is one-way.**
+  `create` never sets an MTU: with `BROPT_MTU_SET_BY_USER` clear, the
+  kernel's `br_mtu_auto_adjust()` (called unconditionally at the end of
+  every addif/delif — there is no sysctl or flag to disable it) recomputes
+  the bridge MTU as the minimum port MTU. A manual
+  `ip link set <bridge> mtu N` **after** creation goes through
+  `br_change_mtu` and pins the value: auto-adjust then defers to it for the
+  bridge's lifetime, and no user API exists to clear the flag again —
+  delete + recreate to return to derived behaviour. The trap: an MTU
+  supplied *at creation* (`ip link add ... mtu N type bridge`) is written
+  directly by `rtnl_create_link`, bypassing `ndo_change_mtu`, so it does
+  **not** pin — the first port add snaps the bridge back to the port
+  minimum. ubridge deliberately never pins (it issues no RTM_SETLINK
+  against the bridge device): the derived value is the honest "what can
+  this fabric carry" reading, and a lab wanting to simulate a narrow bridge
+  can pin one itself with plain iproute2 — nothing here will fight it.
 - **Default PVID 1 is not auto-cleaned.** A port freshly enslaved to a
   `vlanfiltering` bridge inherits the default PVID 1 (PVID + Egress Untagged).
   Configuring an access or trunk port therefore needs an explicit

@@ -104,6 +104,13 @@ static int nio_tap_open(char *tap_devname, int carrier)
       if (!existed && (err = link_harden_l2only(tap_devname)) < 0)
          fprintf(stderr, "nio_tap_open: %s: L2-only hardening failed (%s)\n",
                  tap_devname, strerror(-err));
+
+      /* Same create-vs-attach rule for the jumbo-safe default MTU: a TAP born
+       * here gets it, best-effort; an attach must never override an
+       * admin-chosen MTU on someone else's device. */
+      if (!existed && (err = link_apply_default_mtu(tap_devname)) < 0)
+         fprintf(stderr, "nio_tap_open: %s: default MTU failed (%s)\n",
+                 tap_devname, strerror(-err));
    }
 
    if (!carrier && ioctl(fd, TUNSETCARRIER, &carrier) < 0) {

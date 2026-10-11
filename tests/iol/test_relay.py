@@ -124,6 +124,37 @@ def main():
                 r.check("NIO->IOL header correct", False, "timeout")
             tx1.close()
 
+            # ---- PHASE 3: jumbo frames cross untruncated ----
+            # MAX_MTU used to be 0x1000, so a >4 KB payload was clipped (the
+            # NIO->IOL send truncated at 4096; the listener buffers capped both
+            # ways). It now matches NIO_MAX_PKT_SIZE, so a 5000-byte frame must
+            # arrive intact in both directions.
+            jp = b"JUMBO-IOL-" + b"\xa5" * (5000 - 10)
+
+            rx1 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); rx1.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); rx1.bind((HOST, r1)); rx1.settimeout(2.0)
+            iol.sendto(iol_frame(APP_ID, IOL_ID, 0, 0, jp), BRIDGE_SOCK)
+            try:
+                got, _ = rx1.recvfrom(65536)
+                r.check("IOL->NIO jumbo (5000 B) intact", got == jp,
+                        "len=%d want=%d" % (len(got), len(jp)))
+            except socket.timeout:
+                r.check("IOL->NIO jumbo (5000 B) intact", False, "timeout")
+            rx1.close()
+
+            # r1 is free for the injector again (same dance as phase 2)
+            tx1 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); tx1.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); tx1.bind((HOST, r1))
+            tx1.sendto(b"warmup", (HOST, l1))
+            _drain(iol)
+            tx1.sendto(jp, (HOST, l1))
+            try:
+                data, _ = iol.recvfrom(65536)
+                body = data[IOL_HDR_SIZE:]
+                r.check("NIO->IOL jumbo (5000 B) intact", body == jp,
+                        "len=%d want=%d" % (len(body), len(jp)))
+            except socket.timeout:
+                r.check("NIO->IOL jumbo (5000 B) intact", False, "timeout")
+            tx1.close()
+
             c.send("iol_bridge stop iolr")
             c.send("iol_bridge delete iolr")
         finally:
