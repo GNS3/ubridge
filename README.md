@@ -1,9 +1,20 @@
 uBridge
 =======
 
-uBridge is a simple application to create user-land bridges between
-various technologies. Currently, bridging between UDP tunnels, Ethernet
-and TAP interfaces is supported. Packet capture is also supported.
+uBridge connects the network interfaces of emulated devices (QEMU, Docker,
+IOU, ...) so that GNS3 can wire them into topologies. It is Linux-only, and
+gns3-server drives it over a line-based control protocol (a UNIX socket, or
+TCP). It provides two data paths:
+
+- a **user-space relay** that bridges NIOs — UDP tunnels, Ethernet, TAP and
+  UNIX sockets — with per-bridge packet filters (delay, jitter, loss,
+  corruption, BPF);
+- a **kernel data plane** it provisions and controls — persistent TAPs,
+  kernel bridges (ports, VLAN, STP), VXLAN, veth, tc/netem link impairment
+  and AF_PACKET capture — where frames are forwarded by the kernel, without
+  entering ubridge.
+
+Packet capture and BPF match filtering are available on both paths.
 
 Installation
 ------------
@@ -34,8 +45,8 @@ non-root users.
 Hypervisor mode
 ---------------
 
-The hypervisor mode of uBridge allows you to dynamically add and remove
-bridges.
+The hypervisor mode of uBridge lets you create, configure and remove its
+objects — bridges and NIOs, kernel devices, filters, captures — at runtime.
 
 There are two control-channel transports:
 
@@ -55,23 +66,23 @@ For example: "bridge create test" creates a bridge named "test".
 
 The modules that are currently defined are given below:
 
-- hypervisor : General hypervisor management 
-- bridge : bridges management (also hosts the user-space packet filters)
-- iol_bridge : IOL (IOS on Linux) bridges management 
-- docker : Docker management 
-- brctl : Linux bridge management
-- link : generic interface management
-- vxlan : kernel VXLAN device lifecycle (kernel data plane)
-- tap : persistent TAP device lifecycle (kernel data plane)
+- hypervisor : General hypervisor management
+- bridge : the user-space NIO relay (also hosts the packet filters) — [`doc/bridge.md`](doc/bridge.md)
+- iol_bridge : IOL (IOS on Linux) bridges management — [`doc/iol_bridge.md`](doc/iol_bridge.md)
+- docker : Docker management — [`doc/docker.md`](doc/docker.md)
+- brctl : Linux bridge management — [`doc/brctl.md`](doc/brctl.md)
+- link : generic interface management — [`doc/link.md`](doc/link.md)
+- vxlan : kernel VXLAN device lifecycle (kernel data plane) — [`doc/vxlan.md`](doc/vxlan.md)
+- tap : persistent TAP device lifecycle (kernel data plane) — [`doc/tap.md`](doc/tap.md)
 - tc : kernel netem link impairment — delay/jitter/loss/dup/corrupt plus
   rate/reorder/loss-gemodel/distribution/seed/limit — `bpf_drop`
   classic-BPF match-drop filters, the eBPF stateful modes
   (`nth_drop`/`quota_drop`/`window_drop`/`flow_drop`, needs CAP_BPF), and
-  `tc capabilities` (kernel data plane)
-- capture : kernel-side AF_PACKET capture (kernel data plane)
+  `tc capabilities` (kernel data plane) — [`doc/tc.md`](doc/tc.md)
+- capture : kernel-side AF_PACKET capture (kernel data plane) — [`doc/capture.md`](doc/capture.md)
 - marker : packet-filter match signals, pushed to a UDP sink; `add_kernel`
   sniffs a kernel interface directly for data-plane traffic that bypasses
-  the relay (kernel data plane)
+  the relay (kernel data plane) — [`doc/marker.md`](doc/marker.md)
 
 User-space link impairment (delay / jitter / loss / corrupt / BPF) is **not a
 separate module**: it is a per-bridge filter chain configured through the
@@ -94,684 +105,63 @@ See [`doc/packet_filter.md`](doc/packet_filter.md) for filter semantics and
 
 ``` {.bash}
 hypervisor version
-100-1.1.1
+100-1.3.0
 ```
 
-- **hypervisor module_list**: Display the module list.
-
-``` {.bash}
-101 marker
-101 capture
-101 tc
-101 tap
-101 link
-101 brctl
-101 iol_bridge
-101 docker
-101 bridge
-101 hypervisor
-100-OK
-```
-
-- **hypervisor cmd_list** *\<module\>*: Display commands
-    recognized by the specified module.
-
-``` {.bash}
-hypervisor cmd_list bridge
-101 list (min/max args: 0/0)
-101 set_pcap_filter (min/max args: 1/2)
-101 reset_packet_filters (min/max args: 1/1)
-101 delete_packet_filter (min/max args: 2/2)
-101 add_packet_filter (min/max args: 2/10)
-101 stop_capture (min/max args: 1/1)
-101 start_capture (min/max args: 2/3)
-101 add_nio_linux_raw (min/max args: 2/2)
-101 add_nio_ethernet (min/max args: 2/2)
-101 set_nio_tap_carrier (min/max args: 2/2)
-101 add_nio_tap (min/max args: 2/3)
-101 add_nio_unix (min/max args: 3/3)
-101 delete_nio_udp (min/max args: 4/4)
-101 remove_nio_udp (min/max args: 4/4)
-101 delete_nio_tap (min/max args: 2/2)
-101 add_nio_udp (min/max args: 4/4)
-101 rename (min/max args: 2/2)
-101 reset_stats (min/max args: 1/1)
-101 get_stats (min/max args: 1/1)
-101 show (min/max args: 1/1)
-101 stop (min/max args: 1/1)
-101 start (min/max args: 1/1)
-101 delete (min/max args: 1/1)
-101 create (min/max args: 1/1)
-100-OK
-```
-
+- **hypervisor module_list**: Display the module list, one `101` line per
+    module.
+- **hypervisor cmd_list** *\<module\>*: Display the commands recognized by
+    the specified module, with their argument counts.
 - **hypervisor close**: Close the current session.
-
-``` {.bash}
-hypervisor close
-100-OK
-Connection closed by foreign host.
-```
-
 - **hypervisor stop**: Destroy all objects and stop hypervisor.
-
-``` {.bash}
-hypervisor stop
-100-OK
-Connection closed by foreign host.
-```
-
-- **hypervisor reset**: Destroy all objects. (used to get an
-    empty configuration)
-
-``` {.bash}
-hypervisor reset
-100-OK
-```
-
-### Bridge module (bridge)
-
-- **bridge create** *\<bridge_name\>*: Create a new bridge.
-
-``` {.bash}
-bridge create br0
-100-bridge 'br0' created
-```
-
-- **bridge list**: List all exiting Bridges.
-
-``` {.bash}
-bridge list
-101 br0 (NIOs = 0)
-100-OK
-```
-
-- **bridge delete** *\<bridge_name\>*: Delete a bridge.
-
-``` {.bash}
-bridge delete br0
-100-bridge 'br0' deleted
-```
-
-- **bridge start** *\<bridge_name\>*: Start a bridge. A bridge
-    must have 2 NIOs added in order to start.
-
-``` {.bash}
-bridge start br0
-100-bridge 'br0' started
-```
-
-- **bridge stop** *\<bridge_name\>*: Stop a bridge.
-
-``` {.bash}
-bridge stop br0
-100-bridge 'br0' stopped
-```
-
-- **bridge rename** *\<old_bridge_name\>*
-    *\<new_bridge_name\>*: Rename a bridge.
-
-``` {.bash}
-bridge rename br0 br1
-100-bridge 'br0' renamed to 'br1'
-```
-
-- **bridge add_nio_udp** *\<bridge_name\>* *\<local_port\>*
-    *\<remote_host\>* *\<remote_port\>*: Add an UDP NIO with the
-    specified parameters to a bridge.
-
-``` {.bash}
-bridge add_nio_udp br0 20000 127.0.0.1 30000
-100-NIO UDP added to bridge 'br0'
-```
-
-- **bridge delete_nio_udp** *\<bridge_name\>* *\<local_port\>*
-    *\<remote_host\>* *\<remote_port\>*: Remove an UDP NIO with the
-    specified parameters to a bridge.
-
-``` {.bash}
-bridge delete_nio_udp br0 20000 127.0.0.1 30000
-100-NIO UDP deleted from bridge 'br0'
-```
-
-- **bridge add_nio_unix** *\<local\>* *\<remote\>*: Add an UNIX
-    NIO with 'local' the UNIX domain socket to receive and 'remote'
-    to send
-
-``` {.bash}
-bridge add_nio_unix br0 "/tmp/local" "/tmp/remote"
-100-NIO UNIX added to bridge 'br0'
-```
-
-- **bridge add_nio_tap** *\<bridge_name\>* *\<tap_device\>* *[on|off]*:
-    Add a TAP NIO to a bridge. TAP devices require root access. The optional
-    state controls the initial carrier state and defaults to `on`.
-
-``` {.bash}
-bridge add_nio_tap br0 tap0
-100-NIO TAP added to bridge 'br0'
-```
-
-- **bridge delete_nio_tap** *\<bridge_name\>* *\<tap_device\>*:
-    Release the TAP NIO opened by that name — the fd closes, the interface
-    itself survives (persistent TAPs are deleted via the `tap` module). The
-    NIO is matched by the kernel-resolved interface name, and the bridge must
-    not be running (stop it first, as with `delete_nio_udp`; `start` keeps
-    every NIO, so the swap is stop → delete → add → start).
-
-``` {.bash}
-bridge delete_nio_tap br0 tap0
-100-NIO TAP removed from bridge 'br0'
-```
-
-- **bridge set_nio_tap_carrier** *\<bridge_name\>* *\<on|off\>*:
-    Change the carrier state of a TAP NIO without changing its administrative
-    state. This can be used to emulate plugging or unplugging a cable.
-
-``` {.bash}
-bridge set_nio_tap_carrier br0 off
-100-TAP carrier set off on bridge 'br0'
-```
-
-- **bridge add_nio_ethernet** *\<bridge_name\>*
-    *\<eth_device\>*: Add a generic Ethernet NIO to a bridge, using
-    PCAP (0.9.4 and greater). It requires root access.
-
-``` {.bash}
-bridge add_nio_ethernet br0 eth0
-100-NIO Ethernet added to bridge 'br0'
-```
-
-- **bridge add_nio_linux_raw** *\<bridge_name\>*
-    *\<eth_device\>*: Add a Linux RAW Ethernet NIO. It requires root access.
-
-``` {.bash}
-bridge add_nio_linux_raw br0 eth0
-100-NIO Linux raw added to bridge 'br0'
-```
-
-- **bridge show** *\<bridge_name\>*: Show the NIOs on a bridge.
-
-``` {.bash}
-bridge show bridge0
-101 bridge 'br0' is running
-101 Source NIO: 20000:127.0.0.1:30000
-101 Destination NIO: eth0
-```
-
-- **bridge start_capture** *\<bridge_name\>* *\<pcap_file\>*
-    \[pcap_linktype\]: Start a PCAP packet capture on a bridge. PCAP
-    link type default is Ethernet "EN10MB".
-
-``` {.bash}
-bridge start_capture br0 "/tmp/my_capture.pcap"
-100-packet capture started on bridge 'br0'
-```
-
-- **bridge stop_capture** *\<bridge_name\>*: Stop a PCAP packet
-    capture on a bridge.
-
-``` {.bash}
-bridge stop_capture br0
-100-packet capture stopped on bridge 'br0'
-```
-
-- **bridge set_pcap_filter** *\<bridge_name\>* \[filter\]: Set
-    a PCAP filter on a bridge. There must be a least one NIO Ethernet
-    attached to the bridge. To reset any applied filter, same command
-    without a filter.
-
-``` {.bash}
-bridge set_pcap_filter br0 "not ether src 00:50:56:c0:00:0a"
-100-filter 'not ether src 00:50:56:c0:00:0a' applied on bridge 'br0'
-```
-
-``` {.bash}
-bridge set_pcap_filter br0
-100-filter reset on bridge 'br0'
-```
-
-- **bridge get_stats** *\<bridge_name\>*: Show statistics about
-    a bridge input/output.
-
-``` {.bash}
-bridge get_stats bridge0
-101 Source NIO:      IN: 5 packets (90 bytes) OUT: 15 packets (410 bytes)
-101 Destination NIO: IN: 15 packets (410 bytes) OUT: 5 packets (90 bytes)
-```
-
-- **bridge reset_stats** *\<bridge_name\>*: Reset the statistics
-    of a bridge.
-
-``` {.bash}
-bridge reset_stats bridge0
-100-OK
-```
-
-- **bridge add_packet_filter** *\<bridge_name\>*
-    *\<filter_name\>* *\<filter_type\>* \[*\<a4\>*
-    \[\...*\<a10\>*\]\]: Add a packet filter to a bridge.
-
-#### Filter types
-
-##### frequency_drop
-
-"frequency_drop" has 1 argument "*\<frequency\>*". It will drop
-everything with a -1 frequency, drop every Nth packet with a positive
-frequency, or drop nothing.
-
-##### packet_loss
-
-"packet_loss" has 1 argument "*\<percentage\>*" (0 to 100%). The
-percentage represents the chance for a packet to be lost.
-
-##### delay
-
-"delay" has 1 argument "*\<latency\>*" to delay packets in
-milliseconds and 1 optional argument "*\<jitter\>*" to add jitter in
-milliseconds (+/-) of the delay
-
-##### corrupt
-
-"corrupt" has 1 argument "*\<percentage\>*" (0 to 100%). The
-percentage represents the chance for a packet to be corrupted.
-
-##### bpf
-
-"bpf" has 1 argument "*\<filter_expression\>*", a string written
-with the Berkeley Packet Filter (BPF) syntax. This filter will drop any
-packet matching the expression. It also has 1 optional argument
-*\<pcap_linktype\>* which is the PCAP link type, the default is
-Ethernet "EN10MB".
-
-##### mark
-
-"mark" has 1 argument "*\<filter_expression\>*" (libpcap cBPF
-syntax, like "bpf") plus optional keyword pairs `tag <id>`, `link <id>`,
-`pcap <path>` (any order). It is a **passive tap**: on a match it emits a UDP
-marker signal to a configured sink (set via the `marker` module) and, when
-`pcap <path>` is given, appends the matched packet to that pcap file — it never
-drops traffic (use "bpf" to drop). See [`doc/marker.md`](doc/marker.md).
-
-``` {.bash}
-bridge add_packet_filter br0 "my_filter1" "delay" 50 10
-bridge add_packet_filter br0 "my_filter2" "frequency_drop" 5
-bridge add_packet_filter br0 "my_filter3" "packet_loss" 20
-bridge add_packet_filter br0 "my_filter4" "corrupt" 30
-bridge add_packet_filter br0 "my_filter5" "bpf" "icmp[icmptype] == 8"
-bridge add_packet_filter br0 "my_filter6" "bpf" "ether host 11:22:33:44:55:66"
-bridge add_packet_filter br0 "my_filter7" "bpf" "tcp src port 53"
-bridge show br0
-101 bridge 'br0' is not running
-101 Filter 'my_filter1' configured in position 1
-101 Filter 'my_filter2' configured in position 2
-101 Filter 'my_filter3' configured in position 3
-101 Filter 'my_filter4' configured in position 4
-101 Filter 'my_filter5' configured in position 5
-101 Filter 'my_filter6' configured in position 6
-101 Filter 'my_filter7' configured in position 7
-101 Source NIO: 20000:127.0.0.1:30000
-101 Destination NIO: 20001:127.0.0.1:30001
-100-OK
-```
-
-- **bridge delete_packet_filter** *\<bridge_name\>*
-    *\<filter_name\>*: Delete a packet filter configured on a bridge.
-
-``` {.bash}
-bridge delete_packet_filter br0 "my_filter1"
-100-Filter 'my_filter1' delete from bridge 'br0'
-```
-
-**bridge reset_packet_filters** *\<bridge_name\>*: Delete all
-    impairment filters (drop/loss/delay/corrupt/bpf) configured on a bridge.
-    `mark` filters are preserved — they are passive observability taps holding
-    an open pcap that must survive impairment reapply. (Bridge delete / stop
-    still tears down `mark`.)
-
-``` {.bash}
-bridge reset_packet_filters br0
-100-OK
-```
+- **hypervisor reset**: Destroy all objects. (used to get an empty
+    configuration)
+
+### Bridge module ("bridge")
+
+The user-space NIO relay: each bridge connects exactly **two** NIOs with two
+listener threads, and hosts one packet-filter chain (shared by both
+directions), an optional pcap capture and per-NIO statistics. Full reference:
+[`doc/bridge.md`](doc/bridge.md).
+
+- **NIO types**: UDP tunnels, UNIX sockets, TAP, Ethernet (libpcap) and Linux
+  RAW (AF_PACKET) — any two can be paired.
+- **Packet filters** (`bridge add_packet_filter`): `frequency_drop`,
+  `packet_loss`, `delay` (a real delay line, not an inline sleep), `corrupt`,
+  `bpf` (drop on match) and `mark` (passive tap — signal + optional pcap).
+  Semantics: [`doc/packet_filter.md`](doc/packet_filter.md) and
+  [`doc/marker.md`](doc/marker.md).
+- **Capture**: `bridge start_capture` / `stop_capture` write a per-bridge
+  pcap of the relayed frames; `set_pcap_filter` applies a capture filter on
+  an Ethernet NIO.
 
 ### Docker module ("docker")
 
-- **docker create_veth** *\<interface_name_1\>*
-    *\<interface_name_2\>*: Create virtual Ethernet interface pair.
-
-``` {.bash}
-docker create_veth hostif guestif
-100-veth pair created: hostif and guestif
-```
-
-- **docker move_to_ns** *\<interface\>* *\<namespace_id\>*
-    *\<dst_interface\>*: Move Ethernet interface to network
-    namespace. And rename it after the move.
-
-``` {.bash}
-docker move_to_ns guestif 6367 eth0
-100-guestif moved to namespace 6367
-```
-
-- **docker set_mac_addr** *\<interface\>* *\<mac_addr\>*
-    *\<mac_addr\>*: Set a MAC address on an interface.
-
-``` {.bash}
-docker set_mac_addr tap-gns3-e0 12:34:56:78:12:42
-100-MAC address 12:34:56:78:12:42" has been successfully set on interface tap-gns3-e0
-```
-
-- **docker delete_veth** *\<interface_name\>*: Delete virtual
-    Ethernet interface.
-
-``` {.bash}
-docker delete_veth hostif
-100-veth interface hostif has been deleted
-```
+Container plumbing: `create_veth` (pair creation; the host end is hardened
+L2-only, brought UP and given the default MTU), `move_to_ns` (move + rename
+into a container namespace), `set_mac_addr` and `delete_veth`. See
+[`doc/docker.md`](doc/docker.md).
 
 ### Linux bridge ("brctl")
 
-Manage Linux kernel bridges via netlink. The module replaces the
-old ioctl-based bridge management with full netlink support and
-runtime parameter configuration.
-
-#### Basic commands
-
-- **brctl create** *\<bridge_name\>*: Create a Linux bridge.
-
-``` {.bash}
-brctl create br0
-100-Bridge br0 created
-```
-
-- **brctl delete** *\<bridge_name\>*: Delete a Linux bridge.
-
-``` {.bash}
-brctl delete br0
-100-Bridge br0 deleted
-```
-
-- **brctl addif** *\<bridge_name\>* *\<port_interface\>*:
-    Enslave an interface to a bridge, automatically bring it UP, and open
-    link-local forwarding on the port (`group_fwd_mask 0xfffd`: LACP, LLDP,
-    EAPOL and the other reserved addresses cross the bridge like a cable;
-    MAC PAUSE stays excepted — the kernel drops it unconditionally).
-
-``` {.bash}
-brctl addif br0 tap0
-100-tap0 has been added to bridge br0
-```
-
-- **brctl delif** *\<bridge_name\>* *\<port_interface\>*:
-    Release a port interface from its bridge.
-
-``` {.bash}
-brctl delif br0 tap0
-100-tap0 removed from bridge br0
-```
-
-- **brctl addip** *\<bridge_name\>* *\<ip/prefixlen\>*:
-    Assign an IPv4 address to the bridge and bring it UP.
-
-``` {.bash}
-brctl addip br0 192.168.1.1/24
-100-IP 192.168.1.1/24 added to bridge br0
-```
-
-- **brctl setup** *\<bridge_name\>* *\<ip/prefixlen\>*:
-    Create a bridge and assign an IPv4 address in one step.
-
-``` {.bash}
-brctl setup br0 192.168.1.1/24
-100-Bridge br0 created with IP 192.168.1.1/24
-```
-
-- **brctl show** *\<bridge_name\>*:
-    Show the IP address, prefix and operational flags of a bridge.
-
-``` {.bash}
-brctl show br0
-100-br0 192.168.1.1/24 UP
-```
-
-#### Bridge-level parameters
-
-- **brctl stp** *\<bridge_name\>* **on**|**off**:
-    Enable or disable Spanning Tree Protocol.
-
-``` {.bash}
-brctl stp br0 on
-100-STP enabled on bridge br0
-```
-
-- **brctl setbridgeprio** *\<bridge_name\>* *\<0-65535\>*:
-    Set the bridge priority (used by STP).
-
-``` {.bash}
-brctl setbridgeprio br0 4096
-100-Bridge priority 4096 set on br0
-```
-
-- **brctl setfd** *\<bridge_name\>* *\<2-30\>*:
-    Set forward delay in seconds (STP).
-
-``` {.bash}
-brctl setfd br0 15
-100-Forward delay 15s set on br0
-```
-
-- **brctl sethello** *\<bridge_name\>* *\<1-10\>*:
-    Set hello time in seconds (STP).
-
-``` {.bash}
-brctl sethello br0 2
-100-Hello time 2s set on br0
-```
-
-- **brctl setmaxage** *\<bridge_name\>* *\<6-40\>*:
-    Set max age in seconds (STP).
-
-``` {.bash}
-brctl setmaxage br0 20
-100-Max age 20s set on br0
-```
-
-- **brctl setageing** *\<bridge_name\>* *\<secs\>*:
-    Set MAC address ageing time in seconds.
-
-``` {.bash}
-brctl setageing br0 300
-100-Ageing time 300s set on br0
-```
-
-- **brctl vlanfiltering** *\<bridge_name\>* **on**|**off**:
-    Enable or disable VLAN filtering on the bridge.
-
-``` {.bash}
-brctl vlanfiltering br0 on
-100-VLAN filtering enabled on bridge br0
-```
-
-- **brctl setvlanproto** *\<bridge_name\>* **0x8100**|**0x88a8**:
-    Set the VLAN protocol (802.1Q or 802.1ad).
-
-``` {.bash}
-brctl setvlanproto br0 0x88a8
-100-VLAN protocol 0x88a8 set on br0
-```
-
-- **brctl mcastsnoop** *\<bridge_name\>* **on**|**off**:
-    Enable or disable multicast snooping.
-
-``` {.bash}
-brctl mcastsnoop br0 off
-100-Multicast snooping disabled on bridge br0
-```
-
-- **brctl setgroupfwd** *\<bridge_name\>* *\<0-65535\>*:
-    Set the group forwarding mask for link-local frames.
-
-``` {.bash}
-brctl setgroupfwd br0 0
-100-group_fwd_mask 0x0 set on br0
-```
-
-#### Port-level parameters
-
-These commands modify bridge port attributes via the kernel's
-IFLA_PROTINFO interface. The port interface must already be
-enslaved to the bridge.
-
-- **brctl setportgroupfwd** *\<bridge_name\>* *\<port\>* *\<0-65535\>*:
-    Set the per-port link-local forwarding mask. `addif` sets 65533 (0xfffd)
-    by default; this is the escape hatch back to stock kernel behaviour
-    (0) or any custom mask. The kernel rejects masks with bit 1 (MAC PAUSE)
-    set — 65534/65535 fail with 206. Last-writer-wins: a fresh `addif`
-    re-applies the default.
-
-``` {.bash}
-brctl setportgroupfwd br0 tap0 0
-100-group_fwd_mask 0x0 set on tap0
-```
-
-- **brctl setportprio** *\<bridge_name\>* *\<port\>* *\<0-63\>*:
-    Set the STP port priority (kernel limit; the parser accepts 0-255
-    but 64+ is rejected by the kernel with 206).
-
-``` {.bash}
-brctl setportprio br0 tap0 48
-100-Port priority 48 set on tap0
-```
-
-- **brctl setpathcost** *\<bridge_name\>* *\<port\>* *\<1-65535\>*:
-    Set the STP path cost for a port.
-
-``` {.bash}
-brctl setpathcost br0 tap0 100
-100-Path cost 100 set on tap0
-```
-
-- **brctl setportstate** *\<bridge_name\>* *\<port\>* *\<0-3\>*:
-    Set the STP port state (0=disabled, 1=listening,
-    2=learning, 3=forwarding).
-
-``` {.bash}
-brctl setportstate br0 tap0 3
-100-Port state 3 set on tap0
-```
-
-- **brctl hairpin** *\<bridge_name\>* *\<port\>* **on**|**off**:
-    Enable or disable hairpin mode (reflect frames back).
-
-``` {.bash}
-brctl hairpin br0 tap0 on
-100-Hairpin mode enabled on tap0
-```
-
-- **brctl isolated** *\<bridge_name\>* *\<port\>* **on**|**off**:
-    Enable or disable port isolation. An isolated port can only communicate
-    with the bridge's CPU port, not with other bridge ports — used to
-    L2-isolate peers that share one bridge.
-
-``` {.bash}
-brctl isolated br0 tap0 on
-100-Port isolation enabled on tap0
-```
-
-#### VLAN membership
-
-Per-port VLAN ID add/delete/show — the primitives for access/trunk/QinQ
-port modes. The bridge must have `vlanfiltering on`, and the port must be
-enslaved to it. ESW access/trunk modes are composed from these primitives
-in gns3server, not here.
-
-- **brctl vlan_add** *\<bridge_name\>* *\<port\>* *\<vid\>* `[vid <end>]` `[pvid]` `[untagged]`:
-    Add a VLAN (or `vid <end>` range) to a port. `pvid` = strip the tag on
-    ingress (the port's PVID); `untagged` = strip on egress.
-
-``` {.bash}
-brctl vlan_add br0 tap0 100 pvid untagged
-100-VLAN 100 added on tap0
-```
-
-- **brctl vlan_del** *\<bridge_name\>* *\<port\>* *\<vid\>* `[vid <end>]`:
-    Delete a VLAN/range from a port (by VID only — flags are not accepted).
-
-``` {.bash}
-brctl vlan_del br0 tap0 100
-100-VLAN 100 deleted from tap0
-```
-
-- **brctl vlan_show** *\<bridge_name\>* `[<port>]`:
-    List per-port VLAN membership — one continuation line per (port, vid)
-    as `<port> <vid> [PVID] [Egress Untagged]`, then a `100-` summary.
-
-``` {.bash}
-brctl vlan_show br0 tap0
-101 tap0 1 Egress Untagged
-101 tap0 100 PVID Egress Untagged
-101 tap0 200
-100-3 VLAN entries
-```
-
-
+Full netlink management of Linux kernel bridges: lifecycle
+(`create`/`delete`/`addif`/`delif`/`addip`/`delip`/`setup`/`show`),
+bridge-level parameters (STP, ageing, VLAN filtering, multicast snooping,
+group forwarding), per-port parameters (priority, path cost, state, hairpin,
+isolation) and per-port VLAN membership. See [`doc/brctl.md`](doc/brctl.md).
 
 ### Generic interface management ("link")
 
-Manage generic network interfaces (veth pairs, IP assignment, link state)
-via netlink — no `ip` command needed, all done with ubridge's capabilities.
-
-- **link veth** *\<name\>* *\<peer\>*: Create a veth pair. Both ends
-    start DOWN; use `brctl addif` to attach one end to a bridge and
-    `link set ... up` to bring it up.
-
-``` {.bash}
-link veth v-host v-ns
-100-Veth pair v-host/v-ns created
-```
-
-- **link addr** *\<interface\>* *\<ip/prefixlen\>*: Assign an IPv4 address
-    to an interface and bring it UP. Works on any interface (veth, bridge,
-    dummy, tap), not just bridges.
-
-``` {.bash}
-link addr v-host 172.20.0.10/24
-100-IP 172.20.0.10/24 set on v-host
-```
-
-- **link set** *\<interface\>* **up**|**down**: Bring an interface up or
-    down (administrative state).
-
-``` {.bash}
-link set v-host up
-100-Interface v-host up
-```
-
-- **link delete** *\<interface\>*: Delete an interface. For a veth pair,
-    deleting one end removes the other automatically.
-
-``` {.bash}
-link delete v-host
-100-Interface v-host deleted
-```
+veth pair creation, IPv4 assignment, link state control and the L2-only
+hardening helper (`link l2only`), all via netlink — no `ip` command needed.
+See [`doc/link.md`](doc/link.md).
 
 ### IOL Bridge module ("iol_bridge")
 
--   **iol_bridge create** *\<name\>* *\<id\>*
-
-``` {.bash}
-iol_bridge create IOL-BRIDGE-513 513
-100-IOL bridge 'IOL-BRIDGE-513' created
-```
-
--   **iol_bridge add_nio_udp** *\<name\>* *\<iol_id\>* *\<bay\>*
-    *\<unit\>* *\<lport\>* *\<rhost\>* *\<rport\>*
--   **iol_bridge add_packet_filter** *\<name\>* *\<bay\>* *\<unit\>*
-    *\<filter_name\>* *\<filter_type\>*
--   **iol_bridge reset_packet_filters** *\<name\>* *\<bay\>* *\<unit\>*
--   **iol_bridge start_capture** *\<name\>* \"*\<output_file\>*\"
-    *\<data_link_type\>*
--   **iol_bridge delete** *\<name\>*
+Terminates the ports of an IOU (IOL) instance on the `/tmp/netio<uid>/` Unix
+fabric: each port ends on a UDP tunnel or a persistent TAP anchor, and pairs
+with `brctl`/`tc`/`capture`/`marker` for kernel links. See
+[`doc/iol_bridge.md`](doc/iol_bridge.md).
 
 ### Session example
 
@@ -804,6 +194,7 @@ bridge add_nio_udp br0 20000 127.0.0.1 30000
 100-NIO UDP added to bridge 'br0'
 
 bridge show br0
+101 bridge 'br0' is not running
 101 Source NIO: tap0
 101 Destination NIO: 20000:127.0.0.1:30000
 100-OK
@@ -876,5 +267,7 @@ Notes
 -   Capabilities (`cap_net_admin,cap_net_raw`) must be set on the
     executable (`make install` does this via `setcap`), or you must run
     ubridge with administrator rights to bridge Ethernet or TAP interfaces.
--   It is only possible to bridge two interfaces or tunnels together.
-    uBridge is not a hub or a switch!
+-   In user-space relay mode it is only possible to bridge two interfaces or
+    tunnels together — ubridge relays, it is not a hub or a switch. (The
+    kernel data plane is different: `brctl` creates real kernel bridges that
+    forward between any number of ports; that switching is the kernel's.)
