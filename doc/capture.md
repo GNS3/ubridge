@@ -31,8 +31,9 @@ capture start_kernel tap-gns3-e0 /tmp/cap.pcap
 100-kernel capture started on tap-gns3-e0 -> /tmp/cap.pcap
 ```
 
-Only **one** kernel capture at a time (singleton); a second `start_kernel`
-while one is active → `209/EALREADY`. Missing interface → `208/ENODEV`.
+Multiple captures run at the same time — **one per interface**. A second
+`start_kernel` on an interface that is already being captured → `209/EALREADY`
+(capturing a *different* interface is fine). Missing interface → `208/ENODEV`.
 
 **`<if>` must be UP before the capture starts.** A capture started while the
 interface is DOWN receives nothing for its whole life — not even the frames
@@ -44,15 +45,32 @@ interface's own bring-up traffic: bring it up, then start the capture — the
 kernel's address/DAD/RS burst and its retransmissions still land in the
 window, which is how `tests/link/test_l2only.py` measures anchor silence.
 
-### `capture stop_kernel`
+### `capture stop_kernel [if]`
 
-Stop the active capture (cancel + join the thread, close the socket and pcap
-file). Idempotent: if no capture is active, replies `100-no active kernel
-capture` (not an error).
+Stop the capture on `<if>` (cooperative stop: the reader thread notices within
+its 1 s receive-timeout tick and exits; the socket and the pcap writer are
+closed after it joins). Stopping an interface that has no capture → `208`
+(`ENODEV`).
+
+Without an argument it stops **every** capture. That form is idempotent: when
+nothing is active it replies `100-no active kernel capture` (not an error).
 
 ```
-capture stop_kernel
-100-kernel capture stopped
+capture stop_kernel tap-gns3-e0
+100-kernel capture stopped on tap-gns3-e0
+```
+
+### `capture status`
+
+One `101` line per active capture, terminated by a final `100-OK` — the same
+shape as `marker status` (intermediate lines use a space after the code; `-`
+marks the final line):
+
+```
+capture status
+101 kernel capture on tap-gns3-e0
+101 kernel capture on tap-gns3-e1
+100-OK
 ```
 
 ## Status codes
@@ -60,18 +78,23 @@ capture stop_kernel
 | Code | Meaning |
 |------|---------|
 | `100` | OK |
-| `208` | No such interface (`ENODEV`) on start |
-| `209` | A capture is already running (`EALREADY`) |
+| `208` | No such interface (`ENODEV`) on start; no capture on `<if>` when stopping |
+| `209` | That interface is already being captured (`EALREADY`) |
 
 ## Implementation notes
 
-- **Singleton**: one global capture (`g_capture`), guarded by a mutex so
-  concurrent connections can't race.
-- **Thread model**: a dedicated thread loops on `recvfrom()`; stop is via
-  `pthread_cancel` + `pthread_join` (`recvfrom` is a cancellation point),
-  mirroring how `free_bridges()` stops the NIO listener threads. The socket is
-  closed and the pcap writer freed only after the thread has joined, so the
-  thread never touches freed state.
+- **One capture per interface**: a singly linked list (`g_captures`) guarded
+  by a mutex, mirroring the kernel markers (`g_kmarkers` in the marker module).
+  Command handlers already serialize under the dispatcher's `global_lock`; the
+  mutex only protects the list itself, and reader threads only touch their own
+  entry.
+- **Thread model**: one reader thread per capture, looping on `recvfrom()`.
+  Stop is cooperative: a 1 s `SO_RCVTIMEO` tick wakes the loop to re-check a
+  stop flag, so a join returns within ~1 s. Deliberately NOT `pthread_cancel` —
+  the pcap writer path holds a mutex (`pcap_capture_packet`), the same
+  reasoning as the kernel markers. The socket is closed and the pcap writer
+  freed only after the thread has joined, so the thread never touches freed
+  state.
 - **AF_PACKET open** mirrors `nio_linux_raw.c`: `socket(PF_PACKET, SOCK_RAW,
   htons(ETH_P_ALL))`, bind to `sockaddr_ll.sll_ifindex` (not `SO_BINDTODEVICE`),
   `PACKET_ADD_MEMBERSHIP` promisc.
@@ -84,7 +107,7 @@ capture stop_kernel
 |---|---------------------------------------|------------------------------------|
 | Taps | the user-space NIO relay loop | a kernel interface |
 | Sees | relay-bridge traffic (traditional UDP bridges) | kernel-data-plane traffic (TAP+bridge) |
-| Granularity | per-bridge (`bridge->capture`) | process singleton |
+| Granularity | per-bridge (`bridge->capture`) | per interface (one reader each) |
 | Both can run | yes — independent, different pcap files | yes |
 
 The **pcap file format is identical** (same writer); the **packet contents
@@ -95,9 +118,12 @@ user-space-relay bridges, `capture start_kernel` for the kernel data plane.
 
 `tests/capture/` captures one end of a veth pair while `ping` generates
 ARP/ICMP, confirms a non-empty pcap, plus start/stop lifecycle and error paths.
+`test_multi.py` runs two captures on two veth pairs at once: both pcaps grow,
+per-interface stop leaves the other capture running, `status` lists one line
+per active capture, and the argument-less `stop_kernel` stops everything.
 Requires `CAP_NET_ADMIN` (to create the veth) — run under sudo.
 
 ```bash
 sudo make install
-cd tests/capture && sudo python3 run_all.py   # 8/8 PASS
+cd tests/capture && sudo python3 run_all.py
 ```
