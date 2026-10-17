@@ -82,13 +82,18 @@ pcap_capture_t *create_pcap_capture(const char *filename, const char *pcap_linkt
    return (capture);
 }
 
-/* Packet handler: write packets to a file in CAP format */
-void pcap_capture_packet(pcap_capture_t *capture, void *pkt, size_t len)
+/* Packet handler: write packets to a file in CAP format, stamped with `ts`
+ * (the packet's receive time; NULL = stamped now, at write time) */
+void pcap_capture_packet_ts(pcap_capture_t *capture, void *pkt, size_t len,
+                            const struct timeval *ts)
 {
    struct pcap_pkthdr pkt_hdr;
 
    if (capture != NULL) {
-      gettimeofday(&pkt_hdr.ts,0);
+      if (ts != NULL)
+         pkt_hdr.ts = *ts;
+      else
+         gettimeofday(&pkt_hdr.ts,0);
       pkt_hdr.caplen = m_min(len, (u_int)pcap_snapshot(capture->fd));
       pkt_hdr.len = len;
 
@@ -98,4 +103,10 @@ void pcap_capture_packet(pcap_capture_t *capture, void *pkt, size_t len)
       pcap_dump_flush(capture->dumper);
       pthread_mutex_unlock(&capture->lock);
    }
+}
+
+/* Legacy entry point: no receive time known, stamp at write time */
+void pcap_capture_packet(pcap_capture_t *capture, void *pkt, size_t len)
+{
+   pcap_capture_packet_ts(capture, pkt, len, NULL);
 }

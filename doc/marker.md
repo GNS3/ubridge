@@ -213,8 +213,12 @@ One UDP datagram per match, line-based:
 MARK <sec.usec> node=<id> filter=<name> link=<link> tag=<tag> len=<n> dir=<tx|rx>
 ```
 
-`node`/`link`/`tag` are `-` when unset. `dir` is the packet direction relative
-to the capture node (`node`):
+`node`/`link`/`tag` are `-` when unset. `<sec.usec>` is the packet's receive
+time: kernel markers stamp it with the kernel receive time (`SO_TIMESTAMPNS`,
+CLOCK_REALTIME — when the frame entered the socket, without reader-thread
+scheduling jitter); the relay `mark` filter has no receive time to hand over
+(the NIO `recv` callback doesn't carry one) and stamps at emit time. `dir` is
+the packet direction relative to the capture node (`node`):
 
 - `tx` — the packet entered on the **device-side NIO** (the capture node is
   *sending*): generic bridge = `source_nio`, IOL = the IOL instance side.

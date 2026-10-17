@@ -25,13 +25,18 @@
  * never reach ubridge's user-space NIO relay, so the bridge module's NIO-level
  * capture can't see them. This opens an AF_PACKET raw socket bound to the
  * interface and writes frames to pcap, reusing the existing pcap writer
- * (create_pcap_capture / pcap_capture_packet / free_pcap_capture).
+ * (create_pcap_capture / pcap_capture_packet_ts / free_pcap_capture).
+ *
+ * Frames are stamped with their kernel receive time (SO_TIMESTAMPNS, picked
+ * up as an SCM_TIMESTAMPNS cmsg in recvmsg) rather than the user-space read
+ * time, so the pcap timestamps don't carry reader-thread scheduling jitter.
+ * Without kernel support the writer falls back to stamping at read time.
  *
  * Model: one capture per interface, any number of interfaces — each driven by
- * a dedicated thread looping on recvfrom(). Stop is cooperative: the socket
+ * a dedicated thread looping on recvmsg(). Stop is cooperative: the socket
  * carries a 1s SO_RCVTIMEO tick so the loop re-checks a stop flag at least
  * once per second. Deliberately NOT pthread_cancel — this path holds a mutex
- * while writing files (pcap_capture_packet), same reasoning as the kernel
+ * while writing files (pcap_capture_packet_ts), same reasoning as the kernel
  * markers. Mirrors the marker module's kernel-marker list (g_kmarkers):
  * a singly linked list guarded by a mutex; reader threads never touch the
  * list and only reach their own entry.
@@ -47,6 +52,7 @@
 
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <linux/if_ether.h>
@@ -72,22 +78,55 @@ static kernel_capture_t *g_captures = NULL;
  * touch their own entry, so this only protects the list itself. */
 static pthread_mutex_t g_captures_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* Reader thread: read frames from the AF_PACKET socket, write to pcap.
- * Cooperative stop: the socket carries a 1s SO_RCVTIMEO so the loop wakes at
- * least once per second to re-check kc->stop. */
+/* Reader thread: read frames from the AF_PACKET socket, write to pcap with
+ * their kernel receive timestamps. Cooperative stop: the socket carries a 1s
+ * SO_RCVTIMEO so the loop wakes at least once per second to re-check kc->stop. */
 static void *capture_thread(void *arg)
 {
     kernel_capture_t *kc = (kernel_capture_t *)arg;
     unsigned char buf[65535];
+    union {
+        struct cmsghdr cmsg;
+        char buf[CMSG_SPACE(sizeof(struct timespec))];
+    } cmsg_buf;
 
     while (!kc->stop) {
-        ssize_t n = recvfrom(kc->sock, buf, sizeof(buf), 0, NULL, NULL);
+        struct timeval ts, *tsp = NULL;   /* kernel rx stamp, when supplied */
+        struct iovec iov = { buf, sizeof(buf) };
+        struct msghdr msg;
+        struct cmsghdr *cmsg;
+        ssize_t n;
+
+        memset(&msg, 0, sizeof(msg));
+        memset(&cmsg_buf, 0, sizeof(cmsg_buf));
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = &cmsg_buf;
+        msg.msg_controllen = sizeof(cmsg_buf);
+
+        n = recvmsg(kc->sock, &msg, 0);
         if (n <= 0) {
             if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
                 continue;   /* recv timeout (stop tick) or signal: loop re-checks kc->stop */
             break;          /* real error (interface gone): the reader stops */
         }
-        pcap_capture_packet(kc->cap, buf, (size_t)n);
+
+        /* The kernel stamped the frame when it entered the socket
+         * (CLOCK_REALTIME) — keep that instead of "when this thread got
+         * scheduled to read it". Absent cmsg (no SO_TIMESTAMPNS support)
+         * leaves tsp NULL and the writer stamps at read time. */
+        for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+            if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMPNS
+                && cmsg->cmsg_len >= CMSG_LEN(sizeof(struct timespec))) {
+                struct timespec kts;
+                memcpy(&kts, CMSG_DATA(cmsg), sizeof(kts));
+                ts.tv_sec = kts.tv_sec;
+                ts.tv_usec = kts.tv_nsec / 1000;
+                tsp = &ts;
+                break;
+            }
+        }
+        pcap_capture_packet_ts(kc->cap, buf, (size_t)n, tsp);
     }
 
     return NULL;
@@ -102,7 +141,7 @@ static int capture_start(const char *ifname, const char *pcap_file, const char *
     struct packet_mreq mreq;
     struct timeval tv;
     kernel_capture_t *kc;
-    int ifindex, err;
+    int ifindex, err, ts_on = 1;
 
     pthread_mutex_lock(&g_captures_lock);
 
@@ -153,6 +192,10 @@ static int capture_start(const char *ifname, const char *pcap_file, const char *
     tv.tv_sec = 1;
     tv.tv_usec = 0;
     setsockopt(kc->sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    /* Kernel receive timestamps (SCM_TIMESTAMPNS cmsg), best-effort like
+     * promiscuous mode above: the reader stamps "now" without them. */
+    setsockopt(kc->sock, SOL_SOCKET, SO_TIMESTAMPNS, &ts_on, sizeof(ts_on));
 
     strncpy(kc->ifname, ifname, IFNAMSIZ - 1);
     kc->ifname[IFNAMSIZ - 1] = '\0';

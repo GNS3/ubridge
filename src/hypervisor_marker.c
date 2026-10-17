@@ -43,6 +43,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <netdb.h>
 #include <net/if.h>
 #include <linux/if_ether.h>
@@ -136,11 +137,14 @@ void marker_set_node(const char *node_id)
     pthread_mutex_unlock(&g_lock);
 }
 
-/* Emit one marker signal (UDP, fire-and-forget). No-op if no sink. */
-void marker_emit(const char *filter_name, const char *tag, const char *link, size_t len, const char *dir)
+/* Emit one marker signal (UDP, fire-and-forget). No-op if no sink. `ts` is
+ * the packet's receive time when the caller has one (kernel stamp); NULL
+ * stamps at emit time. */
+void marker_emit(const char *filter_name, const char *tag, const char *link,
+                 size_t len, const char *dir, const struct timeval *ts)
 {
     char line[256];
-    struct timeval tv;
+    struct timeval now;
     const char *node;
     int n;
 
@@ -151,10 +155,13 @@ void marker_emit(const char *filter_name, const char *tag, const char *link, siz
     }
 
     node = g_node[0] ? g_node : "-";
-    gettimeofday(&tv, NULL);
+    if (ts != NULL)
+        now = *ts;
+    else
+        gettimeofday(&now, NULL);
     n = snprintf(line, sizeof(line),
                  "MARK %lu.%06lu node=%s filter=%s link=%s tag=%s len=%zu dir=%s\n",
-                 (unsigned long)tv.tv_sec, (unsigned long)tv.tv_usec,
+                 (unsigned long)now.tv_sec, (unsigned long)now.tv_usec,
                  node,
                  filter_name ? filter_name : "-",
                  link ? link : "-",
@@ -192,7 +199,9 @@ int marker_status(marker_status_t *out)
  * libpcap cBPF per packet via pcap_offline_filter — deliberately NOT
  * SO_ATTACH_FILTER, to keep the linktype offset semantics (C_HDLC, PPP, ...).
  * On match it emits the same marker signal and optionally appends the packet
- * to a pcap. Purely observational: it never drops or alters frames.
+ * to a pcap — both stamped with the kernel receive time (SO_TIMESTAMPNS),
+ * unlike the relay mark filter which stamps at relay time. Purely
+ * observational: it never drops or alters frames.
  *
  * Uniqueness key is (ifname, name): the same marker name may live on several
  * interfaces. Lifecycle is the ubridge process — no shutdown command.
@@ -230,15 +239,20 @@ static kernel_marker_t *g_kmarkers = NULL;
  * touch their own marker, so this only protects the list itself. */
 static pthread_mutex_t g_km_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* Reader thread: sniff frames, apply the cBPF, emit signal + pcap on match.
- * Cooperative stop: the socket carries a 1s SO_RCVTIMEO so the loop wakes at
- * least once per second to re-check km->stop. Deliberately NOT pthread_cancel
- * — this path holds mutexes while writing files (pcap dump, marker sink). */
+/* Reader thread: sniff frames, apply the cBPF, emit signal + pcap on match —
+ * both stamped with the kernel receive time (SO_TIMESTAMPNS). Cooperative
+ * stop: the socket carries a 1s SO_RCVTIMEO so the loop wakes at least once
+ * per second to re-check km->stop. Deliberately NOT pthread_cancel — this
+ * path holds mutexes while writing files (pcap dump, marker sink). */
 static void *kernel_marker_thread(void *arg)
 {
     kernel_marker_t *km = (kernel_marker_t *)arg;
     const size_t buf_len = 65535;
     unsigned char *buf = malloc(buf_len);
+    union {
+        struct cmsghdr cmsg;
+        char buf[CMSG_SPACE(sizeof(struct timespec))];
+    } cmsg_buf;
 
     if (buf == NULL) {
         fprintf(stderr, "kernel marker '%s': out of memory for the receive buffer\n", km->name);
@@ -248,13 +262,26 @@ static void *kernel_marker_thread(void *arg)
 
     while (!km->stop) {
         struct sockaddr_ll from;
-        socklen_t fromlen = sizeof(from);
+        struct timeval ts, *tsp = NULL;   /* kernel rx stamp, when supplied */
         struct pcap_pkthdr pkthdr;
+        struct iovec iov;
+        struct msghdr msg;
+        struct cmsghdr *cmsg;
         const char *dir;
         ssize_t n;
 
-        n = recvfrom(km->sock, buf, buf_len, 0,
-                     (struct sockaddr *)&from, &fromlen);
+        memset(&msg, 0, sizeof(msg));
+        memset(&cmsg_buf, 0, sizeof(cmsg_buf));
+        iov.iov_base = buf;
+        iov.iov_len = buf_len;
+        msg.msg_name = &from;
+        msg.msg_namelen = sizeof(from);
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = &cmsg_buf;
+        msg.msg_controllen = sizeof(cmsg_buf);
+
+        n = recvmsg(km->sock, &msg, 0);
         if (n <= 0) {
             if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
                 continue;   /* recv timeout (stop tick) or signal: loop re-checks km->stop */
@@ -262,6 +289,22 @@ static void *kernel_marker_thread(void *arg)
              * stops claiming this marker works */
             km->dead = 1;
             break;
+        }
+
+        /* Kernel receive timestamp (CLOCK_REALTIME, when the frame entered
+         * the socket) for the MARK signal and the pcap append — absent cmsg
+         * (no SO_TIMESTAMPNS support) leaves tsp NULL and both fall back to
+         * stamping at read/emit time. */
+        for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+            if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMPNS
+                && cmsg->cmsg_len >= CMSG_LEN(sizeof(struct timespec))) {
+                struct timespec kts;
+                memcpy(&kts, CMSG_DATA(cmsg), sizeof(kts));
+                ts.tv_sec = kts.tv_sec;
+                ts.tv_usec = kts.tv_nsec / 1000;
+                tsp = &ts;
+                break;
+            }
         }
 
         /* dir is relative to the capture node: a frame leaving the host-side
@@ -279,9 +322,9 @@ static void *kernel_marker_thread(void *arg)
         pkthdr.len = (u_int)n;
         if (pcap_offline_filter(&km->fp, &pkthdr, buf)) {
             if (km->enabled) {   /* enable off: keep reading, no emit / no pcap */
-                marker_emit(km->name, km->tag, km->link, (size_t)n, dir);
+                marker_emit(km->name, km->tag, km->link, (size_t)n, dir, tsp);
                 if (km->cap)
-                    pcap_capture_packet(km->cap, buf, (size_t)n);
+                    pcap_capture_packet_ts(km->cap, buf, (size_t)n, tsp);
             }
         }
     }
@@ -414,7 +457,7 @@ static int cmd_add_kernel(hypervisor_conn_t *conn, int argc, char *argv[])
     pcap_t *pd;
     struct sockaddr_ll sll;
     struct timeval tv;
-    int link_type, ifindex, err, i, started = 0;
+    int link_type, ifindex, err, i, started = 0, ts_on = 1;
     int have_linktype = 0, have_tag = 0, have_link = 0, have_dir = 0, have_pcap = 0;
 
     /* an odd trailing token is a value without a keyword (same rule as mark_setup) */
@@ -536,6 +579,10 @@ static int cmd_add_kernel(hypervisor_conn_t *conn, int argc, char *argv[])
     tv.tv_sec = 1;
     tv.tv_usec = 0;
     setsockopt(km->sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    /* Kernel receive timestamps (SCM_TIMESTAMPNS cmsg) for the MARK signal
+     * and the pcap append, best-effort: both stamp at read time without it. */
+    setsockopt(km->sock, SOL_SOCKET, SO_TIMESTAMPNS, &ts_on, sizeof(ts_on));
 
     /* Prune in the kernel where the frame layout matches what the filter was
      * compiled for: for DLT_EN10MB the AF_PACKET frame is byte-identical to

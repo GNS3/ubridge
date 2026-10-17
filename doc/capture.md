@@ -88,13 +88,19 @@ capture status
   Command handlers already serialize under the dispatcher's `global_lock`; the
   mutex only protects the list itself, and reader threads only touch their own
   entry.
-- **Thread model**: one reader thread per capture, looping on `recvfrom()`.
+- **Thread model**: one reader thread per capture, looping on `recvmsg()`.
   Stop is cooperative: a 1 s `SO_RCVTIMEO` tick wakes the loop to re-check a
   stop flag, so a join returns within ~1 s. Deliberately NOT `pthread_cancel` —
-  the pcap writer path holds a mutex (`pcap_capture_packet`), the same
+  the pcap writer path holds a mutex (`pcap_capture_packet_ts`), the same
   reasoning as the kernel markers. The socket is closed and the pcap writer
   freed only after the thread has joined, so the thread never touches freed
   state.
+- **Timestamps**: the socket requests kernel receive stamps (`SO_TIMESTAMPNS`);
+  the reader picks each frame's stamp out of the `SCM_TIMESTAMPNS` cmsg and
+  passes it to the writer, so pcap records carry the time the kernel received
+  the frame (CLOCK_REALTIME) rather than when the reader thread happened to
+  run — no user-space scheduling jitter. Without kernel support the writer
+  falls back to stamping at read time.
 - **AF_PACKET open** mirrors `nio_linux_raw.c`: `socket(PF_PACKET, SOCK_RAW,
   htons(ETH_P_ALL))`, bind to `sockaddr_ll.sll_ifindex` (not `SO_BINDTODEVICE`),
   `PACKET_ADD_MEMBERSHIP` promisc.
@@ -108,6 +114,7 @@ capture status
 | Taps | the user-space NIO relay loop | a kernel interface |
 | Sees | relay-bridge traffic (traditional UDP bridges) | kernel-data-plane traffic (TAP+bridge) |
 | Granularity | per-bridge (`bridge->capture`) | per interface (one reader each) |
+| Timestamps | written at relay time (user space) | kernel receive time (`SO_TIMESTAMPNS`) |
 | Both can run | yes — independent, different pcap files | yes |
 
 The **pcap file format is identical** (same writer); the **packet contents
@@ -117,11 +124,14 @@ user-space-relay bridges, `capture start_kernel` for the kernel data plane.
 ## Testing
 
 `tests/capture/` captures one end of a veth pair while `ping` generates
-ARP/ICMP, confirms a non-empty pcap, plus start/stop lifecycle and error paths.
+ARP/ICMP, confirms a non-empty pcap, and checks record timestamps: recent
+wall-clock values (kernel stamps, not a zeroed header) in non-decreasing
+order. Also covers the start/stop lifecycle and error paths.
 `test_multi.py` runs two captures on two veth pairs at once: both pcaps grow,
 per-interface stop leaves the other capture running, `status` lists one line
 per active capture, and the argument-less `stop_kernel` stops everything.
-Requires `CAP_NET_ADMIN` (to create the veth) — run under sudo.
+Requires `CAP_NET_ADMIN` (to create the veth) — run under sudo (or
+`unshare -Urn`).
 
 ```bash
 sudo make install

@@ -30,14 +30,18 @@
 #define MARKER_H_
 
 #include <stddef.h>
+#include <sys/time.h>
 
 /* Emit a marker signal for a matched filter. No-op when no sink is configured.
  * Safe to call from the bridge relay (listener) threads.
  * `tag` and `link` are opaque ids echoed verbatim (NULL → "-" in the signal):
  * `tag` for caller-side correlation, `link` for topology link attribution.
  * `dir` ("tx"/"rx") is the packet direction relative to the capture node
- * (NULL → "-"): "tx" = capture node sending, "rx" = receiving. */
-void marker_emit(const char *filter_name, const char *tag, const char *link, size_t len, const char *dir);
+ * (NULL → "-"): "tx" = capture node sending, "rx" = receiving.
+ * `ts` is the packet's receive time (kernel stamp when the caller has one);
+ * NULL → stamped at emit time. */
+void marker_emit(const char *filter_name, const char *tag, const char *link,
+                 size_t len, const char *dir, const struct timeval *ts);
 
 /* Configure / clear the UDP sink (consumer = gns3server). 0 or -errno. */
 int  marker_set_sink(const char *host, int port);

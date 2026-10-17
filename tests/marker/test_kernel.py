@@ -159,9 +159,23 @@ def main():
 
                 # --- signals: one per direction, with node/filter/tag/link/dir/len
                 _stim(m_a, m_b)
-                sigs = [_kv(s) for s in _drain(ms, 1.2) if s.startswith("MARK ")]
+                lines = [s for s in _drain(ms, 1.2) if s.startswith("MARK ")]
+                sigs = [_kv(s) for s in lines]
                 frame_len = len(_icmp_frame(m_a, m_b))
                 r.check("signals received", len(sigs) == 2, "n=%d" % len(sigs))
+                if lines:
+                    # MARK <sec.usec> echoes the kernel receive stamp
+                    # (CLOCK_REALTIME): recent vs. the test clock, not the
+                    # zeroed/epoch of a missing timestamp
+                    now = time.time()
+                    ages = []
+                    for line in lines:
+                        m = re.match(r"MARK (\d+)\.(\d{6}) ", line)
+                        ages.append(None if not m
+                                    else now - int(m.group(1)) - int(m.group(2)) / 1e6)
+                    r.check("signal timestamps are recent kernel stamps",
+                            all(a is not None and -60 <= a <= 60 for a in ages),
+                            str(ages))
                 if sigs:
                     r.check("signal fields", all(
                         s.get("node") == "kmnode" and s.get("filter") == "icmp-m"
