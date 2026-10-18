@@ -1,13 +1,18 @@
 """Basic regression for the capture module (kernel-side AF_PACKET capture).
 
 Captures frames on one end of a veth pair while ping generates traffic, then
-confirms the pcap file is written and non-empty. Also covers the
-start/stop lifecycle and error paths. Stdlib only. Requires CAP_NET_ADMIN —
-run under sudo.
+confirms the pcap file is written and non-empty and that record timestamps
+are the kernel receive stamps (recent wall-clock, non-decreasing). Also
+covers the start/stop lifecycle and error paths. Stdlib only. Requires
+CAP_NET_ADMIN — run under sudo (or unshare -Urn).
+
+Uses the in-repo ./ubridge (the installed binary may predate the kernel-ts
+change and would stamp at read time instead).
 
 Reuses Ubridge / Results from tests/brctl/common.py.
 """
 import os
+import struct
 import sys
 import subprocess
 import time
@@ -20,6 +25,21 @@ PORT = 13041
 VETH_A = PREFIX + "a"
 VETH_B = PREFIX + "b"
 PCAP = "/tmp/%s.pcap" % PREFIX.rstrip("-")
+REPO_UBRIDGE = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "ubridge"))
+
+
+def _pcap_stamps(path):
+    """(sec, usec) per record: 24-byte pcap global header, then per record a
+    16-byte header (ts_sec, ts_usec, incl_len, orig_len) followed by data."""
+    with open(path, "rb") as f:
+        data = f.read()
+    out = []
+    off = 24
+    while off + 16 <= len(data):
+        sec, usec, incl, _orig = struct.unpack("<IIII", data[off:off + 16])
+        out.append((sec, usec))
+        off += 16 + incl
+    return out
 
 
 def _ip(args):
@@ -37,7 +57,7 @@ def main():
         os.remove(PCAP)
 
     try:
-        with Ubridge(port=PORT) as ub:
+        with Ubridge(port=PORT, binary=REPO_UBRIDGE) as ub:
             c = ub.connect()
             try:
                 # veth pair + IPs to generate real frames between the ends
@@ -67,6 +87,24 @@ def main():
                 if os.path.exists(PCAP):
                     size = os.path.getsize(PCAP)
                     r.check("pcap captured packets (size>24)", size > 24, "size=%d" % size)
+                    stamps = _pcap_stamps(PCAP)
+                    r.check("records parse", len(stamps) >= 1, "n=%d" % len(stamps))
+                    if stamps:
+                        # kernel stamps are CLOCK_REALTIME: recent vs. the test
+                        # clock, and never the 1970 epoch of a zeroed header
+                        now = time.time()
+                        ages = [now - s - u / 1e6 for s, u in stamps]
+                        r.check("timestamps are recent kernel stamps",
+                                all(-60 <= a <= 60 for a in ages),
+                                "ages=%s" % [round(a, 3) for a in ages])
+                        # a single socket delivers in enqueue order, so kernel
+                        # stamps arrive non-decreasing
+                        deltas = [(stamps[i + 1][0] + stamps[i + 1][1] / 1e6)
+                                  - (stamps[i][0] + stamps[i][1] / 1e6)
+                                  for i in range(len(stamps) - 1)]
+                        r.check("timestamps non-decreasing",
+                                all(d >= 0 for d in deltas),
+                                str([round(d, 6) for d in deltas]))
 
                 # idempotent stop (no active capture) is OK
                 r.check("stop again -> 100 (idempotent)", c.code("capture stop_kernel") == "100")

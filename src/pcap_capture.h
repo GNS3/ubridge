@@ -21,10 +21,18 @@
 #ifndef PCAP_CAPTURE_H_
 #define PCAP_CAPTURE_H_
 
+#include <sys/time.h>
+
 #include "nio.h"
 
 pcap_capture_t *create_pcap_capture(const char *filename, const char *pcap_linktype);
 void free_pcap_capture(pcap_capture_t *pcap_capture);
+
+/* Write a packet stamped with the given receive time. `ts` is the packet's
+ * actual receive timestamp when the caller has one (e.g. the kernel stamp
+ * pulled off the socket); NULL stamps "now", at write time. */
+void pcap_capture_packet_ts(pcap_capture_t *capture, void *pkt, size_t len,
+                            const struct timeval *ts);
 void pcap_capture_packet(pcap_capture_t *capture, void *pkt, size_t len);
 
 #endif /* !PCAP_CAPTURE_H_ */

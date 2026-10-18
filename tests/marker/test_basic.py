@@ -11,6 +11,7 @@ import os
 import sys
 import socket
 import struct
+import subprocess
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "brctl"))
@@ -38,6 +39,12 @@ def _ip_frame():
 
 def main():
     r = Results()
+
+    # everything here talks over 127.0.0.1: inside a fresh netns
+    # (unshare -Urn) loopback starts DOWN and the sendto below dies with
+    # ENETUNREACH — bring it up (no-op on a real system, lo is already up)
+    subprocess.run(["ip", "link", "set", "lo", "up"], capture_output=True)
+
     marker_port = _free_udp()
     la, lb = _free_udp(), _free_udp()      # NIO listen ports (ubridge binds these)
     ra, rb = _free_udp(), _free_udp()      # NIO remote ports (listeners here)
