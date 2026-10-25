@@ -5,6 +5,7 @@ import sys
 SUITES = [
     "test_ethernet",
     "test_linux_raw",
+    "test_linux_raw_gso",
 ]
 
 

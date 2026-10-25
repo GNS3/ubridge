@@ -27,9 +27,22 @@
 #include <netinet/if_ether.h>
 #include <linux/if.h>
 #include <linux/if_packet.h>
+#include <linux/virtio_net.h>
 
 #include "ubridge.h"
 #include "nio_linux_raw.h"
+#include "gso.h"
+
+/* One frame as the socket delivers it: up to 64 KB of IP packet once GRO,
+ * LRO or TSO have merged segments, plus its link-layer header and a VLAN
+ * tag put back from PACKET_AUXDATA */
+#define RAW_FRAME_MAXLEN    (65536 + 64)
+
+struct nio_linux_raw_rx {
+   gso_tcp_t gso;
+   int gso_pending;
+   unsigned char frame[RAW_FRAME_MAXLEN];
+};
 
 /* Get interface index of specified device */
 static int nio_linux_raw_dev_id(char *device)
@@ -53,6 +66,30 @@ static int nio_linux_raw_dev_id(char *device)
 
    close(fd);
    return (if_req.ifr_ifindex);
+}
+
+/* Get the MTU of specified device: no frame off its wire was longer */
+static int nio_linux_raw_dev_mtu(char *device)
+{
+   struct ifreq if_req;
+   int fd;
+
+   if ((fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+      fprintf(stderr, "nio_linux_raw_dev_mtu: socket: %s\n", strerror(errno));
+      return (0);
+   }
+
+   memset((void *)&if_req,0,sizeof(if_req));
+   strcpy(if_req.ifr_name, device);
+
+   if (ioctl(fd,SIOCGIFMTU,&if_req) < 0) {
+      fprintf(stderr, "nio_linux_raw_dev_mtu: SIOCGIFMTU: %s\n", strerror(errno));
+      close(fd);
+      return (0);
+   }
+
+   close(fd);
+   return (if_req.ifr_mtu);
 }
 
 /* Open a new RAW socket */
@@ -103,11 +140,16 @@ static void nio_linux_raw_free(nio_linux_raw_t *nio_linux_raw)
 {
    if (nio_linux_raw->fd != -1)
       close(nio_linux_raw->fd);
+   free(nio_linux_raw->rx);
 }
 
 static ssize_t nio_linux_raw_send(nio_linux_raw_t *nio_linux_raw, void *pkt, size_t pkt_len)
 {
    struct sockaddr_ll sa;
+   struct virtio_net_hdr vnet;
+   struct iovec iov[2];
+   struct msghdr msg;
+   ssize_t sent;
 
    memset(&sa,0,sizeof(struct sockaddr_ll));
    sa.sll_family = AF_PACKET;
@@ -116,11 +158,33 @@ static ssize_t nio_linux_raw_send(nio_linux_raw_t *nio_linux_raw, void *pkt, siz
    sa.sll_halen = ETH_ALEN;
    sa.sll_ifindex = nio_linux_raw->dev_id;
 
-   return (sendto(nio_linux_raw->fd, pkt, pkt_len, 0,(struct sockaddr *)&sa, sizeof(sa)));
+   if (!nio_linux_raw->vnet_hdr)
+      return (sendto(nio_linux_raw->fd, pkt, pkt_len, 0,(struct sockaddr *)&sa, sizeof(sa)));
+
+   /* a plain frame: no GSO, checksums complete */
+   memset(&vnet, 0, sizeof(vnet));
+   iov[0].iov_base = &vnet;
+   iov[0].iov_len = sizeof(vnet);
+   iov[1].iov_base = pkt;
+   iov[1].iov_len = pkt_len;
+   memset(&msg, 0, sizeof(msg));
+   msg.msg_name = &sa;
+   msg.msg_namelen = sizeof(sa);
+   msg.msg_iov = iov;
+   msg.msg_iovlen = 2;
+
+   sent = sendmsg(nio_linux_raw->fd, &msg, 0);
+   if (sent > 0)
+      sent -= sizeof(vnet);
+   return (sent);
 }
 
-static ssize_t nio_linux_raw_recv(nio_linux_raw_t *nio_linux_raw, void *pkt, size_t max_len)
+/* Read one frame, put back the VLAN tag the NIC stripped and get the GSO
+ * and checksum state of the frame in vnet (all zero without PACKET_VNET_HDR) */
+static ssize_t nio_linux_raw_read(nio_linux_raw_t *nio_linux_raw, struct virtio_net_hdr *vnet, void *pkt, size_t max_len)
 {
+   memset(vnet, 0, sizeof(*vnet));
+
 #ifdef PACKET_AUXDATA
 
 #ifdef TP_STATUS_VLAN_TPID_VALID
@@ -130,7 +194,7 @@ static ssize_t nio_linux_raw_recv(nio_linux_raw_t *nio_linux_raw, void *pkt, siz
 #endif
 
     ssize_t received;
-    struct iovec iov;
+    struct iovec iov[2];
     struct cmsghdr *cmsg;
     struct msghdr msg;
     /* The kernel fills msg_name with a whole struct sockaddr_ll (20 bytes)
@@ -148,17 +212,27 @@ static ssize_t nio_linux_raw_recv(nio_linux_raw_t *nio_linux_raw, void *pkt, siz
     memset(&msg, 0, sizeof(msg));
     memset(&cmsg_buf, 0, sizeof(cmsg_buf));
 
+    /* with PACKET_VNET_HDR the kernel puts a struct virtio_net_hdr in front */
+    iov[0].iov_base = vnet;
+    iov[0].iov_len = sizeof(*vnet);
+    iov[1].iov_base = pkt;
+    iov[1].iov_len = max_len - VLAN_HEADER_LEN;
+
     msg.msg_name = &from;
     msg.msg_namelen  = sizeof(from);
-    msg.msg_iov = &iov;
-    msg.msg_iovlen = 1;
+    msg.msg_iov = nio_linux_raw->vnet_hdr ? iov : &iov[1];
+    msg.msg_iovlen = nio_linux_raw->vnet_hdr ? 2 : 1;
     msg.msg_control = &cmsg_buf;
     msg.msg_controllen = sizeof(cmsg_buf);
     msg.msg_flags = 0;
-    iov.iov_len = max_len - VLAN_HEADER_LEN;
-    iov.iov_base = pkt;
 
     received = recvmsg(nio_linux_raw->fd, &msg, MSG_TRUNC);
+    if (received > 0 && nio_linux_raw->vnet_hdr)
+       received -= sizeof(*vnet);
+    /* MSG_TRUNC: the real length of a frame that did not fit, which leaves
+     * no room to put a VLAN tag back. The caller drops it */
+    if (received > (ssize_t)(max_len - VLAN_HEADER_LEN))
+       return (received);
     if (received > 0) {
 
        /* Code mostly copied from libpcap to reconstruct VLAN header */
@@ -185,6 +259,9 @@ static ssize_t nio_linux_raw_recv(nio_linux_raw_t *nio_linux_raw, void *pkt, siz
                 tag = (vlan_tag_t *)((unsigned char *)pkt + ETH_ALEN * 2);
                 tag->vlan_tp_id = htons(VLAN_TPID(aux,aux));
                 tag->vlan_tci = htons(aux->tp_vlan_tci);
+                /* the checksummed part moved along */
+                if (vnet->flags & VIRTIO_NET_HDR_F_NEEDS_CSUM)
+                   vnet->csum_start += VLAN_HEADER_LEN;
             }
        }
     }
@@ -192,6 +269,58 @@ static ssize_t nio_linux_raw_recv(nio_linux_raw_t *nio_linux_raw, void *pkt, siz
 #else
     return (recv(nio_linux_raw->fd, pkt, max_len, 0));
 #endif
+}
+
+/*
+ * GRO, LRO (hv_netvsc RSC, for one) and TSO hand the socket TCP frames of
+ * up to 64 KB, and GRO and TSO frames carry a partial checksum. The kernel
+ * splits such frames itself before it forwards them; a relay that passed
+ * them on byte for byte would feed the node frames longer than its MTU, all
+ * dropped (a cloud on a host NIC crawled at a few hundred kbit/s). Cut them
+ * back into wire-sized segments, one per call, and complete the checksums.
+ */
+static ssize_t nio_linux_raw_recv(nio_linux_raw_t *nio_linux_raw, void *pkt, size_t max_len)
+{
+   struct nio_linux_raw_rx *rx = nio_linux_raw->rx;
+   struct virtio_net_hdr vnet;
+   size_t gso_size = 0;
+   ssize_t len, seg;
+
+   /* the rest of the frame being segmented */
+   if (rx->gso_pending) {
+      if ((seg = gso_tcp_next(&rx->gso, pkt, max_len)) > 0)
+         return (seg);
+      rx->gso_pending = FALSE;
+   }
+
+   /* EINVAL: the frame had a GSO type that a virtio_net_hdr cannot
+    * describe and the kernel dropped it. Read the next one */
+   do {
+      len = nio_linux_raw_read(nio_linux_raw, &vnet, rx->frame, sizeof(rx->frame));
+   } while (len < 0 && errno == EINVAL && nio_linux_raw->vnet_hdr);
+   /* a truncated frame (MSG_TRUNC length) is longer than the caller takes */
+   if (len <= 0 || len > (ssize_t)sizeof(rx->frame))
+      return (len);
+
+   switch (vnet.gso_type & ~VIRTIO_NET_HDR_GSO_ECN) {
+   case VIRTIO_NET_HDR_GSO_TCPV4:
+   case VIRTIO_NET_HDR_GSO_TCPV6:
+      gso_size = vnet.gso_size;
+      break;
+   }
+   if (gso_tcp_init(&rx->gso, rx->frame, len, gso_size, nio_linux_raw->mtu) &&
+       (seg = gso_tcp_next(&rx->gso, pkt, max_len)) > 0) {
+      rx->gso_pending = TRUE;
+      return (seg);
+   }
+
+   if (vnet.flags & VIRTIO_NET_HDR_F_NEEDS_CSUM)
+      gso_csum_complete(rx->frame, len, vnet.csum_start, vnet.csum_offset);
+   /* too long for the caller, which drops it */
+   if (len > (ssize_t)max_len)
+      return (len);
+   memcpy(pkt, rx->frame, len);
+   return (len);
 }
 
 /* Create a new NIO Linux RAW */
@@ -218,6 +347,29 @@ nio_t *create_nio_linux_raw(char *dev_name)
       free_nio(nio);
       return NULL;
    }
+
+   if (!(nio_linux_raw->rx = calloc(1, sizeof(*nio_linux_raw->rx)))) {
+      fprintf(stderr, "create_nio_linux_raw: out of memory\n");
+      close(nio_linux_raw->fd);
+      free_nio(nio);
+      return NULL;
+   }
+
+   /* the MTU bounds the segments of merged frames */
+   nio_linux_raw->mtu = nio_linux_raw_dev_mtu(dev_name);
+
+#if defined(PACKET_AUXDATA) && defined(PACKET_VNET_HDR)
+   /* the GSO size and checksum state of every frame. Without them, frames
+    * over the MTU are still cut to it, but partial checksums stay partial */
+   {
+      int on = 1;
+
+      if (setsockopt(nio_linux_raw->fd, SOL_PACKET, PACKET_VNET_HDR, &on, sizeof(on)) == 0)
+         nio_linux_raw->vnet_hdr = TRUE;
+      else
+         fprintf(stderr, "create_nio_linux_raw: setsockopt (PACKET_VNET_HDR): %s\n", strerror(errno));
+   }
+#endif
 
    nio->type = NIO_TYPE_LINUX_RAW;
    nio->send = (void *)nio_linux_raw_send;
