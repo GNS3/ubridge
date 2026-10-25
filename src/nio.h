@@ -69,6 +69,11 @@ typedef struct {
 typedef struct {
     int fd;
     int dev_id;
+    int mtu;
+    /* frames carry a struct virtio_net_hdr both ways (PACKET_VNET_HDR) */
+    int vnet_hdr;
+    /* receive buffer and the merged frame being re-segmented */
+    struct nio_linux_raw_rx *rx;
 } nio_linux_raw_t;
 
 typedef struct {

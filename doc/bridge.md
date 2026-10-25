@@ -159,7 +159,13 @@ bridge set_nio_tap_carrier br0 off
 
 - **bridge add_nio_linux_raw** *\<bridge\>* *\<eth_device\>*: A Linux RAW
     (AF_PACKET) NIO — a bit faster than the libpcap path; VLAN tags are
-    reconstructed from the socket's auxdata.
+    reconstructed from the socket's auxdata. The socket sees TCP frames as
+    the kernel holds them: merged by GRO or LRO, or not yet split by TSO,
+    up to 64 KB and with partial checksums. The NIO cuts them back into
+    segments of the original size (the GSO size from `PACKET_VNET_HDR`),
+    never longer than the device MTU, with complete checksums. This is what
+    the kernel does when it forwards such frames. The host's offload
+    settings stay as they are.
 
 ## Capture
 

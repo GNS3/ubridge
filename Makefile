@@ -57,6 +57,7 @@ LIBS    =   -lpthread -lpcap -lm
 
 # Linux-only: RAW Ethernet + netlink-backed hypervisor modules
 SRC += src/nio_linux_raw.c             \
+       src/gso.c                       \
        src/hypervisor_docker.c         \
        src/hypervisor_iol_bridge.c     \
        src/hypervisor_brctl.c          \

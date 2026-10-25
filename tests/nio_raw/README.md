@@ -47,6 +47,7 @@ sudo python3 run_all.py          # or: unshare -Urn python3 run_all.py
 |-------|----------------|
 | `test_ethernet.py` | nio_ethernet (pcap): L2 frame round-trips intact both directions; missing bridge -> 214; nonexistent iface -> 206. |
 | `test_linux_raw.py` | nio_linux_raw (AF_PACKET): same relay both ways; a tagged (802.1Q) frame passes through uncorrupted; missing bridge -> 214; bad iface -> 206; device name >= NIO_DEV_MAXLEN(64) -> 206. |
+| `test_linux_raw_gso.py` | nio_linux_raw cuts TSO/GRO-merged TCP frames into segments that fit the MTU. TCP from a peer netns arrives on the veth as 64 KB TSO frames; the relayed frames fit the MTU, have valid IP and TCP checksums and carry the exact stream, over IPv4 and IPv6. The segmentation itself is unit-tested in `tests/unit/test_gso.c`. |
 
 ## Caveats / known gaps
 
