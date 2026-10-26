@@ -69,7 +69,18 @@
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <linux/pkt_sched.h>
+#include <linux/version.h>
 #include <linux/pkt_cls.h>
+
+/* TCA_NETEM_PRNG_SEED was added to the uapi headers in Linux 6.2; older
+ * toolchains (e.g. Debian 12's linux-libc-dev 6.1) lack the enum. Value is
+ * fixed by the uapi (slot 9 after RATE64); kernels predating the feature
+ * just ignore the attribute, so defining it unconditionally-by-version is
+ * safe. Not #ifndef-guarded: enum constants are invisible to the
+ * preprocessor, the version check is the only reliable guard. */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 2, 0)
+#define TCA_NETEM_PRNG_SEED 9
+#endif
 #include <linux/tc_act/tc_gact.h>
 #include <linux/filter.h>
 #include <linux/if_ether.h>
