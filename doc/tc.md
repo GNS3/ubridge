@@ -64,7 +64,7 @@ tc netem set <if>
 | `reorder … correl <pct>` / `gap <n>` | 0–100 / 1–1000 | reorder correlation; reordering gap (defaults to 1) |
 | `rate <bw>` | `bit\|kbit\|mbit\|gbit` (bits/s, decimal) or `bps\|kbps\|mbps` (bytes/s) | bandwidth limit, max 100gbit. Internally tc's wire unit is bytes/s — `rate 10mbit` and `rate 1250kbps` are the same |
 | `limit <pkts>` | 1–1000000 | queue limit in packets (default 1000) |
-| `seed <u32>` | 0–4294967295 | netem PRNG seed — makes random draws (loss/dup/corrupt/reorder/jitter) reproducible for tests. Omitted: the kernel picks one at random |
+| `seed <u32>` | 0–4294967295 | netem PRNG seed — makes random draws (loss/dup/corrupt/reorder/jitter) reproducible for tests. Omitted: the kernel picks one at random. Needs kernel ≥ 6.6; older kernels silently ignore the attribute, so draws stay random |
 
 ```
 tc netem set tap-gns3-e0 delay 100 jitter 10 loss 5
@@ -305,7 +305,16 @@ rather than versioning it in place.
   `src/tc_netem_dist.c`, byte-identical to the `*.dist` files iproute2 ships
   (4096 s16 samples, `NETEM_DIST_SCALE` 8192), sent verbatim as
   `TCA_NETEM_DELAY_DIST`. `uniform` sends no table (kernel default).
-- **seed** goes out as `TCA_NETEM_PRNG_SEED` (u64; kernel ≥ 5.1).
+- **seed** goes out as `TCA_NETEM_PRNG_SEED` (u64; needs kernel ≥ 6.6, which
+  introduced the seeded-PRNG netem support — the uapi constant is likewise
+  absent from pre-6.6 `linux/pkt_sched.h`, so `hypervisor_tc.c` defines it as
+  14 behind a `LINUX_VERSION_CODE` guard to keep building against older
+  toolchains such as Debian 12's linux-libc-dev 6.1. The value follows from
+  the append-only uapi: 6.5's netem enum ends at SLOT_DIST = 13 and 6.6
+  appended the seed attribute right after). At runtime a pre-6.6 kernel
+  parses qdisc options non-strictly and silently drops the unknown
+  attribute: everything but seed determinism still applies, and the seed
+  keyword is accepted rather than an error.
 - The netem netlink message is allocated larger than `NLMSG_GOOD_SIZE`
   because a distribution table adds 8 KiB.
 - One deliberate divergence from the `tc` CLI: **`dup … correl` alone is not

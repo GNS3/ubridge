@@ -69,7 +69,20 @@
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <linux/pkt_sched.h>
+#include <linux/version.h>
 #include <linux/pkt_cls.h>
+
+/* TCA_NETEM_PRNG_SEED was added to the uapi headers in Linux 6.6 (commit
+ * 4072d97ddc44); older toolchains (e.g. Debian 12's linux-libc-dev 6.1)
+ * lack the enum. The uapi is append-only: the 6.5 netem enum ends at
+ * SLOT_DIST (13) and the 6.6 seed support appended exactly one attribute,
+ * so the value is 14. Kernels predating the feature just ignore the
+ * attribute, so defining it version-guarded is safe. Not #ifndef-guarded:
+ * enum constants are invisible to the preprocessor, the version check is
+ * the only reliable guard. */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)
+#define TCA_NETEM_PRNG_SEED 14
+#endif
 #include <linux/tc_act/tc_gact.h>
 #include <linux/filter.h>
 #include <linux/if_ether.h>
