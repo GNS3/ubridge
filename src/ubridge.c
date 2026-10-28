@@ -50,10 +50,20 @@ int debug_level = 0;
 static ssize_t delay_send_cb(void *ctx, const void *pkt, size_t len)
 {
    nio_t *tx_nio = ctx;
+   /* per release thread: one delay line (one bridge direction) = one thread */
+   static _Thread_local nio_drop_note_t drop_note;
    ssize_t bytes_sent;
 
    bytes_sent = nio_send(tx_nio, (void *)pkt, len);
    if (bytes_sent == -1) {
+      /* ENOBUFS: full transmit queue — transient congestion. The release
+         thread ignores our return value, so the frame is dropped either
+         way; report it rate-limited instead of a perror per frame. */
+      if (errno == ENOBUFS) {
+         nio_note_send_drop(&drop_note, "delay line, NIO '%s'",
+                            tx_nio->desc ? tx_nio->desc : "unknown");
+         return -1;
+      }
       perror("send");
       return -1;
    }
@@ -78,6 +88,7 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
   int drop_packet;
   int latency_ms = 0, jitter_ms = 0;
   delay_line_t *delay_line = NULL;
+  nio_drop_note_t drop_note = {0, 0};
   int rc = 0;
 
   /* The delay line is managed lazily inside the loop, not created once at
@@ -200,6 +211,18 @@ static int bridge_nios(nio_t *rx_nio, nio_t *tx_nio, bridge_t *bridge)
     /* send what we received to the transmitting NIO */
     bytes_sent = nio_send(tx_nio, pkt, bytes_received);
     if (bytes_sent == -1) {
+        /* ENOBUFS: the transmit queue is full (a packet socket also maps an
+           egress drop to it). Transient congestion: drop this frame and keep
+           relaying — breaking out here kills the whole process, with every
+           other link in the topology (issue #141). */
+        if (errno == ENOBUFS) {
+           nio_note_send_drop(&drop_note, "bridge '%s', %s NIO '%s'",
+                              bridge->name,
+                              (tx_nio == bridge->destination_nio) ? "destination" : "source",
+                              tx_nio->desc ? tx_nio->desc : "unknown");
+           continue;
+        }
+
         perror("send");
 
         /* EINVAL can be caused by sending to a blackhole route, this happens if a NIC link status changes */

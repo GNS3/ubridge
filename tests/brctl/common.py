@@ -71,10 +71,11 @@ class Ubridge:
     socket path — distinct ports map to distinct socket files.
     """
 
-    def __init__(self, port=13000, binary=None):
+    def __init__(self, port=13000, binary=None, stderr=subprocess.DEVNULL):
         self.port = port
         self.sock_path = "/tmp/ubridge-test-%d.sock" % port
         self.binary = binary or ubridge_binary()
+        self.stderr = stderr
         self.proc = None
 
     def __enter__(self):
@@ -86,7 +87,7 @@ class Ubridge:
         self.proc = subprocess.Popen(
             [self.binary, "-U", self.sock_path],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=self.stderr,
         )
         # Wait until the control socket accepts connections.
         for _ in range(50):

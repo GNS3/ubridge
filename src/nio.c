@@ -80,6 +80,31 @@ ssize_t nio_send(nio_t *nio, void *pkt, size_t len)
    return (nio->send(nio->dptr, pkt, len));
 }
 
+/* Report a frame dropped because the transmit queue was full (ENOBUFS) —
+ * transient congestion, the relay drops the frame and carries on. At most
+ * one line per second so sustained congestion cannot flood the log; the
+ * head keeps perror's wording ("send: No buffer space available") so log
+ * scanners written against the old per-frame output still match. errno is
+ * preserved for the caller. */
+void nio_note_send_drop(nio_drop_note_t *note, const char *fmt, ...)
+{
+   char where[128];
+   va_list argptr;
+   time_t now = time(NULL);
+   int saved_errno = errno;
+
+   note->dropped++;
+   if (note->last_report != now) {
+      note->last_report = now;
+      va_start(argptr, fmt);
+      vsnprintf(where, sizeof(where), fmt, argptr);
+      va_end(argptr);
+      fprintf(stderr, "send: No buffer space available: dropped frame on %s (%llu dropped so far)\n",
+              where, (unsigned long long)note->dropped);
+   }
+   errno = saved_errno;
+}
+
 ssize_t nio_recv(nio_t *nio, void *pkt, size_t max_len)
 {
    ssize_t len;

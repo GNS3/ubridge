@@ -48,6 +48,7 @@ sudo python3 run_all.py          # or: unshare -Urn python3 run_all.py
 | `test_ethernet.py` | nio_ethernet (pcap): L2 frame round-trips intact both directions; missing bridge -> 214; nonexistent iface -> 206. |
 | `test_linux_raw.py` | nio_linux_raw (AF_PACKET): same relay both ways; a tagged (802.1Q) frame passes through uncorrupted; missing bridge -> 214; bad iface -> 206; device name >= NIO_DEV_MAXLEN(64) -> 206. |
 | `test_linux_raw_gso.py` | nio_linux_raw cuts TSO/GRO-merged TCP frames into segments that fit the MTU. TCP from a peer netns arrives on the veth as 64 KB TSO frames; the relayed frames fit the MTU, have valid IP and TCP checksums and carry the exact stream, over IPv4 and IPv6. The segmentation itself is unit-tested in `tests/unit/test_gso.c`. |
+| `test_enobufs.py` | A full transmit queue must not kill the relay (issue #141): netem `limit 5 delay 2s` on the veth + a UDP flood makes every relay send past the limit fail with ENOBUFS. The process must stay alive, report the drops rate-limited, and relay frames again once the qdisc is gone. |
 
 ## Caveats / known gaps
 

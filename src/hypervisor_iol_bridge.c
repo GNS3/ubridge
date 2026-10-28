@@ -240,6 +240,7 @@ void *iol_nio_listener(void *data)
    unsigned char pkt[IOL_HDR_SIZE + MAX_MTU];
    nio_t *nio = iol_nio->destination_nio;
    int drop_packet;
+   nio_drop_note_t drop_note = {0, 0};
 
    printf("Listener thread for IOL instance %d on port %d/%d has started\n", iol_nio->iol_id, iol_nio->port.bay, iol_nio->port.unit);
    bridge = find_bridge(iol_nio->parent_bridge_name);
@@ -334,6 +335,14 @@ void *iol_nio_listener(void *data)
         memcpy(pkt, &(iol_nio->header), sizeof(iol_nio->header));
         bytes_sent = sendto(iol_nio->iol_bridge_sock, pkt, bytes_received, 0, (struct sockaddr *)&iol_nio->iol_sockaddr, sizeof(iol_nio->iol_sockaddr));
         if (bytes_sent == -1) {
+           /* ENOBUFS: full transmit queue — transient congestion, drop the
+            * frame and keep relaying instead of killing the whole process
+            * (same policy as bridge_nios) */
+           if (errno == ENOBUFS) {
+              nio_note_send_drop(&drop_note, "IOL bridge '%s' port %d/%d (NIO to IOL)",
+                                 bridge->name, iol_nio->port.bay, iol_nio->port.unit);
+              continue;
+           }
            perror("sendto");
            if (errno == ECONNREFUSED || errno == ENETDOWN || errno == ENOENT)
               continue;
@@ -353,6 +362,7 @@ void *iol_bridge_listener(void *data)
    unsigned char pkt[IOL_HDR_SIZE + MAX_MTU];
    unsigned int port;
    int drop_packet;
+   nio_drop_note_t drop_note = {0, 0};
 
    printf("IOL bridge listener thread for %s with ID %d has started\n", bridge->name, bridge->application_id);
    while (1)
@@ -432,6 +442,16 @@ void *iol_bridge_listener(void *data)
 
        bytes_sent = nio->send(nio->dptr, &pkt[IOL_HDR_SIZE], bytes_received);
        if (bytes_sent == -1) {
+          /* ENOBUFS: full transmit queue — transient congestion, drop the
+           * frame and keep relaying instead of killing the whole process
+           * (same policy as bridge_nios) */
+          if (errno == ENOBUFS) {
+             nio_note_send_drop(&drop_note, "IOL bridge '%s' port %d/%d (IOL to NIO '%s')",
+                                bridge->name, port & 0xF, port >> 4,
+                                nio->desc ? nio->desc : "unknown");
+             continue;
+          }
+
           perror("send");
 
           /* EINVAL can be caused by sending to a blackhole route, this happens if a NIC link status changes */
