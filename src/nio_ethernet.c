@@ -58,7 +58,11 @@ static ssize_t nio_ethernet_send(nio_ethernet_t *nio_ethernet, void *pkt, size_t
    int res;
 
    res = pcap_sendpacket(nio_ethernet->pcap_dev, (u_char *)pkt, pkt_len);
-   if (res == -1)
+   /* ENOBUFS is a full transmit queue: transient congestion. The relay
+      drops the frame and reports it rate-limited, so stay quiet here —
+      one print per frame would flood the log under sustained congestion
+      (issue #141). */
+   if (res == -1 && errno != ENOBUFS)
       fprintf(stderr, "pcap_sendpacket: %s\n", pcap_geterr(nio_ethernet->pcap_dev));
    return (res);
 }

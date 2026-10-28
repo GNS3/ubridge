@@ -23,6 +23,8 @@
 
 #include <stdlib.h>
 #include <stdarg.h>
+#include <stdint.h>
+#include <time.h>
 #include <sys/un.h>
 #include <pcap.h>
 
@@ -104,12 +106,21 @@ typedef struct {
 
 } nio_t;
 
+/* State for rate-limited congestion-drop reporting. One per relay thread
+ * (a local in the relay loop): how many frames that relay dropped because
+ * the transmit queue was full, and when it last said so. */
+typedef struct {
+    time_t last_report;   /* seconds timestamp of the last printed line */
+    uint64_t dropped;     /* frames dropped since the relay started */
+} nio_drop_note_t;
+
 nio_t *create_nio(void);
 void add_nio_desc(nio_t *nio, const char *fmt, ...);
 int free_nio(void *data);
 
 ssize_t nio_send(nio_t *nio, void *pkt, size_t len);
 ssize_t nio_recv(nio_t *nio, void *pkt, size_t max_len);
+void nio_note_send_drop(nio_drop_note_t *note, const char *fmt, ...);
 void dump_packet(FILE *f_output, u_char *pkt, u_int len);
 
 #endif /* !NIO_H_ */
