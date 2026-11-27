@@ -7,6 +7,7 @@ SUITES = [
     "test_dir_filter",
     "test_linktype",
     "test_pause",
+    "test_kernel_vlan",
     "test_reset_preserves_mark",
     "test_kernel",   # self-skips without CAP_NET_ADMIN (userspace CI)
 ]
