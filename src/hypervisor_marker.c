@@ -224,6 +224,7 @@ typedef struct kernel_marker {
     pcap_capture_t *cap;    /* optional: append matched packets to this pcap */
     struct bpf_program fp;  /* compiled cBPF, applied in user space per packet */
     int dir_match;          /* KMARK_DIR_* */
+    int ethernet;           /* DLT_EN10MB: bridge-forwarded VLAN tags re-inserted */
     volatile int enabled;   /* 0 = installed but silent (enable off) */
     volatile int stop;      /* cooperative stop flag for the reader thread */
     volatile int dead;      /* reader exited on a hard error (interface gone) */
@@ -249,9 +250,13 @@ static void *kernel_marker_thread(void *arg)
     kernel_marker_t *km = (kernel_marker_t *)arg;
     const size_t buf_len = 65535;
     unsigned char *buf = malloc(buf_len);
+    /* Room for both the timestamp and the PACKET_AUXDATA cmsgs: the kernel
+     * stops at the first cmsg that does not fit (MSG_CTRUNC), dropping
+     * everything behind it. */
     union {
         struct cmsghdr cmsg;
-        char buf[CMSG_SPACE(sizeof(struct timespec))];
+        char buf[CMSG_SPACE(sizeof(struct timespec))
+                 + CMSG_SPACE(sizeof(struct tpacket_auxdata))];
     } cmsg_buf;
 
     if (buf == NULL) {
@@ -294,7 +299,20 @@ static void *kernel_marker_thread(void *arg)
         /* Kernel receive timestamp (CLOCK_REALTIME, when the frame entered
          * the socket) for the MARK signal and the pcap append — absent cmsg
          * (no SO_TIMESTAMPNS support) leaves tsp NULL and both fall back to
-         * stamping at read/emit time. */
+         * stamping at read/emit time.
+         *
+         * PACKET_AUXDATA, Ethernet captures only: with vlan_filtering the
+         * 802.1Q tag of bridge-forwarded frames travels as skb metadata at
+         * the AF_PACKET tap points, so the frame data is headerless. On a
+         * SOCK_RAW socket TP_STATUS_VLAN_VALID is only set when the skb
+         * carries the tag as metadata, so a re-insertion can never
+         * duplicate a tag already in the data. QinQ: the bridge only
+         * manages its own (outer) tag — an 802.1Q tag still present in the
+         * data is the inner, customer tag, and the metadata one goes back
+         * in front of it. Keep the tag aside: it goes back into the frame
+         * after the first (untagged view) filter miss, below. */
+        uint16_t vlan_tci = 0, vlan_tpid = 0;
+        int vlan_meta = 0;
         for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
             if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMPNS
                 && cmsg->cmsg_len >= CMSG_LEN(sizeof(struct timespec))) {
@@ -303,7 +321,19 @@ static void *kernel_marker_thread(void *arg)
                 ts.tv_sec = kts.tv_sec;
                 ts.tv_usec = kts.tv_nsec / 1000;
                 tsp = &ts;
-                break;
+            } else if (km->ethernet
+                       && cmsg->cmsg_level == SOL_PACKET && cmsg->cmsg_type == PACKET_AUXDATA
+                       && cmsg->cmsg_len >= CMSG_LEN(sizeof(struct tpacket_auxdata))) {
+                struct tpacket_auxdata aux;
+
+                memcpy(&aux, CMSG_DATA(cmsg), sizeof(aux));
+                if (!(aux.tp_status & TP_STATUS_VLAN_VALID)
+                    || n < (ssize_t)ETH_HLEN || n > (ssize_t)(buf_len - 4))
+                    continue;
+                vlan_tpid = (aux.tp_status & TP_STATUS_VLAN_TPID_VALID)
+                            ? aux.tp_vlan_tpid : ETH_P_8021Q;
+                vlan_tci = aux.tp_vlan_tci;
+                vlan_meta = 1;
             }
         }
 
@@ -317,10 +347,31 @@ static void *kernel_marker_thread(void *arg)
             (km->dir_match == KMARK_DIR_RX && from.sll_pkttype != PACKET_OUTGOING))
             continue;
 
+        /* First match on the raw bytes: that keeps the L3-offset semantics
+         * of untagged frames (ip/tcp-style filters) exactly as before. Only
+         * on a miss, re-insert the metadata tag and retry — the tagged view
+         * is the only one where vlan-style filters can ever match here,
+         * because at the tap points such frames carry their tag as metadata.
+         * A hit on the tagged view emits/writes the tagged frame (its pcap
+         * is DLT_EN10MB, so the tag belongs in the data, like libpcap's). */
         memset(&pkthdr, 0, sizeof(pkthdr));
         pkthdr.caplen = (u_int)n;
         pkthdr.len = (u_int)n;
-        if (pcap_offline_filter(&km->fp, &pkthdr, buf)) {
+        int matched = pcap_offline_filter(&km->fp, &pkthdr, buf);
+        if (!matched && vlan_meta) {
+            uint16_t half;
+
+            memmove(buf + 16, buf + 12, n - 12);
+            half = htons(vlan_tpid);
+            memcpy(buf + 12, &half, sizeof(half));
+            half = htons(vlan_tci);
+            memcpy(buf + 14, &half, sizeof(half));
+            n += 4;
+            pkthdr.caplen = (u_int)n;
+            pkthdr.len = (u_int)n;
+            matched = pcap_offline_filter(&km->fp, &pkthdr, buf);
+        }
+        if (matched) {
             if (km->enabled) {   /* enable off: keep reading, no emit / no pcap */
                 marker_emit(km->name, km->tag, km->link, (size_t)n, dir, tsp);
                 if (km->cap)
@@ -457,7 +508,7 @@ static int cmd_add_kernel(hypervisor_conn_t *conn, int argc, char *argv[])
     pcap_t *pd;
     struct sockaddr_ll sll;
     struct timeval tv;
-    int link_type, ifindex, err, i, started = 0, ts_on = 1;
+    int link_type, ifindex, err, i, started = 0, ts_on = 1, aux_on = 1;
     int have_linktype = 0, have_tag = 0, have_link = 0, have_dir = 0, have_pcap = 0;
 
     /* an odd trailing token is a value without a keyword (same rule as mark_setup) */
@@ -584,13 +635,27 @@ static int cmd_add_kernel(hypervisor_conn_t *conn, int argc, char *argv[])
      * and the pcap append, best-effort: both stamp at read time without it. */
     setsockopt(km->sock, SOL_SOCKET, SO_TIMESTAMPNS, &ts_on, sizeof(ts_on));
 
+    /* 802.1Q tags of bridge-forwarded frames, delivered as PACKET_AUXDATA
+     * cmsgs: at the packet-tap points the tag lives as skb metadata, not in
+     * the frame data. Best-effort; the reader re-inserts the header on the
+     * tagged-view filter pass (Ethernet captures only). */
+    setsockopt(km->sock, SOL_PACKET, PACKET_AUXDATA, &aux_on, sizeof(aux_on));
+
+    km->ethernet = (link_type == DLT_EN10MB);
+
     /* Prune in the kernel where the frame layout matches what the filter was
      * compiled for: for DLT_EN10MB the AF_PACKET frame is byte-identical to
      * the offsets pcap_compile assumed, so non-matching frames never cross
      * to user space.  Other linktypes (C_HDLC/PPP offsets differ at the
      * AF_PACKET boundary) keep the user-space pcap_offline_filter path,
-     * which also re-checks every delivered frame. */
-    if (link_type == DLT_EN10MB) {
+     * which also re-checks every delivered frame.
+     *
+     * vlan-aware filters skip the pruning: bridge-forwarded frames carry
+     * their tag as skb metadata, so in the kernel's headerless view such a
+     * filter never matches and the frames the tagged-view user-space pass
+     * would match never get delivered at all. pcap's grammar has no other
+     * use for the "vlan" token, so a substring test is exact enough. */
+    if (km->ethernet && strstr(filter, "vlan") == NULL) {
         struct sock_fprog fprog;
 
         fprog.len = (unsigned short)km->fp.bf_len;
