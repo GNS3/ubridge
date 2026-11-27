@@ -94,10 +94,16 @@ def _seq(frame):
     return struct.unpack("!H", frame[off + 20 + 6:off + 20 + 8])[0]   # ip hdr + icmp hdr
 
 
-def _disable_ipv6():
+def _no_ipv6(*ifaces):
     """The veth/bridge bring-up floods IPv6 multicast; the pcaps must contain
-    only the injected frames, so switch IPv6 off for the netns lifetime."""
-    for k in ("all", "default"):
+    only the injected frames, so switch IPv6 off on each fixture interface
+    (before bring-up). Per-interface, never all/default: this suite shares
+    its network namespace with every other suite in the CI job, and a
+    netns-wide disable_ipv6 outlives the test — it silently broke the
+    nio_raw GSO suite later in the job (its IPv6 address add failed, its
+    bind then died with EADDRNOTAVAIL). Per-interface settings die with
+    the interface."""
+    for k in ifaces:
         try:
             with open("/proc/sys/net/ipv6/conf/%s/disable_ipv6" % k, "w") as f:
                 f.write("1")
@@ -120,14 +126,15 @@ def _topology(br_args):
                    capture_output=True, check=True)
     subprocess.run(["ip", "link", "add", BR2, "type", "bridge", "vlan_filtering", "1"] + br_args,
                    capture_output=True, check=True)
-    for br in (BR1, BR2):
-        subprocess.run(["ip", "link", "set", br, "up"], capture_output=True, check=True)
     subprocess.run(["ip", "link", "add", TRUNK_A, "type", "veth", "peer", "name", TRUNK_B],
                    capture_output=True, check=True)
     subprocess.run(["ip", "link", "add", HOST_E, "type", "veth", "peer", "name", HOST_E2],
                    capture_output=True, check=True)
     subprocess.run(["ip", "link", "add", HOST_C, "type", "veth", "peer", "name", HOST_C2],
                    capture_output=True, check=True)
+    _no_ipv6(BR1, BR2, TRUNK_A, TRUNK_B, HOST_E, HOST_E2, HOST_C, HOST_C2)
+    for br in (BR1, BR2):
+        subprocess.run(["ip", "link", "set", br, "up"], capture_output=True, check=True)
     subprocess.run(["ip", "link", "set", TRUNK_A, "master", BR1], capture_output=True, check=True)
     subprocess.run(["ip", "link", "set", HOST_E, "master", BR1], capture_output=True, check=True)
     subprocess.run(["ip", "link", "set", TRUNK_B, "master", BR2], capture_output=True, check=True)
@@ -169,7 +176,6 @@ def main():
         return 0
     if os.path.exists(PCAP):
         os.remove(PCAP)
-    _disable_ipv6()
 
     try:
         with Ubridge(port=PORT, binary=REPO_UBRIDGE) as ub:
