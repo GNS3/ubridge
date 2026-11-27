@@ -48,6 +48,17 @@ def sh(*args):
     return subprocess.run(args, capture_output=True, text=True)
 
 
+def sh_ok(*args):
+    """Run a command, raise with the command line and stderr on failure —
+    for setup steps whose silent failure would only surface much later as
+    an unrelated-looking error (a skipped 'ip addr add' shows up as bind
+    EADDRNOTAVAIL in the first stream, not here)."""
+    r = sh(*args)
+    if r.returncode != 0:
+        raise RuntimeError("%s failed: %s" % (" ".join(args), r.stderr.strip()))
+    return r
+
+
 def veth_up(a, b):
     """Create a veth pair a<->b (idempotent: delete a stale pair first) and
     bring both ends UP. Also brings loopback UP — a fresh network namespace
