@@ -5,7 +5,7 @@ import sys
 SUITES = [
     "test_basic",
     "test_multi",
-    "test_vlan",
+    "test_kernel_vlan",
 ]
 
 
