@@ -85,10 +85,16 @@ static void *capture_thread(void *arg)
 {
     kernel_capture_t *kc = (kernel_capture_t *)arg;
     unsigned char buf[65535];
+    /* Room for both the timestamp and the PACKET_AUXDATA cmsgs: the kernel
+     * stops at the first cmsg that does not fit (MSG_CTRUNC), dropping
+     * everything behind it. */
     union {
         struct cmsghdr cmsg;
-        char buf[CMSG_SPACE(sizeof(struct timespec))];
+        char buf[CMSG_SPACE(sizeof(struct timespec))
+                 + CMSG_SPACE(sizeof(struct tpacket_auxdata))];
     } cmsg_buf;
+    /* VLAN tags are only re-inserted into Ethernet-framed captures. */
+    int ethernet = (pcap_datalink(kc->cap->fd) == DLT_EN10MB);
 
     while (!kc->stop) {
         struct timeval ts, *tsp = NULL;   /* kernel rx stamp, when supplied */
@@ -114,7 +120,21 @@ static void *capture_thread(void *arg)
         /* The kernel stamped the frame when it entered the socket
          * (CLOCK_REALTIME) — keep that instead of "when this thread got
          * scheduled to read it". Absent cmsg (no SO_TIMESTAMPNS support)
-         * leaves tsp NULL and the writer stamps at read time. */
+         * leaves tsp NULL and the writer stamps at read time.
+         *
+         * With vlan_filtering, the 802.1Q tag of bridge-forwarded frames
+         * travels as skb metadata at both AF_PACKET tap points
+         * (dev_queue_xmit_nit on TX, the early taps in
+         * __netif_receive_skb_core on RX): the frame data itself is
+         * headerless. PACKET_AUXDATA reports that tag out of band — and on
+         * a SOCK_RAW socket TP_STATUS_VLAN_VALID is only set when the skb
+         * carries the tag as metadata, so re-insertion can never duplicate
+         * a tag already present in the frame data. QinQ: the bridge only
+         * manages its own (outer) tag — an 802.1Q tag still present in the
+         * data is the inner, customer tag, and the metadata one goes back
+         * in front of it. Write the 4-byte header back after the MAC
+         * addresses so the pcap shows what tcpdump/Wireshark show; libpcap
+         * does the same with its Linux backend. */
         for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
             if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMPNS
                 && cmsg->cmsg_len >= CMSG_LEN(sizeof(struct timespec))) {
@@ -123,7 +143,23 @@ static void *capture_thread(void *arg)
                 ts.tv_sec = kts.tv_sec;
                 ts.tv_usec = kts.tv_nsec / 1000;
                 tsp = &ts;
-                break;
+            } else if (ethernet
+                       && cmsg->cmsg_level == SOL_PACKET && cmsg->cmsg_type == PACKET_AUXDATA
+                       && cmsg->cmsg_len >= CMSG_LEN(sizeof(struct tpacket_auxdata))) {
+                struct tpacket_auxdata aux;
+                uint16_t half;
+
+                memcpy(&aux, CMSG_DATA(cmsg), sizeof(aux));
+                if (!(aux.tp_status & TP_STATUS_VLAN_VALID)
+                    || n < (ssize_t)ETH_HLEN || n > (ssize_t)(sizeof(buf) - 4))
+                    continue;
+                memmove(buf + 16, buf + 12, n - 12);
+                half = htons((aux.tp_status & TP_STATUS_VLAN_TPID_VALID)
+                             ? aux.tp_vlan_tpid : ETH_P_8021Q);
+                memcpy(buf + 12, &half, sizeof(half));
+                half = htons(aux.tp_vlan_tci);
+                memcpy(buf + 14, &half, sizeof(half));
+                n += 4;
             }
         }
         pcap_capture_packet_ts(kc->cap, buf, (size_t)n, tsp);
@@ -141,7 +177,7 @@ static int capture_start(const char *ifname, const char *pcap_file, const char *
     struct packet_mreq mreq;
     struct timeval tv;
     kernel_capture_t *kc;
-    int ifindex, err, ts_on = 1;
+    int ifindex, err, ts_on = 1, aux_on = 1;
 
     pthread_mutex_lock(&g_captures_lock);
 
@@ -196,6 +232,13 @@ static int capture_start(const char *ifname, const char *pcap_file, const char *
     /* Kernel receive timestamps (SCM_TIMESTAMPNS cmsg), best-effort like
      * promiscuous mode above: the reader stamps "now" without them. */
     setsockopt(kc->sock, SOL_SOCKET, SO_TIMESTAMPNS, &ts_on, sizeof(ts_on));
+
+    /* 802.1Q tags of bridge-forwarded frames, delivered as PACKET_AUXDATA
+     * cmsgs: at the packet-tap points the tag lives as skb metadata, not in
+     * the frame data. Best-effort like the two above; without it such frames
+     * end up in the pcap headerless. The reader re-inserts the header on
+     * Ethernet-framed captures. */
+    setsockopt(kc->sock, SOL_PACKET, PACKET_AUXDATA, &aux_on, sizeof(aux_on));
 
     strncpy(kc->ifname, ifname, IFNAMSIZ - 1);
     kc->ifname[IFNAMSIZ - 1] = '\0';
