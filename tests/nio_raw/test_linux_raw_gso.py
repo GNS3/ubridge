@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 
-from helpers import Ubridge, Results, HOST, ubridge_binary, sh, free_udp_port, ETH_P_ALL
+from helpers import Ubridge, Results, HOST, ubridge_binary, sh, sh_ok, free_udp_port, ETH_P_ALL
 
 PORT = 13182
 A, B = "vgso0", "vgso1"
@@ -103,14 +103,21 @@ def setup():
     if r.returncode != 0:
         child.kill()
         raise RuntimeError("veth add failed: %s" % r.stderr.strip())
-    sh("ip", "link", "set", B, "netns", str(child.pid))
-    sh("ip", "link", "set", A, "mtu", str(MTU), "up")
-    sh(*ns, "ip", "link", "set", "lo", "up")
-    sh(*ns, "ip", "link", "set", B, "mtu", str(MTU), "up")
-    for _, family, local, peer, plen in FAMILIES:
-        extra = ("nodad",) if family == socket.AF_INET6 else ()
-        sh("ip", "addr", "add", "%s/%d" % (local, plen), "dev", A, *extra)
-        sh(*ns, "ip", "addr", "add", "%s/%d" % (peer, plen), "dev", B, *extra)
+    try:
+        sh_ok("ip", "link", "set", B, "netns", str(child.pid))
+        sh_ok("ip", "link", "set", A, "mtu", str(MTU), "up")
+        sh_ok(*ns, "ip", "link", "set", "lo", "up")
+        sh_ok(*ns, "ip", "link", "set", B, "mtu", str(MTU), "up")
+        for _, family, local, peer, plen in FAMILIES:
+            extra = ("nodad",) if family == socket.AF_INET6 else ()
+            sh_ok("ip", "addr", "add", "%s/%d" % (local, plen), "dev", A, *extra)
+            sh_ok(*ns, "ip", "addr", "add", "%s/%d" % (peer, plen), "dev", B, *extra)
+    except RuntimeError:
+        # never leave the fixtures behind: the caller only cleans up when
+        # setup() returns, and a half-set-up pair outlives the child anyway
+        child.kill()
+        sh("ip", "link", "del", A)
+        raise
     return child
 
 
